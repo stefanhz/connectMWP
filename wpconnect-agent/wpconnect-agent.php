@@ -1,9 +1,11 @@
 <?php
 /**
  * Plugin Name: wpConnect Agent
+ * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
  * Version: 1.0.0
- * Author: Stefan Heinz & wpConnect
+ * Author: Stefan Heinz, 2morrow.ai
+ * Author URI: https://2morrow.ai
  * License: GPLv2
  */
 
