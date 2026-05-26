@@ -503,6 +503,16 @@ class WPConnect_Agent {
             'wpconnect',
             [$this, 'render_settings_page']
         );
+
+        // Register the hidden auth page slug so WordPress permits access to it
+        add_submenu_page(
+            null,
+            'Authorize wpConnect',
+            'Authorize wpConnect',
+            'edit_posts',
+            'wpconnect-auth',
+            [$this, 'render_oauth_screen']
+        );
     }
 
     public function render_settings_page() {
