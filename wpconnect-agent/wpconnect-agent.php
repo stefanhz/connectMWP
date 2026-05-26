@@ -679,6 +679,14 @@ class WPConnect_Agent {
                             <button type="button" class="button" onclick="const code = document.getElementById('cursor-config-code').innerText; navigator.clipboard.writeText(code).then(() => alert('Cursor Config JSON copied!'))" style="position: absolute; top: 10px; right: 10px; background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.2); color: #fff; text-shadow: none;">Copy JSON</button>
                         </div>
                     </div>
+                    
+                    <div style="margin-top: 20px; font-size: 13px; color: #31708f; background: #d9edf7; border: 1px solid #bce8f1; border-radius: 6px; padding: 12px; line-height: 1.5; display: flex; align-items: flex-start; gap: 8px;">
+                        <span style="font-size: 16px;">💡</span>
+                        <div>
+                            <strong>Local Development Tip:</strong> Since <code>wpconnect-mcp</code> is not yet published to npm, <code>npx</code> cannot find it. 
+                            To run it locally during development, replace <code>npx -y wpconnect-mcp</code> in your command with <code>node /absolute/path/to/wpConnect/wpconnect-mcp/index.js</code> (and ensure you've run <code>npm install</code> in that directory first).
+                        </div>
+                    </div>
                 </div>
             <?php endif; ?>
 
