@@ -3,7 +3,7 @@
  * Plugin Name: wpConnect Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 1.1.1
+ * Version: 1.1.2
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -862,43 +862,155 @@ class WPConnect_Agent {
             }
         }
 
-        // Render clean OAuth approval screen using WP admin styles
-        wp_iframe([$this, 'render_oauth_screen']);
+        // Render clean standalone OAuth approval screen (bypassing wp_iframe to prevent plugin conflicts)
+        $this->render_clean_oauth_screen();
         exit;
     }
 
-    public function render_oauth_screen() {
+    public function render_clean_oauth_screen() {
         $callback = isset($_GET['callback']) ? esc_url_raw($_GET['callback']) : '';
         $state = isset($_GET['state']) ? sanitize_text_field($_GET['state']) : '';
         $user = wp_get_current_user();
         
-        iframe_header();
         ?>
-        <div style="max-width:500px; margin: 40px auto; padding: 30px; background:#fff; border:1px solid #ccd0d4; box-shadow:0 1px 3px rgba(0,0,0,.04); border-radius: 4px; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen-Sans,Ubuntu,Cantarell,'Helvetica Neue',sans-serif;">
-            <h2 style="margin-top:0; text-align:center; font-size: 24px; color:#23282d;">Authorize wpConnect</h2>
-            <p style="font-size:14px; line-height:1.5; color:#50575e; text-align:center; margin-bottom: 25px;">
-                An AI tool is requesting permission to connect to <strong><?php echo esc_html(get_bloginfo('name')); ?></strong>. This will authorize remote commands under your user profile.
-            </p>
-            
-            <div style="background:#f0f6fc; padding: 15px; border-left: 4px solid #72aee6; border-radius: 2px; margin-bottom: 30px; font-size:14px;">
-                <strong>Connecting Account:</strong> <?php echo esc_html($user->user_login); ?> (<?php echo esc_html($user->user_email); ?>)
-            </div>
-            
-            <form method="post">
-                <?php wp_nonce_field('wpconnect_oauth_approve'); ?>
-                <div style="margin-bottom: 25px;">
-                    <label style="display:block; font-weight:600; margin-bottom: 8px; font-size: 14px; color:#23282d;">Client Name</label>
-                    <input type="text" name="app_name" value="Claude Cowork - Stefan's Mac" style="width:100%; padding: 8px; border: 1px solid #8c8f94; border-radius: 4px; box-sizing: border-box; font-size: 14px;" />
+        <!DOCTYPE html>
+        <html <?php language_attributes(); ?>>
+        <head>
+            <meta charset="<?php bloginfo( 'charset' ); ?>">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Authorize wpConnect</title>
+            <style>
+                body {
+                    background: #f0f2f5;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    min-height: 100vh;
+                    margin: 0;
+                    padding: 20px;
+                    box-sizing: border-box;
+                }
+                .card {
+                    max-width: 480px;
+                    width: 100%;
+                    background: #fff;
+                    border: 1px solid #ccd0d4;
+                    box-shadow: 0 4px 15px rgba(0,0,0,0.06);
+                    border-radius: 8px;
+                    padding: 35px;
+                    box-sizing: border-box;
+                }
+                h2 {
+                    margin-top: 0;
+                    text-align: center;
+                    font-size: 24px;
+                    color: #1d2327;
+                    font-weight: 700;
+                }
+                p {
+                    font-size: 14px;
+                    line-height: 1.5;
+                    color: #50575e;
+                    text-align: center;
+                    margin-bottom: 25px;
+                }
+                .account-info {
+                    background: #f0f6fc;
+                    padding: 15px;
+                    border-left: 4px solid #72aee6;
+                    border-radius: 4px;
+                    margin-bottom: 30px;
+                    font-size: 14px;
+                    color: #1d2327;
+                }
+                label {
+                    display: block;
+                    font-weight: 600;
+                    margin-bottom: 8px;
+                    font-size: 14px;
+                    color: #1d2327;
+                }
+                input[type="text"] {
+                    width: 100%;
+                    padding: 10px 12px;
+                    border: 1px solid #8c8f94;
+                    border-radius: 6px;
+                    box-sizing: border-box;
+                    font-size: 14px;
+                    background: #fff;
+                    color: #2c3338;
+                    margin-bottom: 25px;
+                    transition: border-color 0.15s ease-in-out;
+                }
+                input[type="text"]:focus {
+                    border-color: #2271b1;
+                    outline: none;
+                    box-shadow: 0 0 0 1px #2271b1;
+                }
+                .actions {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                }
+                .btn {
+                    padding: 10px 22px;
+                    border-radius: 6px;
+                    font-size: 14px;
+                    font-weight: 600;
+                    cursor: pointer;
+                    transition: all 0.1s ease-in-out;
+                    text-decoration: none;
+                    box-sizing: border-box;
+                }
+                .btn-deny {
+                    background: #f6f7f7;
+                    border: 1px solid #dcdcde;
+                    color: #d63638;
+                }
+                .btn-deny:hover {
+                    background: #f0f0f1;
+                    border-color: #c3c4c7;
+                }
+                .btn-approve {
+                    background: #2271b1;
+                    border: 1px solid #135e96;
+                    color: #fff;
+                    box-shadow: 0 1px 0 #135e96;
+                }
+                .btn-approve:hover {
+                    background: #135e96;
+                    border-color: #0a3d63;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h2>Authorize wpConnect</h2>
+                <p>
+                    An AI tool is requesting permission to connect to <strong><?php echo esc_html(get_bloginfo('name')); ?></strong>. This will authorize remote commands under your user profile.
+                </p>
+                
+                <div class="account-info">
+                    <strong>Connecting Account:</strong> <?php echo esc_html($user->user_login); ?> (<?php echo esc_html($user->user_email); ?>)
                 </div>
                 
-                <div style="display:flex; justify-content: space-between; align-items:center;">
-                    <button type="submit" name="wpconnect_oauth_action" value="deny" style="background:#f6f7f7; border: 1px solid #dcdcde; color:#d63638; padding: 10px 20px; border-radius: 4px; cursor:pointer; font-weight: 500; font-size: 14px; transition: 0.1s ease-in-out;">Deny</button>
-                    <button type="submit" name="wpconnect_oauth_action" value="approve" style="background:#2271b1; border: none; color:#fff; padding: 10px 25px; border-radius: 4px; cursor:pointer; font-weight: 600; font-size: 14px; box-shadow: 0 1px 0 #135e96; transition: 0.1s ease-in-out;">Approve & Connect</button>
-                </div>
-            </form>
-        </div>
+                <form method="post">
+                    <?php wp_nonce_field('wpconnect_oauth_approve'); ?>
+                    <div>
+                        <label for="app_name">Client Name</label>
+                        <input type="text" name="app_name" id="app_name" value="Claude Cowork - Stefan's Mac" required />
+                    </div>
+                    
+                    <div class="actions">
+                        <button type="submit" name="wpconnect_oauth_action" value="deny" class="btn btn-deny">Deny</button>
+                        <button type="submit" name="wpconnect_oauth_action" value="approve" class="btn btn-approve">Approve & Connect</button>
+                    </div>
+                </form>
+            </div>
+        </body>
+        </html>
         <?php
-        iframe_footer();
     }
 }
 
