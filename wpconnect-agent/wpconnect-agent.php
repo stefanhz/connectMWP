@@ -631,11 +631,44 @@ class WPConnect_Agent {
                         <div style="font-size: 13px; font-weight: 600; color: #2c3e50; margin-bottom: 8px; display: flex; align-items: center; gap: 5px;">
                             💻 Claude CLI setup command (Claude Code / Desktop)
                         </div>
+                        
+                        <!-- Interactive Scope Selector -->
+                        <div style="margin-bottom: 15px; display: flex; gap: 15px; align-items: center; background: #f8f9fa; padding: 10px 15px; border-radius: 6px; border: 1px solid #e9ecef;">
+                            <span style="font-size: 12px; font-weight: 600; text-transform: uppercase; color: #7f8c8d;">Command Scope:</span>
+                            <label style="display: flex; align-items: center; gap: 5px; font-size: 13px; cursor: pointer; font-weight: 500; color: #2c3e50; margin: 0;">
+                                <input type="radio" name="claude_scope" value="local" checked onclick="updateClaudeScope('local')" style="margin: 0;" />
+                                Project Local (Default)
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 5px; font-size: 13px; cursor: pointer; font-weight: 500; color: #2c3e50; margin: 0;">
+                                <input type="radio" name="claude_scope" value="user" onclick="updateClaudeScope('user')" style="margin: 0;" />
+                                Global User
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 5px; font-size: 13px; cursor: pointer; font-weight: 500; color: #2c3e50; margin: 0;">
+                                <input type="radio" name="claude_scope" value="project" onclick="updateClaudeScope('project')" style="margin: 0;" />
+                                Shared Project (Team)
+                            </label>
+                        </div>
+
                         <div style="display: flex; gap: 10px; align-items: stretch;">
                             <textarea readonly style="font-family: monospace; font-size: 12px; background: #2c3e50; color: #ecf0f1; padding: 12px; border-radius: 6px; border: none; width: 100%; height: 60px; resize: none; line-height: 1.4; box-shadow: inset 0 2px 5px rgba(0,0,0,0.2);" id="claude-cmd-text"><?php echo esc_textarea($claude_cmd); ?></textarea>
                             <button type="button" class="button button-primary" onclick="document.getElementById('claude-cmd-text').select(); document.execCommand('copy'); alert('CLI command copied!');" style="height: 60px; background: #34495e; border-color: #2c3e50; border-radius: 6px;">Copy Command</button>
                         </div>
                     </div>
+
+                    <script>
+                    function updateClaudeScope(scope) {
+                        const siteUrl = "<?php echo esc_js($site_url); ?>";
+                        const rawToken = "<?php echo esc_js($raw_token); ?>";
+                        let cmd = "claude mcp add ";
+                        if (scope === "user") {
+                            cmd += "--scope user ";
+                        } else if (scope === "project") {
+                            cmd += "--scope project ";
+                        }
+                        cmd += 'wpconnect npx -y wpconnect-mcp --site "' + siteUrl + '" --token "' + rawToken + '"';
+                        document.getElementById('claude-cmd-text').value = cmd;
+                    }
+                    </script>
 
                     <div>
                         <div style="font-size: 13px; font-weight: 600; color: #2c3e50; margin-bottom: 8px;">
