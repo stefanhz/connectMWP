@@ -3,7 +3,7 @@
  * Plugin Name: wpConnect Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 1.1.2
+ * Version: 1.1.3
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -766,6 +766,19 @@ class WPConnect_Agent {
                             </tbody>
                         </table>
                     <?php endif; ?>
+                </div>
+
+                <!-- Card: Public Onboarding -->
+                <div style="background: #fff; border: 1px solid #e1e8ed; border-radius: 12px; padding: 25px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.02);">
+                    <h2 style="margin-top: 0; margin-bottom: 15px; font-size: 18px; font-weight: 600; color: #2c3e50; border-bottom: 1px solid #f0f3f4; padding-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                        <span>🌐</span> Client Onboarding Gateway
+                    </h2>
+                    <p style="font-size: 14px; color: #7f8c8d; line-height: 1.5; margin-bottom: 20px;">
+                        Connect new AI editors (like Claude desktop or third-party workspaces) dynamically through our centralized setup wizard.
+                    </p>
+                    <a href="https://connect-mwp.vercel.app" target="_blank" class="button" style="font-weight: 600; font-size: 14px; padding: 6px 20px; height: auto; min-height: 38px; border-radius: 6px; display: inline-flex; align-items: center; gap: 8px; text-decoration: none; border: 1px solid #ccd0d4; background: #f6f7f7; color: #2c3e50;">
+                        <span>🚀</span> Open Onboarding at connectmwp.com
+                    </a>
                 </div>
             </div>
             
