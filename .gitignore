@@ -1,0 +1,31 @@
+# Local ignore
+_internal
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Diagnostic script output
+diagnose.py.log
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Node.js
+node_modules/
+dist
+/connectmwp-server/.next/
+/connectmwp-server/out/
+/connectmwp-server/build
+/connectmwp-server/.env.local
+/connectmwp-server/.env.development.local
+/connectmwp-server/.env.test.local
+/connectmwp-server/.env.production.local
+/wpconnect-mcp/node_modules/
+wpconnect-agent.zip
+
