@@ -4,6 +4,14 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-27 — v2.0.1
+
+### Fixed
+- **connectmwp-agent — settings page pairing code display state loss.** Fixed a bug where the generated one-time pairing code was not displayed if the options page was reloaded or redirected. The active unexpired code is now fetched directly from WordPress options on every settings page load until it expires (10 minutes) or is successfully consumed.
+
+### Chore
+- Bumped versions of all components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) to `2.0.1`.
+
 ## 2026-05-27 — v2.0.0
 
 ### Added
