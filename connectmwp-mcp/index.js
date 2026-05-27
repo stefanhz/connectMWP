@@ -469,7 +469,13 @@ async function callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, metho
   if (endpointPath === 'posts') {
     action = method === 'GET' ? 'get_posts' : 'create_post';
   } else if (endpointPath.startsWith('posts/')) {
-    action = 'update_post';
+    if (method === 'DELETE') {
+      action = 'delete_post';
+    } else if (method === 'GET') {
+      action = 'get_post';
+    } else {
+      action = 'update_post';
+    }
   } else if (endpointPath === 'media') {
     action = 'upload_media';
   } else if (endpointPath === 'tags') {
@@ -490,7 +496,7 @@ async function callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, metho
     params.append('action', 'connectmwp_api');
     params.append('connectmwp_action', action);
 
-    if (action === 'update_post') {
+    if (action === 'update_post' || action === 'delete_post' || action === 'get_post') {
       const postId = endpointPath.split('/')[1];
       params.append('post_id', postId);
     }
@@ -632,8 +638,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             status: {
               type: 'string',
-              enum: ['draft', 'publish'],
-              description: 'Post status: draft (default for review) or publish (direct)',
+              enum: ['draft', 'publish', 'trash'],
+              description: 'Post status: draft (default for review), publish (direct), or trash (move to trash)',
             },
             categories: {
               type: 'array',
@@ -677,7 +683,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             status: {
               type: 'string',
-              enum: ['draft', 'publish'],
+              enum: ['draft', 'publish', 'trash'],
             },
             categories: {
               type: 'array',
@@ -814,6 +820,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           required: ['name']
         }
+      },
+      {
+        name: 'connectmwp_delete_post',
+        description: 'Trash or permanently delete a post by ID from the WordPress site.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            site: {
+              type: 'string',
+              description: 'Optional domain or site URL of the target WordPress site (e.g. "2morrow.ai"). Uses the default site if omitted.'
+            },
+            id: {
+              type: 'integer',
+              description: 'WordPress Post ID to delete'
+            },
+            force: {
+              type: 'boolean',
+              description: 'Optional. If true, bypasses trash and permanently deletes the post. Default false.'
+            }
+          },
+          required: ['id']
+        }
       }
     ],
   };
@@ -851,6 +879,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const { site, id, ...postParams } = args;
         const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
         const res = await callWordPress(siteUrl, keyId, privateKeyPath, `posts/${id}`, 'POST', postParams);
+        return { content: [{ type: 'text', text: JSON.stringify(res) }] };
+      }
+
+      case 'connectmwp_delete_post': {
+        const { site, id, force } = args;
+        const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
+        const res = await callWordPress(siteUrl, keyId, privateKeyPath, `posts/${id}`, 'DELETE', { force });
         return { content: [{ type: 'text', text: JSON.stringify(res) }] };
       }
 

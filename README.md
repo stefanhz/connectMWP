@@ -1,6 +1,6 @@
 # connectMWP
 
-**Current Release Version: v2.0.8**
+**Current Release Version: v2.0.9**
 
 connectMWP is a secure, decentralized Model Context Protocol (MCP) server that connects local AI clients (such as Claude Desktop, Cursor, and Claude Code) directly to self-hosted WordPress websites to draft content, upload media, and manage posts directly from your workspace.
 
@@ -52,6 +52,7 @@ Once setup is complete, the AI client will automatically discover the following 
 *   `connectmwp_create_post` — Creates a new post draft or publishes it immediately.
 *   `connectmwp_update_post` — Updates an existing post (essential for injecting internal SEO links).
 *   `connectmwp_upload_media` — Uploads featured or inline images/graphs to your media library.
+*   `connectmwp_delete_post` — Trashes or permanently deletes a post by ID.
 *   `connectmwp_list_tags` — Lists all active tags on the site.
 *   `connectmwp_list_categories` — Lists all active categories on the site.
 *   `connectmwp_create_category` — Creates a new category on the site.

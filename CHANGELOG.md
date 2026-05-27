@@ -4,6 +4,17 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-27 — v2.0.9
+
+### Added
+- **connectmwp-agent — delete post handler.** Added support for trashing/deleting posts via REST `DELETE` on `/posts/<id>` route.
+- **connectmwp-agent — added featured_media, categories, tags to get_post.** Updated `get_post_handler` to return taxonomy lists and the featured media ID by default.
+- **connectmwp-mcp — delete post tool.** Registered the new `connectmwp_delete_post` tool and implemented the REST `DELETE` execution pathway (including AJAX fallback routing).
+- **connectmwp-mcp — trash status.** Supported the `'trash'` status in the create/update post tool validation enum schemas.
+
+### Chore
+- Bumped versions of all components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) to `2.0.9`.
+
 ## 2026-05-27 — v2.0.8
 
 ### Added

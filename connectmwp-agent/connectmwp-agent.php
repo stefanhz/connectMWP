@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.8
+ * Version: 2.0.9
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -13,7 +13,7 @@ defined('ABSPATH') || exit;
 
 class ConnectMWP_Agent {
 
-    const VERSION = '2.0.8';
+    const VERSION = '2.0.9';
     const OPTION_TOKENS = 'connectmwp_agent_tokens';
     const OPTION_NONCES = 'connectmwp_agent_nonces';
     const API_NAMESPACE = 'connectmwp/v1';
@@ -80,6 +80,11 @@ class ConnectMWP_Agent {
             [
                 'methods'             => 'POST',
                 'callback'            => [$this, 'update_post_handler'],
+                'permission_callback' => [$this, 'check_edit_post_permission'],
+            ],
+            [
+                'methods'             => 'DELETE',
+                'callback'            => [$this, 'delete_post_handler'],
                 'permission_callback' => [$this, 'check_edit_post_permission'],
             ]
         ]);
@@ -539,7 +544,7 @@ class ConnectMWP_Agent {
         if ($fields_param) {
             $requested_fields = array_map('trim', explode(',', strtolower($fields_param)));
         } else {
-            $requested_fields = ['id', 'title', 'url', 'link', 'status', 'date', 'content'];
+            $requested_fields = ['id', 'title', 'url', 'link', 'status', 'date', 'content', 'featured_media', 'categories', 'tags'];
         }
 
         $post_item = [];
@@ -561,6 +566,17 @@ class ConnectMWP_Agent {
         }
         if (in_array('content', $requested_fields, true)) {
             $post_item['content'] = $post->post_content;
+        }
+        if (in_array('featured_media', $requested_fields, true)) {
+            $post_item['featured_media'] = has_post_thumbnail($post->ID) ? intval(get_post_thumbnail_id($post->ID)) : 0;
+        }
+        if (in_array('categories', $requested_fields, true)) {
+            $post_categories = wp_get_post_categories($post->ID, ['fields' => 'ids']);
+            $post_item['categories'] = is_array($post_categories) ? array_map('intval', $post_categories) : [];
+        }
+        if (in_array('tags', $requested_fields, true)) {
+            $post_tags = wp_get_post_tags($post->ID, ['fields' => 'ids']);
+            $post_item['tags'] = is_array($post_tags) ? array_map('intval', $post_tags) : [];
         }
 
         return new WP_REST_Response(['success' => true, 'post' => $post_item], 200);
@@ -663,6 +679,36 @@ class ConnectMWP_Agent {
         }
 
         return new WP_REST_Response(['success' => true, 'post_id' => $post_id, 'url' => get_permalink($post_id)], 200);
+    }
+
+    public function delete_post_handler(WP_REST_Request $request) {
+        $post_id = intval($request['id']);
+        $params = $request->get_json_params();
+        if (empty($params)) {
+            $params = $request->get_body_params();
+        }
+        $force = isset($params['force']) ? filter_var($params['force'], FILTER_VALIDATE_BOOLEAN) : false;
+
+        $post = get_post($post_id);
+        if (!$post) {
+            return new WP_REST_Response(['success' => false, 'error' => 'Post not found.'], 404);
+        }
+
+        if (!$force && $post->post_status !== 'trash') {
+            $result = wp_trash_post($post_id);
+        } else {
+            $result = wp_delete_post($post_id, true);
+        }
+
+        if (!$result) {
+            return new WP_REST_Response(['success' => false, 'error' => 'Failed to delete post.'], 500);
+        }
+
+        return new WP_REST_Response([
+            'success' => true,
+            'post_id' => $post_id,
+            'status' => ($force || $post->post_status === 'trash') ? 'deleted' : 'trash'
+        ], 200);
     }
 
     public function upload_media_handler(WP_REST_Request $request) {
@@ -826,6 +872,11 @@ class ConnectMWP_Agent {
                 $request->set_param('id', isset($_REQUEST['post_id']) ? intval($_REQUEST['post_id']) : 0);
                 if (!$this->check_edit_post_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
                 $res = $this->update_post_handler($request);
+                break;
+            case 'delete_post':
+                $request->set_param('id', isset($_REQUEST['post_id']) ? intval($_REQUEST['post_id']) : 0);
+                if (!$this->check_edit_post_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
+                $res = $this->delete_post_handler($request);
                 break;
             case 'upload_media':
                 if (!$this->check_upload_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
