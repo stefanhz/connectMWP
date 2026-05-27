@@ -28,8 +28,10 @@ export default function Callback() {
         siteVal = searchParams.get('site') || '';
       }
       
-      setToken(tokenVal);
-      setSite(siteVal);
+      setTimeout(() => {
+        setToken(tokenVal);
+        setSite(siteVal);
+      }, 0);
     }
   }, []);
 

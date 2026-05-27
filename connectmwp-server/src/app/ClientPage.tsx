@@ -44,14 +44,14 @@ export default function ClientPage({ faqs }: ClientPageProps) {
         return hostname === 'localhost';
       }
       return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(hostname) || hostname === 'localhost';
-    } catch (e) {
+    } catch {
       return false;
     }
   };
 
   const handleBlur = () => {
     setTouched(true);
-    let val = siteUrl.trim();
+    const val = siteUrl.trim();
     if (val && !/^https?:\/\//i.test(val) && !val.includes('@')) {
       setSiteUrl('https://' + val);
     }
@@ -77,7 +77,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
 
     try {
       // Validate and clean URL
-      let cleanUrl = siteUrl.trim();
+      const cleanUrl = siteUrl.trim();
       let resolvedUrl = cleanUrl;
       let isHardError = false;
       let warningMsg = '';
@@ -142,7 +142,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
       const authUrl = `${origin}${cleanPath}/admin.php?page=connectmwp-auth&callback=${encodeURIComponent(callbackUrl)}&state=${state}`;
       
       window.location.href = authUrl;
-    } catch (err) {
+    } catch {
       setError('Failed to connect. Please check the URL.');
       setIsVerifying(false);
     }
