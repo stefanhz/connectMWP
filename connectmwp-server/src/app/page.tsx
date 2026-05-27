@@ -3,31 +3,42 @@ import path from 'path';
 import ClientPage from './ClientPage';
 
 function parseMarkdown(markdown: string): string {
-  // Escape HTML
-  let html = markdown
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  // Pre-process to ensure double newlines exist before and after list blocks
+  let text = markdown
+    .replace(/^([^- \r\n].*?)\r?\n-\s/gm, '$1\n\n- ')
+    .replace(/^-\s(.*?)\r?\n([^- \r\n].*?)$/gm, '- $1\n\n$2');
 
-  // Bold
-  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-
-  // Links [text](url)
-  html = html.replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" style="color: #818cf8; text-decoration: none;">$1</a>');
-
-  // Lists (Unordered)
-  html = html.replace(/^- (.*?)$/gm, '<li>$1</li>');
-  html = html.replace(/(<li>[\s\S]*?<\/li>)+/g, '<ul style="margin: 8px 0; padding-left: 20px;">$&</ul>');
-
-  // Paragraphs
-  const blocks = html.split(/\n\s*\n/);
+  // Split by double newlines
+  const blocks = text.split(/\n\s*\n/);
+  
   const parsedBlocks = blocks.map(block => {
-    const trimmed = block.trim();
+    let trimmed = block.trim();
     if (!trimmed) return '';
-    if (trimmed.startsWith('<ul') || trimmed.startsWith('<li')) {
-      return trimmed;
+
+    // Escape HTML
+    trimmed = trimmed
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    // Bold
+    trimmed = trimmed.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+
+    // Links [text](url)
+    trimmed = trimmed.replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" style="color: #fbbf24; text-decoration: none; border-bottom: 1px dashed rgba(251, 191, 36, 0.4);">$1</a>');
+
+    // Unordered list block
+    if (trimmed.startsWith('- ')) {
+      const lines = trimmed.split('\n');
+      const listItems = lines.map(line => {
+        const itemText = line.replace(/^-\s+/, '').trim();
+        return `<li style="margin-bottom: 6px; list-style-type: disc;">${itemText}</li>`;
+      });
+      return `<ul style="margin: 4px 0 12px 0; padding-left: 20px; list-style-type: disc;">${listItems.join('\n')}</ul>`;
     }
-    return `<p style="margin: 8px 0;">${trimmed.replace(/\n/g, '<br>')}</p>`;
+
+    // Normal paragraph
+    return `<p style="margin: 4px 0 12px 0; line-height: 1.6;">${trimmed.replace(/\n/g, '<br>')}</p>`;
   });
 
   return parsedBlocks.join('\n');
