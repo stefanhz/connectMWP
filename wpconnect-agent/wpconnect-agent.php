@@ -3,7 +3,7 @@
  * Plugin Name: wpConnect Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 1.2.0
+ * Version: 1.2.1
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -791,7 +791,7 @@ class WPConnect_Agent {
                     <p style="font-size: 14px; color: #7f8c8d; line-height: 1.5; margin-bottom: 20px;">
                         Connect new AI editors (like Claude desktop or third-party workspaces) dynamically through our centralized setup wizard.
                     </p>
-                    <a href="https://connect-mwp.vercel.app" target="_blank" class="button" style="font-weight: 600; font-size: 14px; padding: 6px 20px; height: auto; min-height: 38px; border-radius: 6px; display: inline-flex; align-items: center; gap: 8px; text-decoration: none; border: 1px solid #ccd0d4; background: #f6f7f7; color: #2c3e50;">
+                    <a href="https://connectmwp.com" target="_blank" class="button" style="font-weight: 600; font-size: 14px; padding: 6px 20px; height: auto; min-height: 38px; border-radius: 6px; display: inline-flex; align-items: center; gap: 8px; text-decoration: none; border: 1px solid #ccd0d4; background: #f6f7f7; color: #2c3e50;">
                         <span>🚀</span> Open Onboarding at connectmwp.com
                     </a>
                 </div>

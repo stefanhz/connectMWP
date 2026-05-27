@@ -1,10 +1,12 @@
 'use client';
 
 import React, { useState } from 'react';
+import Link from 'next/link';
 
 export default function Home() {
   const [siteUrl, setSiteUrl] = useState('');
   const [error, setError] = useState('');
+  const [openFaq, setOpenFaq] = useState<number | null>(null);
 
   const handleConnect = (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,6 +39,29 @@ export default function Home() {
     }
   };
 
+  const faqItems = [
+    {
+      q: "What is wpConnect?",
+      a: "wpConnect is a decentralized Model Context Protocol (MCP) server that links local AI tools (such as Claude Desktop, Cursor, and Claude Code) directly to your self-hosted WordPress site's API, enabling automated content publishing workflows."
+    },
+    {
+      q: "Is the connection secure?",
+      a: "Yes. All requests and credentials bypass our servers entirely. The local script communicates directly with your WordPress installation over HTTPS using dynamic signatures and custom authentication headers."
+    },
+    {
+      q: "Do I need to run a local server (like localhost)?",
+      a: "No. The MCP server runs via standard input/output (stdio) directly inside your AI client. It does not listen on local network ports, preventing firewalls or anti-virus blocks."
+    },
+    {
+      q: "How does it handle edge caching and hosting WAFs?",
+      a: "Standard WordPress API calls get blocked or cached by reverse proxies (like SiteGround Security, Sucuri, Kinsta). wpConnect uses an early-hooked custom auth header and dynamic cache-busting queries to ensure immune transmissions."
+    },
+    {
+      q: "Can I manage multiple WordPress sites?",
+      a: "Yes! wpConnect v1.2.1 supports multi-site configurations. You register the background server process once, and add multiple domains via the 'add-site' CLI helper. You can target specific sites using the optional 'site' parameter."
+    }
+  ];
+
   return (
     <div style={{
       minHeight: '100vh',
@@ -47,9 +72,10 @@ export default function Home() {
       background: 'radial-gradient(circle at top, #1e1e2f 0%, #0d0d15 100%)',
       color: '#ffffff',
       fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-      padding: '20px',
+      padding: '40px 20px',
       boxSizing: 'border-box'
     }}>
+      {/* Main Container Card */}
       <div style={{
         maxWidth: '550px',
         width: '100%',
@@ -159,19 +185,110 @@ export default function Home() {
         </form>
       </div>
 
+      {/* FAQ Accordion Card */}
       <div style={{
-        marginTop: '32px',
+        maxWidth: '550px',
+        width: '100%',
+        marginTop: '40px',
+        background: 'rgba(255, 255, 255, 0.02)',
+        border: '1px solid rgba(255, 255, 255, 0.06)',
+        borderRadius: '16px',
+        padding: '35px',
+        boxSizing: 'border-box',
+        boxShadow: '0 10px 30px rgba(0,0,0,0.15)'
+      }}>
+        <h2 style={{
+          fontSize: '18px',
+          fontWeight: '700',
+          color: '#ffffff',
+          marginTop: 0,
+          marginBottom: '20px',
+          borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+          paddingBottom: '12px'
+        }}>
+          Frequently Asked Questions
+        </h2>
+        {faqItems.map((item, index) => (
+          <div key={index} style={{
+            borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
+            paddingBottom: '12px',
+            marginBottom: '12px'
+          }}>
+            <button
+              onClick={() => setOpenFaq(openFaq === index ? null : index)}
+              style={{
+                width: '100%',
+                background: 'none',
+                border: 'none',
+                color: '#ffffff',
+                fontSize: '14px',
+                fontWeight: '600',
+                textAlign: 'left',
+                cursor: 'pointer',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                padding: '6px 0',
+                outline: 'none'
+              }}
+            >
+              <span>{item.q}</span>
+              <span style={{
+                color: '#818cf8',
+                transform: openFaq === index ? 'rotate(180deg)' : 'rotate(0deg)',
+                transition: 'transform 0.2s',
+                fontSize: '10px'
+              }}>
+                ▼
+              </span>
+            </button>
+            {openFaq === index && (
+              <p style={{
+                fontSize: '13.5px',
+                lineHeight: '1.6',
+                color: '#a1a1aa',
+                margin: '8px 0 0 0',
+                animation: 'fadeIn 0.2s ease-out'
+              }}>
+                {item.a}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Footer Links & Info */}
+      <footer style={{
+        marginTop: '50px',
         fontSize: '13px',
         color: '#71717a',
-        display: 'flex',
-        gap: '24px'
+        textAlign: 'center',
+        lineHeight: '1.8'
       }}>
-        <span>Free &amp; Open Source</span>
-        <span>•</span>
-        <span>100% Direct Connection</span>
-        <span>•</span>
-        <span>Zero Data Stored</span>
-      </div>
+        <div style={{
+          display: 'flex',
+          justifyContent: 'center',
+          gap: '15px',
+          marginBottom: '12px',
+          flexWrap: 'wrap'
+        }}>
+          <Link href="/legal/about" style={{ color: '#a1a1aa', textDecoration: 'none' }}>About</Link>
+          <span>•</span>
+          <Link href="/legal/privacy" style={{ color: '#a1a1aa', textDecoration: 'none' }}>Privacy Policy</Link>
+          <span>•</span>
+          <Link href="/legal/terms" style={{ color: '#a1a1aa', textDecoration: 'none' }}>Terms of Service</Link>
+          <span>•</span>
+          <a href="mailto:support@connectmwp.com" style={{ color: '#a1a1aa', textDecoration: 'none' }}>Support</a>
+          <span>•</span>
+          <a href="https://buy.stripe.com/aFa8wQ0rH2PQ4Msama5kk0l" target="_blank" rel="noopener noreferrer" style={{ color: '#fbbf24', textDecoration: 'none', fontWeight: '600' }}>☕ Buy me a coffee</a>
+        </div>
+        <div style={{ marginBottom: '15px' }}>
+          Brought to you by <a href="https://2morrow.ai" target="_blank" rel="noopener noreferrer" style={{ color: '#818cf8', textDecoration: 'none' }}>2morrow.ai</a>
+        </div>
+        <div style={{ fontSize: '11px', opacity: 0.6 }}>
+          wpConnect Client v1.2.1
+        </div>
+      </footer>
     </div>
   );
 }
