@@ -1,83 +1,101 @@
-# wpConnect — Architecture & Integration Plan
+# wpConnect (connectmwp.com)
 
-This project aims to connect AI services with multiple WordPress websites to automate research, topic generation, content drafting, image generation, and remote publishing.
+wpConnect is a secure, decentralized bridge that connects local AI clients (such as Claude Desktop, Cursor, and Claude Code) directly to self-hosted WordPress websites to automate research, topic generation, content drafting, image uploading, and remote publishing.
 
-## 1. Diagnosing & Overcoming WordPress Application Password Blockers
-
-If you tried to set up Automattic's WordPress MCP connection and it failed, the root cause is almost certainly one of the following:
-
-### A. Authorization Header Stripping (Most Common)
-Many web hosting configurations (e.g., Apache with CGI/FastCGI, Nginx reverse proxies, or GoDaddy/SiteGround configurations) strip the HTTP `Authorization` header by default before passing it to PHP. Since WordPress Application Passwords rely on Basic Authentication (`Authorization: Basic [base64_credentials]`), WordPress receives the request, sees no authorization headers, and rejects it with a `401 Unauthorized` or `403 Forbidden` error.
-
-**How to fix it:**
-*   **For Apache (`.htaccess`):** Add the following lines to the top of your `.htaccess` file:
-    ```apache
-    <IfModule mod_rewrite.c>
-    RewriteEngine On
-    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
-    </IfModule>
-    ```
-*   **For Nginx:** Ensure your `fastcgi_params` block passes the Authorization header:
-    ```nginx
-    fastcgi_param HTTP_AUTHORIZATION $http_authorization;
-    ```
-
-### B. Security Plugins
-Security plugins like Wordfence, Sucuri, iThemes/Solid Security, and WP Cerberus are designed to protect WordPress from brute-force attacks and unsolicited REST API access.
-*   **Wordfence / Sucuri:** Often blocks REST API requests originating from unknown external IPs or requests that contain basic authentication headers.
-*   **WP Cerberus / SiteGround Security:** Have toggles to completely disable the WordPress REST API for unauthenticated users, or disable Application Passwords entirely.
-
-### C. Web Application Firewalls (WAF) & Host Blocks
-Managed WordPress hosts (WP Engine, Kinsta, SiteGround) or Cloudflare WAFs block `POST` requests to standard REST API endpoints (like `/wp-json/wp/v2/posts`) when they originate from automated scripts, cloud hosting IPs (Vercel, AWS), or headers without typical browser User-Agents.
+The architecture is **100% decentralized for daily operations**. All AI requests are executed directly from your local machine to your WordPress site over HTTPS, bypassing any central servers and carrying $0 proxy costs.
 
 ---
 
-## 2. A Better, More Secure Connection Approach
+## 1. Quick Start (Local Development Setup)
 
-Relying on standard Application Passwords over `Authorization: Basic` is fragile because it is heavily targeted by hackers and therefore highly blocked by security infrastructure. 
+Because the npm package `wpconnect-mcp` is not yet published to the public registry, you must point your configurations to your local files. 
 
-For an open-source project or custom system, a **much better and more secure** approach is a **Custom WordPress Agent Plugin** combined with **Cryptographic Signing (Ed25519)**. This is actually the method already implemented in your `wpmgmt_app` agent:
+### Step 1: Install & Activate the WordPress Plugin
+1. Locate the packaged plugin file: [wpconnect-agent.zip](./wpconnect-agent.zip)
+2. Log into your WordPress site's admin dashboard (e.g. `https://2morrow.ai`).
+3. Go to **Plugins -> Add New -> Upload Plugin**, upload the ZIP, and click **Activate**.
+4. Go to **Settings -> wpConnect** in your WP sidebar.
 
-1.  **Custom REST Endpoint / Admin-AJAX Fallback**:
-    *   Instead of hitting standard endpoints like `/wp-json/wp/v2/posts`, register a custom endpoint: `/wp-json/wpconnect/v1/publish`.
-    *   For environments where REST is completely blocked, use a custom **Admin-AJAX fallback** (e.g. `/wp-admin/admin-ajax.php?action=wpconnect_publish`). WAFs and security plugins rarely block Admin-AJAX because it is essential for frontend themes and plugins.
-2.  **Ed25519 Cryptographic Signatures (No Shared Passwords)**:
-    *   The agent plugin on WordPress stores the **Public Key** of the controller (your AI application).
-    *   The AI application keeps the **Private Key** secure in its environment variables.
-    *   Every request sent to WordPress includes a timestamp and is signed with the private key (sent in custom headers like `X-WPConnect-Signature` and `X-WPConnect-Timestamp`).
-    *   WordPress verifies the signature using PHP's native `libsodium` (via `sodium_crypto_sign_verify_detached`).
-    *   **Security Invariant:** Even if someone intercepts your request, they cannot replay it (due to timestamp/replay logs), and even if the WordPress database is compromised, the attacker only gets the *public key*, meaning they cannot generate valid signed commands to compromise other sites.
-    *   **Custom Headers:** Custom headers like `X-WPConnect-Signature` are rarely stripped by Nginx/Apache, unlike the default `Authorization` header.
+### Step 2: Register the Server in Claude (Run Once Globally)
+In your terminal, register the absolute path of your local MCP client script:
+```bash
+claude mcp add wpconnect node /Users/stefanhz/Documents/aiSpace/wpConnect/wpconnect-mcp/index.js
+```
+*(To make the server available globally across all folders on your Mac, add the `--scope user` flag: `claude mcp add --scope user wpconnect node ...`)*
 
----
-
-## 3. MCP Server vs. Standalone App (What's the take?)
-
-### Option A: Pure MCP Server
-*   **How it works:** A local server running on your computer that exposes WordPress database/REST API actions as tools directly into your AI client (Antigravity/Claude Desktop).
-*   **Pros:** Fits neatly inside your chat. You can say: *"Suggest a topic and post it to my site"* and the AI runs the tools directly in real-time.
-*   **Cons:** **Highly unsuitable for fully automated workflows.** MCP servers are stateless, run locally, and rely on the AI client being open with active user prompts. They cannot run background cron jobs, manage database states of competitor research over weeks, run queues, or execute automated workflows overnight.
-
-### Option B: Standalone Web App (Next.js + DB)
-*   **How it works:** A server-side application (like your `wpmgmt_app`) that has a dashboard, database (Supabase), and background workers (cron).
-*   **Pros:** 
-    *   **Background Jobs:** Can run automated tasks (e.g., scrape competitors daily, run LLM pipelines to generate ideas).
-    *   **Queuing / States:** Stores suggested topics in a queue for your review.
-    *   **Human-in-the-Loop:** A premium dashboard where you review suggested topics, edit the AI-generated drafts, inspect generated images, and click "Approve & Publish".
-    *   **Multi-Site Management:** Easily manages multiple sites, API credentials, and scheduling tables.
-*   **Cons:** Not directly accessible as a tool inside your code editor's chat client.
-
-### Option C: The Hybrid Approach (Recommended)
-Build a **Standalone Dashboard Web App** (Next.js + DB) as the orchestrator, and expose an **MCP Interface** from it.
-*   The Next.js app handles the heavy lifting: database, background research, content queues, and image hosting.
-*   The app exposes a secure REST API for its functions.
-*   We create a lightweight **MCP Server** that connects to your Next.js orchestrator. When you are chatting with Antigravity, you can run tools like `wpconnect_get_ideas` or `wpconnect_publish_draft` which trigger the background pipelines in your Next.js app.
+### Step 3: Link Your WordPress Sites (Run per Site)
+From the WordPress settings screen (**Settings -> wpConnect**), generate a connection token. Copy the linking command and execute it in your terminal:
+```bash
+node /Users/stefanhz/Documents/aiSpace/wpConnect/wpconnect-mcp/index.js add-site --site "https://2morrow.ai" --token "wpconnect_tk_your_token"
+```
+This saves the credentials securely into your local config file (`~/.wpconnect.json`). 
 
 ---
 
-## 4. Proposed Development Path
+## 2. Using the MCP Tools
 
-1.  **wpConnect Agent Plugin**: A lightweight, standalone WordPress plugin that registers secure custom REST and Admin-AJAX routes, authenticating requests via API keys or cryptographic signatures.
-2.  **Next.js Orchestrator (or extending `wpmgmt_app`)**:
-    *   Since you already have `wpmgmt_app` which uses a Custom Agent (`wpmgmt-agent.php`) and has a Supabase backend with Ed25519 verification, we can evaluate if we should build on top of that architecture or create a clean, dedicated Next.js/Supabase project in `/Users/stefanhz/Documents/aiSpace/wpConnect`.
-3.  **Research & Content Pipelines**: Integrate Gemini/Claude API for research, topic suggestions, and copywriting, and Imagen/DALL-E for image generation.
+Once setup is complete, the AI client will automatically discover the following tools in the background. You can target specific sites using the optional `site` parameter.
+
+### List of Tools
+*   `wpconnect_get_posts` — Retrieves titles, contents, URLs, and IDs of existing posts.
+*   `wpconnect_create_post` — Creates a new post draft or publishes it immediately.
+*   `wpconnect_update_post` — Updates an existing post (essential for injecting internal SEO links).
+*   `wpconnect_upload_media` — Uploads featured or inline images/graphs to your media library.
+*   `wpconnect_list_tags` — Lists all active tags on the site.
+*   `wpconnect_list_categories` — Lists all active categories on the site.
+
+### Prompt Examples
+*   **Query Default Site:** *"Show me the latest 5 posts using wpConnect."*
+*   **Query Specific Site:** *"List the active categories on myblog.com using wpConnect."*
+*   **Cross-site Workflow:** *"Read the tags list on 2morrow.ai, write an article draft on 2morrow.ai, and assign 3 of those tags to it."*
+
+---
+
+## 3. IDE Configurations
+
+### Cursor IDE Setup
+Add the following JSON block to your Cursor MCP settings (Settings -> Features -> MCP):
+```json
+{
+  "mcpServers": {
+    "wpconnect": {
+      "command": "node",
+      "args": [
+        "/Users/stefanhz/Documents/aiSpace/wpConnect/wpconnect-mcp/index.js"
+      ]
+    }
+  }
+}
+```
+*Note: After adding the config in Cursor, you must run the **Step 3 (Link Site)** terminal command once to link each website's credentials.*
+
+### Claude Desktop Setup
+If you prefer configuring Claude Desktop manually, add the following to `claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "wpconnect": {
+      "command": "node",
+      "args": [
+        "/Users/stefanhz/Documents/aiSpace/wpConnect/wpconnect-mcp/index.js"
+      ]
+    }
+  }
+}
+```
+
+---
+
+## 4. Public Release Setup (SaaS Flow)
+
+Once `wpconnect-mcp` is published to the public npm registry, the commands will simplify for regular users:
+
+1. **Register Server (Once):**
+   ```bash
+   claude mcp add wpconnect npx -y wpconnect-mcp
+   ```
+2. **Link Site (Per Site):**
+   ```bash
+   npx -y wpconnect-mcp add-site --site "https://domain.com" --token "wpconnect_tk_..."
+   ```
+3. **Central Handshake:** Users can optionally go to `https://connectmwp.com` (deployed in `/connectmwp-server`) to complete the oauth connection flow automatically.
