@@ -11,245 +11,70 @@ interface ClientPageProps {
 }
 
 export default function ClientPage({ faqs }: ClientPageProps) {
-  const [siteUrl, setSiteUrl] = useState('');
-  const [error, setError] = useState('');
-  const [warning, setWarning] = useState('');
-  const [touched, setTouched] = useState(false);
   const [openFaq, setOpenFaq] = useState<number | null>(null);
-  const [isVerifying, setIsVerifying] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [adminPath, setAdminPath] = useState('/wp-admin');
+  const [copiedCmd, setCopiedCmd] = useState(false);
 
-  const isValidSiteUrl = (val: string): boolean => {
-    const clean = val.trim();
-    if (!clean) return false;
-    
-    // Explicitly reject email addresses
-    if (clean.includes('@')) return false;
+  const pairingCmd = 'npx -y connectmwp-mcp@latest add-site --enroll "<your_site_url>|<pairing_code>"';
 
-    let urlStr = clean;
-    if (!/^https?:\/\//i.test(urlStr)) {
-      urlStr = 'https://' + urlStr;
-    }
-    try {
-      const url = new URL(urlStr);
-      const hostname = url.hostname;
-      
-      // Prevent credentials URLs (e.g. stefan@sheinz.com parsed as user credentials)
-      if (url.username || url.password) {
-        return false;
-      }
-
-      if (!hostname.includes('.')) {
-        return hostname === 'localhost';
-      }
-      return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(hostname) || hostname === 'localhost';
-    } catch {
-      return false;
-    }
-  };
-
-  const handleBlur = () => {
-    setTouched(true);
-    const val = siteUrl.trim();
-    if (val && !/^https?:\/\//i.test(val) && !val.includes('@')) {
-      setSiteUrl('https://' + val);
-    }
-  };
-
-  const isValid = isValidSiteUrl(siteUrl);
-
-  const displayError = (touched && siteUrl.trim() !== '' && !isValid)
-    ? 'Please enter a valid website URL (e.g., mywebsite.com).'
-    : error;
-
-  const handleConnect = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setTouched(true);
-    setError('');
-    setWarning('');
-
-    if (!isValid) {
-      return;
-    }
-
-    setIsVerifying(true);
-
-    try {
-      // Validate and clean URL
-      const cleanUrl = siteUrl.trim();
-      let resolvedUrl = cleanUrl;
-      let isHardError = false;
-      let warningMsg = '';
-
-      try {
-        const response = await fetch(`/api/verify-site?url=${encodeURIComponent(cleanUrl)}`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data.url) {
-            resolvedUrl = data.url;
-            setSiteUrl(resolvedUrl); // Dynamically update the input value so the user sees the verified protocol
-          }
-          if (data.status === 'WARNING') {
-            if (data.warning === 'DNS_FAILURE') {
-              isHardError = true;
-              setError(data.message || 'DNS resolution failed.');
-            } else {
-              warningMsg = data.message + ' Attempting to connect anyway...';
-              setWarning(warningMsg);
-            }
-          }
-        }
-      } catch (verifyErr) {
-        console.warn('Protocol verification failed, falling back:', verifyErr);
-      }
-
-      if (isHardError) {
-        setIsVerifying(false);
-        return;
-      }
-
-      // If we have a soft warning, pause for 1.5s so the user can read the notice
-      if (warningMsg) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-      }
-
-      // Final fallback if verification completely failed to add a protocol
-      if (!/^https?:\/\//i.test(resolvedUrl)) {
-        resolvedUrl = 'https://' + resolvedUrl;
-        setSiteUrl(resolvedUrl);
-      }
-      
-      const parsedUrl = new URL(resolvedUrl);
-      const origin = parsedUrl.origin;
-
-      // Clean and normalize custom admin path
-      let cleanPath = adminPath.trim();
-      if (!cleanPath.startsWith('/')) {
-        cleanPath = '/' + cleanPath;
-      }
-      if (cleanPath.endsWith('/')) {
-        cleanPath = cleanPath.slice(0, -1);
-      }
-      if (!cleanPath || cleanPath === '/') {
-        cleanPath = '/wp-admin';
-      }
-
-      // Redirect to WordPress OAuth authorize endpoint
-      const callbackUrl = `${window.location.origin}/callback`;
-      const state = Math.random().toString(36).substring(2, 15);
-      
-      const authUrl = `${origin}${cleanPath}/admin.php?page=connectmwp-auth&callback=${encodeURIComponent(callbackUrl)}&state=${state}`;
-      
-      window.location.href = authUrl;
-    } catch {
-      setError('Failed to connect. Please check the URL.');
-      setIsVerifying(false);
-    }
+  const handleCopyCmd = () => {
+    navigator.clipboard.writeText(pairingCmd);
+    setCopiedCmd(true);
+    setTimeout(() => setCopiedCmd(false), 2000);
   };
 
   return (
     <div className="app-container">
       {/* Main Container Card */}
-      <div className="card-container">
-        <div className="logo-badge">
-          MWP
+      <div className="card-container" style={{ textAlign: 'left' }}>
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '8px' }}>
+          <div className="logo-badge" style={{ marginBottom: 0 }}>
+            MWP
+          </div>
         </div>
 
-        {/* Development Warning Notice */}
-        <div>
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
           <div className="dev-badge">
             <span>⚠️</span> Active Development — Use at your own risk
           </div>
         </div>
 
-        <h1 className="card-title">
+        <h1 className="card-title" style={{ textAlign: 'center', display: 'block', margin: '0 auto 16px auto' }}>
           Connect My WordPress
         </h1>
 
-        <p className="card-desc">
-          Bridge your local AI clients (Claude Cowork, Cursor, etc.) directly to your WordPress sites. Secure, 100% private, and serverless.
+        <p className="card-desc" style={{ textAlign: 'center', marginBottom: '24px' }}>
+          Bridge your local AI clients (Claude Desktop, Cursor, etc.) directly to your WordPress sites. Secure, 100% private, and session-less.
         </p>
 
-        <p className="download-banner">
-          First time? Download the <a href="/connectmwp-agent.zip" download>WordPress Agent Plugin (ZIP)</a> and activate it on your site.
-        </p>
+        <div className="download-banner" style={{ textAlign: 'center', marginBottom: '28px' }}>
+          ⚡ <strong>Step 1:</strong> Download the <a href="/connectmwp-agent.zip" download>WordPress Agent Plugin (ZIP)</a> and activate it on your WordPress site.
+        </div>
 
-        <form onSubmit={handleConnect} style={{ width: '100%' }}>
-          <div className="input-group">
-            <label htmlFor="siteUrl" className="input-label">
-              WordPress Site URL
-            </label>
-            <input
-              id="siteUrl"
-              type="text"
-              placeholder="e.g. https://mywebsite.com"
-              value={siteUrl}
-              onBlur={handleBlur}
-              onChange={(e) => {
-                setSiteUrl(e.target.value);
-                if (e.target.value.trim() === '') {
-                  setTouched(false);
-                }
-              }}
-              className="input-field"
-            />
-            {displayError && (
-              <p className="error-text">
-                {displayError}
-              </p>
-            )}
-            {warning && (
-              <p className="warning-text">
-                ⚠️ {warning}
-              </p>
-            )}
-            <p className="tip-text">
-              💡 <strong>Tip:</strong> Log in to your WordPress dashboard in this browser tab first to ensure a smooth redirection.
-            </p>
+        <h3 style={{ fontSize: '15px', fontWeight: '700', color: '#ffffff', marginBottom: '12px' }}>
+          🚀 Quick Setup &amp; Pairing Guide
+        </h3>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', fontSize: '14px', color: '#a1a1aa', lineHeight: '1.5' }}>
+          <div>
+            <strong style={{ color: '#ffffff' }}>1. Install the Plugin:</strong> Upload and activate the downloaded ZIP file in your WordPress dashboard under <em>Plugins → Add New</em>.
           </div>
-
-          {/* Advanced Settings Toggle & Panel */}
-          <div className="advanced-group">
-            <button
-              type="button"
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className="advanced-toggle"
-            >
-              <span className={`advanced-arrow ${showAdvanced ? 'open' : ''}`}>
-                ▶
-              </span>
-              Advanced Settings
-            </button>
-
-            {showAdvanced && (
-              <div className="advanced-panel">
-                <label htmlFor="adminPath" className="advanced-panel-label">
-                  Custom Admin Path
-                </label>
-                <input
-                  id="adminPath"
-                  type="text"
-                  placeholder="/wp-admin"
-                  value={adminPath}
-                  onChange={(e) => setAdminPath(e.target.value)}
-                  className="advanced-panel-input"
-                />
-                <p className="advanced-panel-desc">
-                  Change this if you use security plugins (like WPS Hide Login) that rename the admin path.
-                </p>
-              </div>
-            )}
+          <div>
+            <strong style={{ color: '#ffffff' }}>2. Generate a Pairing Code:</strong> Navigate to <em>Settings → connectMWP</em> in your WordPress dashboard and click <strong style={{ color: '#fbbf24' }}>Generate Pairing Code</strong>.
           </div>
-
-          <button 
-            type="submit" 
-            disabled={!isValid || isVerifying}
-            className="connect-btn"
-          >
-            {isVerifying ? 'Verifying site...' : 'Connect WordPress Site'}
-          </button>
-        </form>
+          <div>
+            <strong style={{ color: '#ffffff' }}>3. Run Local Setup:</strong> Copy the enrollment string generated on your site, and run the following pairing command in your local terminal:
+            <div className="code-block-container" style={{ marginTop: '8px', paddingRight: '80px', background: 'rgba(0,0,0,0.5)', border: '1px solid rgba(255,255,255,0.08)' }}>
+              {pairingCmd}
+              <button
+                onClick={handleCopyCmd}
+                className={`copy-btn ${copiedCmd ? 'copied' : ''}`}
+                style={{ right: '8px' }}
+              >
+                {copiedCmd ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* FAQ Accordion Card */}
@@ -295,7 +120,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
           Brought to you by <a href="https://2morrow.ai" target="_blank" rel="noopener noreferrer">2morrow.ai</a>
         </div>
         <div className="footer-version">
-          connectMWP Client v1.2.5
+          connectMWP Client v2.0.0
         </div>
       </footer>
     </div>
