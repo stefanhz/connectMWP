@@ -4,6 +4,14 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-27 — v2.0.6
+
+### Fixed
+- **connectmwp-agent — supported standard link and url fields in post retrieval.** Modified `get_posts_handler` and `get_post_handler` to return the post permalink for both `link` and `url` field requests. This ensures compatibility with AI clients requesting standard REST `link` fields for internal-linking workflow tasks.
+
+### Chore
+- Bumped versions of all components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) to `2.0.6`.
+
 ## 2026-05-27 — v2.0.5
 
 ### Fixed

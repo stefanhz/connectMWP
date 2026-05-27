@@ -120,7 +120,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
           Brought to you by <a href="https://2morrow.ai" target="_blank" rel="noopener noreferrer">2morrow.ai</a>
         </div>
         <div className="footer-version">
-          connectMWP Client v2.0.5
+          connectMWP Client v2.0.6
         </div>
       </footer>
     </div>

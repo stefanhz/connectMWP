@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.5
+ * Version: 2.0.6
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -13,7 +13,7 @@ defined('ABSPATH') || exit;
 
 class ConnectMWP_Agent {
 
-    const VERSION = '2.0.5';
+    const VERSION = '2.0.6';
     const OPTION_TOKENS = 'connectmwp_agent_tokens';
     const OPTION_NONCES = 'connectmwp_agent_nonces';
     const API_NAMESPACE = 'connectmwp/v1';
@@ -477,7 +477,7 @@ class ConnectMWP_Agent {
         if ($fields_param) {
             $requested_fields = array_map('trim', explode(',', strtolower($fields_param)));
         } else {
-            $requested_fields = ['id', 'title', 'url', 'status', 'date'];
+            $requested_fields = ['id', 'title', 'url', 'link', 'status', 'date'];
         }
         
         $query_args = [
@@ -502,8 +502,9 @@ class ConnectMWP_Agent {
             if (in_array('title', $requested_fields, true)) {
                 $post_item['title'] = $post->post_title;
             }
-            if (in_array('url', $requested_fields, true)) {
+            if (in_array('url', $requested_fields, true) || in_array('link', $requested_fields, true)) {
                 $post_item['url'] = get_permalink($post->ID);
+                $post_item['link'] = get_permalink($post->ID);
             }
             if (in_array('status', $requested_fields, true)) {
                 $post_item['status'] = $post->post_status;
@@ -538,7 +539,7 @@ class ConnectMWP_Agent {
         if ($fields_param) {
             $requested_fields = array_map('trim', explode(',', strtolower($fields_param)));
         } else {
-            $requested_fields = ['id', 'title', 'url', 'status', 'date', 'content'];
+            $requested_fields = ['id', 'title', 'url', 'link', 'status', 'date', 'content'];
         }
 
         $post_item = [];
@@ -548,8 +549,9 @@ class ConnectMWP_Agent {
         if (in_array('title', $requested_fields, true)) {
             $post_item['title'] = $post->post_title;
         }
-        if (in_array('url', $requested_fields, true)) {
+        if (in_array('url', $requested_fields, true) || in_array('link', $requested_fields, true)) {
             $post_item['url'] = get_permalink($post->ID);
+            $post_item['link'] = get_permalink($post->ID);
         }
         if (in_array('status', $requested_fields, true)) {
             $post_item['status'] = $post->post_status;
