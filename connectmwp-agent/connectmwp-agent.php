@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 1.2.4
+ * Version: 1.2.5
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -664,6 +664,59 @@ class ConnectMWP_Agent {
         }
 
         ?>
+        <script>
+        function showConnectMWPToast(button, message) {
+            let toast = document.getElementById('connectmwp-global-toast');
+            if (!toast) {
+                toast = document.createElement('div');
+                toast.id = 'connectmwp-global-toast';
+                toast.style.position = 'absolute';
+                toast.style.padding = '6px 12px';
+                toast.style.borderRadius = '6px';
+                toast.style.fontSize = '12px';
+                toast.style.fontWeight = '600';
+                toast.style.color = '#fff';
+                toast.style.background = '#2e7d32'; // Forest green
+                toast.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
+                toast.style.pointerEvents = 'none';
+                toast.style.transition = 'opacity 0.2s ease-in-out';
+                toast.style.zIndex = '99999';
+                document.body.appendChild(toast);
+            }
+            
+            toast.textContent = '✓ ' + message;
+            toast.style.opacity = '0';
+            toast.style.display = 'block';
+            
+            const rect = button.getBoundingClientRect();
+            const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+            const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+            
+            // Force rendering to measure height and width accurately
+            const height = toast.offsetHeight || 28;
+            const width = toast.offsetWidth || 120;
+            toast.style.top = (rect.top + scrollTop - height - 8) + 'px';
+            toast.style.left = (rect.left + scrollLeft + (rect.width / 2) - (width / 2)) + 'px';
+            
+            // Fade in
+            setTimeout(() => {
+                toast.style.opacity = '1';
+            }, 10);
+            
+            if (window.connectMWPToastTimer) {
+                clearTimeout(window.connectMWPToastTimer);
+            }
+            
+            window.connectMWPToastTimer = setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => {
+                    if (toast.style.opacity === '0') {
+                        toast.style.display = 'none';
+                    }
+                }, 200);
+            }, 10000);
+        }
+        </script>
         <div class="wrap" style="max-width: 900px; margin: 20px auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen-Sans, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;">
             
             <!-- Header Banner with subtle gradient -->
@@ -673,7 +726,7 @@ class ConnectMWP_Agent {
                 <div style="position: absolute; right: 50px; bottom: -80px; width: 150px; height: 150px; border-radius: 50%; background: rgba(255,255,255,0.03);"></div>
                 
                 <h1 style="color: #fff; margin: 0 0 8px 0; font-size: 28px; font-weight: 700; display: flex; align-items: center; gap: 10px;">
-                    <span style="font-size: 32px;">🔌</span> connectMWP Agent <span style="font-size: 13px; font-weight: 400; opacity: 0.8; background: rgba(255,255,255,0.15); padding: 3px 10px; border-radius: 20px; vertical-align: middle;">v1.2.4</span>
+                    <span style="font-size: 32px;">🔌</span> connectMWP Agent <span style="font-size: 13px; font-weight: 400; opacity: 0.8; background: rgba(255,255,255,0.15); padding: 3px 10px; border-radius: 20px; vertical-align: middle;">v1.2.5</span>
                 </h1>
                 <p style="margin: 0; font-size: 16px; opacity: 0.9; line-height: 1.4;">
                     Secure, direct connection bridge between your local AI platforms (Claude Desktop, Cursor, etc.) and this WordPress site.
@@ -717,7 +770,7 @@ class ConnectMWP_Agent {
                         <div style="font-size: 12px; font-weight: 600; text-transform: uppercase; color: #7f8c8d; margin-bottom: 5px;">Connection Token</div>
                         <div style="display: flex; align-items: center; gap: 10px;">
                             <code style="font-family: monospace; font-size: 15px; background: #eef1f6; padding: 6px 12px; border-radius: 4px; color: #2c3e50; font-weight: 600; word-break: break-all; width: 100%; border: 1px solid #d5dbdb;"><?php echo esc_html($raw_token); ?></code>
-                            <button type="button" class="button" onclick="navigator.clipboard.writeText('<?php echo esc_js($raw_token); ?>').then(() => alert('Token copied!'))" style="white-space: nowrap; height: 35px;">Copy Token</button>
+                            <button type="button" class="button" onclick="navigator.clipboard.writeText('<?php echo esc_js($raw_token); ?>').then(() => showConnectMWPToast(this, 'Token copied!'))" style="white-space: nowrap; height: 35px;">Copy Token</button>
                         </div>
                     </div>
 
@@ -746,7 +799,7 @@ class ConnectMWP_Agent {
 
                         <div style="display: flex; gap: 10px; align-items: stretch;">
                             <textarea readonly style="font-family: monospace; font-size: 12px; background: #2c3e50; color: #ecf0f1; padding: 12px; border-radius: 6px; border: none; width: 100%; height: 60px; resize: none; line-height: 1.4; box-shadow: inset 0 2px 5px rgba(0,0,0,0.2);" id="claude-cmd-text"><?php echo esc_textarea($claude_cmd); ?></textarea>
-                            <button type="button" class="button button-primary" onclick="document.getElementById('claude-cmd-text').select(); document.execCommand('copy'); alert('CLI command copied!');" style="height: 60px; background: #34495e; border-color: #2c3e50; border-radius: 6px;">Copy Command</button>
+                            <button type="button" class="button button-primary" onclick="navigator.clipboard.writeText(document.getElementById('claude-cmd-text').value).then(() => showConnectMWPToast(this, 'CLI command copied!'))" style="height: 60px; background: #34495e; border-color: #2c3e50; border-radius: 6px;">Copy Command</button>
                         </div>
                     </div>
 
@@ -758,7 +811,7 @@ class ConnectMWP_Agent {
                         <p style="font-size: 12px; color: #7f8c8d; margin-top: 0; margin-bottom: 8px;">Run this command once in your terminal to save this site's credentials to your local config file.</p>
                         <div style="display: flex; gap: 10px; align-items: stretch;">
                             <textarea readonly style="font-family: monospace; font-size: 12px; background: #2c3e50; color: #ecf0f1; padding: 12px; border-radius: 6px; border: none; width: 100%; height: 60px; resize: none; line-height: 1.4; box-shadow: inset 0 2px 5px rgba(0,0,0,0.2);" id="claude-add-site-text"><?php echo esc_textarea($add_site_cmd); ?></textarea>
-                            <button type="button" class="button button-primary" onclick="document.getElementById('claude-add-site-text').select(); document.execCommand('copy'); alert('Site linking command copied!');" style="height: 60px; background: #34495e; border-color: #2c3e50; border-radius: 6px;">Copy Command</button>
+                            <button type="button" class="button button-primary" onclick="navigator.clipboard.writeText(document.getElementById('claude-add-site-text').value).then(() => showConnectMWPToast(this, 'Site linking command copied!'))" style="height: 60px; background: #34495e; border-color: #2c3e50; border-radius: 6px;">Copy Command</button>
                         </div>
                     </div>
 
@@ -782,7 +835,7 @@ class ConnectMWP_Agent {
                         </div>
                         <div style="position: relative; margin-bottom: 8px;">
                             <pre style="margin: 0; background: #2c3e50; color: #ecf0f1; padding: 15px; border-radius: 6px; font-family: monospace; font-size: 12px; line-height: 1.4; overflow-x: auto; box-shadow: inset 0 2px 5px rgba(0,0,0,0.2);"><code id="cursor-config-code"><?php echo esc_html($cursor_config); ?></code></pre>
-                            <button type="button" class="button" onclick="const code = document.getElementById('cursor-config-code').innerText; navigator.clipboard.writeText(code).then(() => alert('Cursor Config JSON copied!'))" style="position: absolute; top: 10px; right: 10px; background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.2); color: #fff; text-shadow: none;">Copy JSON</button>
+                            <button type="button" class="button" onclick="const code = document.getElementById('cursor-config-code').innerText; navigator.clipboard.writeText(code).then(() => showConnectMWPToast(this, 'Cursor Config JSON copied!'))" style="position: absolute; top: 10px; right: 10px; background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.2); color: #fff; text-shadow: none;">Copy JSON</button>
                         </div>
                         <p style="font-size: 12px; color: #7f8c8d; margin: 0;">*Note: After adding the Cursor config, you must run the **Step 2** terminal command once to link this site's credentials.*</p>
                     </div>
