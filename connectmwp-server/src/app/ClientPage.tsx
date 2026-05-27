@@ -74,12 +74,12 @@ export default function ClientPage({ faqs }: ClientPageProps) {
         <div style={{
           display: 'inline-flex',
           padding: '12px',
-          background: 'linear-gradient(135deg, #6366f1 0%, #a855f7 100%)',
+          background: 'linear-gradient(135deg, #f97316 0%, #f59e0b 100%)',
           borderRadius: '12px',
           marginBottom: '24px',
           fontWeight: 'bold',
           fontSize: '22px',
-          boxShadow: '0 8px 20px rgba(99, 102, 241, 0.3)'
+          boxShadow: '0 8px 20px rgba(249, 115, 22, 0.3)'
         }}>
           MWP
         </div>
@@ -175,14 +175,14 @@ export default function ClientPage({ faqs }: ClientPageProps) {
           <button type="submit" style={{
             width: '100%',
             padding: '14px',
-            background: 'linear-gradient(135deg, #6366f1 0%, #a855f7 100%)',
+            background: 'linear-gradient(135deg, #f97316 0%, #f59e0b 100%)',
             border: 'none',
             borderRadius: '8px',
             color: '#ffffff',
             fontWeight: '600',
             fontSize: '15px',
             cursor: 'pointer',
-            boxShadow: '0 4px 12px rgba(99, 102, 241, 0.2)',
+            boxShadow: '0 4px 12px rgba(249, 115, 22, 0.2)',
             transition: 'opacity 0.2s'
           }}>
             Connect WordPress Site
@@ -239,7 +239,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
             >
               <span>{item.q}</span>
               <span style={{
-                color: '#818cf8',
+                color: '#fbbf24',
                 transform: openFaq === index ? 'rotate(180deg)' : 'rotate(0deg)',
                 transition: 'transform 0.2s',
                 fontSize: '10px'
@@ -290,7 +290,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
           <a href="https://buy.stripe.com/aFa8wQ0rH2PQ4Msama5kk0l" target="_blank" rel="noopener noreferrer" style={{ color: '#fbbf24', textDecoration: 'none', fontWeight: '600' }}>☕ Buy me a coffee</a>
         </div>
         <div style={{ marginBottom: '15px' }}>
-          Brought to you by <a href="https://2morrow.ai" target="_blank" rel="noopener noreferrer" style={{ color: '#818cf8', textDecoration: 'none' }}>2morrow.ai</a>
+          Brought to you by <a href="https://2morrow.ai" target="_blank" rel="noopener noreferrer" style={{ color: '#fbbf24', textDecoration: 'none' }}>2morrow.ai</a>
         </div>
         <div style={{ fontSize: '11px', opacity: 0.6 }}>
           connectMWP Client v1.2.3

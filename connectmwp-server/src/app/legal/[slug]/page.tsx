@@ -136,11 +136,11 @@ export default async function LegalPage({ params }: PageProps) {
           </Link>
           <div style={{
             padding: '6px 12px',
-            background: 'linear-gradient(135deg, #6366f1 0%, #a855f7 100%)',
+            background: 'linear-gradient(135deg, #f97316 0%, #f59e0b 100%)',
             borderRadius: '6px',
             fontSize: '12px',
             fontWeight: 'bold',
-            boxShadow: '0 4px 10px rgba(99, 102, 241, 0.2)'
+            boxShadow: '0 4px 10px rgba(249, 115, 22, 0.2)'
           }}>
             connectMWP v1.2.3
           </div>
@@ -189,9 +189,9 @@ export default async function LegalPage({ params }: PageProps) {
           color: #ffffff;
         }
         .legal-content a {
-          color: #818cf8;
+          color: #fbbf24;
           text-decoration: none;
-          border-bottom: 1px dashed rgba(129, 140, 248, 0.4);
+          border-bottom: 1px dashed rgba(251, 191, 36, 0.4);
           transition: border-color 0.2s;
         }
         .legal-content a:hover {
