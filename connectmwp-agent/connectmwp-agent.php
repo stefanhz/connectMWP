@@ -887,7 +887,7 @@ class ConnectMWP_Agent {
         if (isset($_POST['connectmwp_action']) && $_POST['connectmwp_action'] === 'generate_pairing') {
             check_admin_referer('connectmwp_generate_pairing');
             $code = $this->generate_enrollment_code();
-            $enrollment_string = esc_url(home_url()) . '|' . $code;
+            $enrollment_string = esc_url(home_url()) . ',' . $code;
         }
 
         $all_keys = get_option('connectmwp_keys', []);
@@ -1058,6 +1058,50 @@ class ConnectMWP_Agent {
                             </tbody>
                         </table>
                     <?php endif; ?>
+                </div>
+
+                <!-- Card: IDE Configuration -->
+                <div style="background: #fff; border: 1px solid #e1e8ed; border-radius: 12px; padding: 25px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.02); margin-top: 25px;">
+                    <h2 style="margin-top: 0; margin-bottom: 15px; font-size: 18px; font-weight: 600; color: #2c3e50; border-bottom: 1px solid #f0f3f4; padding-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                        <span>⚙️</span> IDE & Client Configuration (Cursor, Claude Desktop, etc.)
+                    </h2>
+                    <p style="font-size: 14px; color: #7f8c8d; line-height: 1.5; margin-bottom: 20px;">
+                        Once you pair this machine via the terminal pairing command above, the connection is established globally for your user profile. To register the MCP server in your IDE, add the following configuration block to your settings file.
+                    </p>
+                    
+                    <div style="margin-bottom: 20px;">
+                        <div style="font-size: 13px; font-weight: 600; color: #2c3e50; margin-bottom: 8px;">
+                            📋 Cursor IDE Configuration (Settings -> Features -> MCP)
+                        </div>
+                        <pre style="background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; color: #2c3e50; overflow-x: auto; line-height: 1.4; margin: 0;">{
+  "mcpServers": {
+    "connectmwp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "connectmwp-mcp"
+      ]
+    }
+  }
+}</pre>
+                    </div>
+
+                    <div>
+                        <div style="font-size: 13px; font-weight: 600; color: #2c3e50; margin-bottom: 8px;">
+                            📋 Claude Desktop Configuration (claude_desktop_config.json)
+                        </div>
+                        <pre style="background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; color: #2c3e50; overflow-x: auto; line-height: 1.4; margin: 0;">{
+  "mcpServers": {
+    "connectmwp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "connectmwp-mcp"
+      ]
+    }
+  }
+}</pre>
+                    </div>
                 </div>
             </div>
             

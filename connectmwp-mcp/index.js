@@ -178,9 +178,9 @@ if (command === 'add-site') {
 
   if (enroll) {
     // New enrollment flow
-    const parts = enroll.split('|');
+    const parts = enroll.includes(',') ? enroll.split(',') : enroll.split('|');
     if (parts.length < 2) {
-      console.error('Error: Invalid enrollment string format. Must be "site_url|enrollment_code".');
+      console.error('Error: Invalid enrollment string format. Must be "site_url,enrollment_code" or "site_url|enrollment_code".');
       process.exit(1);
     }
     const siteUrl = normalizeSiteUrl(parts[0]);
