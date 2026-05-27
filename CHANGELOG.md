@@ -4,6 +4,17 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-27 — v2.0.2
+
+### Changed
+- **connectmwp-server — updated onboarding guide copy.** Replaced the obsolete pipe character (`|`) with a shell-safe comma (`,`) in the terminal command copy-block on the homepage to avoid command-line redirections.
+
+### Added
+- **connectmwp-server — system requirements and prerequisites FAQ.** Added new sections detailing the requirements (Node.js version, PHP libsodium extension, HTTPS SSL requirement) and instructions on verifying local Node/npm environments.
+
+### Chore
+- Bumped versions of all components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) to `2.0.2`.
+
 ## 2026-05-27 — v2.0.1
 
 ### Fixed

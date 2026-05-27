@@ -28,3 +28,32 @@ Yes! connectMWP supports multi-site configurations. You register the background 
 ## How much does connectMWP cost?
 
 connectMWP is **100% free and open source**. There are no monthly subscriptions, no usage tiers, and no central API proxy costs. Since your AI client communicates directly with your own WordPress server, you never pay middleware fees.
+
+## What are the system requirements and prerequisites?
+
+To run the connectMWP local client and connect it to your WordPress site, you need the following:
+
+1. **Node.js (v18 or higher)**: The local MCP client is written in Node.js and run using the `npx` package runner. You must have Node.js installed on your computer.
+2. **An MCP-compatible AI client**: 
+   - **Claude Desktop** (macOS or Windows)
+   - **Cursor IDE**
+   - **VS Code** (with MCP plugins like Cline or Roo Code)
+3. **WordPress Site Requirements**: 
+   - PHP version 7.2 or higher.
+   - The PHP **libsodium** extension enabled (most modern hosts enable this by default for core WordPress security features).
+   - An active SSL certificate (HTTPS is strictly enforced for safety).
+
+*Note: You do not need to install Next.js or build the Next.js website locally. Next.js is only used to run this public guide website; the local client runs purely on lightweight, native Node.js.*
+
+## How do I check if Node.js is installed and get it set up?
+
+Open your computer's terminal (Terminal on macOS, or Command Prompt/PowerShell on Windows) and run:
+```bash
+node -v
+npm -v
+```
+If these commands print version numbers (e.g., `v18.x.x` or higher), you are ready. 
+
+If they print "command not found" or similar errors:
+1. Download the **LTS (Long Term Support)** version of Node.js from the official [Node.js Website](https://nodejs.org/) and run the installer.
+2. Restart your terminal window and run the commands again to verify the installation.

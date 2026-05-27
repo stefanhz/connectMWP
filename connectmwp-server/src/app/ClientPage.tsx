@@ -14,7 +14,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
   const [openFaq, setOpenFaq] = useState<number | null>(null);
   const [copiedCmd, setCopiedCmd] = useState(false);
 
-  const pairingCmd = 'npx -y connectmwp-mcp@latest add-site --enroll "<your_site_url>|<pairing_code>"';
+  const pairingCmd = 'npx -y connectmwp-mcp@latest add-site --enroll "<your_site_url>,<pairing_code>"';
 
   const handleCopyCmd = () => {
     navigator.clipboard.writeText(pairingCmd);
@@ -120,7 +120,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
           Brought to you by <a href="https://2morrow.ai" target="_blank" rel="noopener noreferrer">2morrow.ai</a>
         </div>
         <div className="footer-version">
-          connectMWP Client v2.0.0
+          connectMWP Client v2.0.2
         </div>
       </footer>
     </div>
