@@ -4,6 +4,11 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-27 — connectmwp-agent 1.2.4
+
+### Chore
+- **Bump version to 1.2.4.** Updated plugin version headers and dashboard elements to 1.2.4, aligning with the rebranding updates and security remediation fixes made earlier. Re-packaged the WordPress agent plugin.
+
 ## 2026-05-27 — connectmwp-mcp 1.2.5, connectmwp-server 1.2.5
 
 ### Fixed
