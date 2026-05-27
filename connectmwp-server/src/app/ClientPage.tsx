@@ -13,14 +13,39 @@ interface ClientPageProps {
 export default function ClientPage({ faqs }: ClientPageProps) {
   const [siteUrl, setSiteUrl] = useState('');
   const [error, setError] = useState('');
+  const [touched, setTouched] = useState(false);
   const [openFaq, setOpenFaq] = useState<number | null>(null);
+
+  const isValidSiteUrl = (val: string): boolean => {
+    let urlStr = val.trim();
+    if (!urlStr) return false;
+    if (!/^https?:\/\//i.test(urlStr)) {
+      urlStr = 'https://' + urlStr;
+    }
+    try {
+      const url = new URL(urlStr);
+      const hostname = url.hostname;
+      if (!hostname.includes('.')) {
+        return hostname === 'localhost';
+      }
+      return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(hostname) || hostname === 'localhost';
+    } catch (e) {
+      return false;
+    }
+  };
+
+  const isValid = isValidSiteUrl(siteUrl);
+
+  const displayError = (touched && siteUrl.trim() !== '' && !isValid)
+    ? 'Please enter a valid website URL (e.g., mywebsite.com).'
+    : error;
 
   const handleConnect = (e: React.FormEvent) => {
     e.preventDefault();
+    setTouched(true);
     setError('');
 
-    if (!siteUrl) {
-      setError('Please enter your WordPress site URL.');
+    if (!isValid) {
       return;
     }
 
@@ -144,7 +169,13 @@ export default function ClientPage({ faqs }: ClientPageProps) {
               type="text"
               placeholder="e.g. https://mywebsite.com"
               value={siteUrl}
-              onChange={(e) => setSiteUrl(e.target.value)}
+              onBlur={() => setTouched(true)}
+              onChange={(e) => {
+                setSiteUrl(e.target.value);
+                if (e.target.value.trim() === '') {
+                  setTouched(false);
+                }
+              }}
               style={{
                 width: '100%',
                 padding: '14px 18px',
@@ -158,7 +189,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
                 boxSizing: 'border-box'
               }}
             />
-            {error && (
+            {displayError && (
               <p style={{
                 color: '#f87171',
                 fontSize: '13px',
@@ -167,24 +198,31 @@ export default function ClientPage({ faqs }: ClientPageProps) {
                 alignItems: 'center',
                 gap: '4px'
               }}>
-                {error}
+                {displayError}
               </p>
             )}
           </div>
 
-          <button type="submit" style={{
-            width: '100%',
-            padding: '14px',
-            background: 'linear-gradient(135deg, #f97316 0%, #f59e0b 100%)',
-            border: 'none',
-            borderRadius: '8px',
-            color: '#ffffff',
-            fontWeight: '600',
-            fontSize: '15px',
-            cursor: 'pointer',
-            boxShadow: '0 4px 12px rgba(249, 115, 22, 0.2)',
-            transition: 'opacity 0.2s'
-          }}>
+          <button 
+            type="submit" 
+            disabled={!isValid}
+            style={{
+              width: '100%',
+              padding: '14px',
+              background: isValid 
+                ? 'linear-gradient(135deg, #f97316 0%, #f59e0b 100%)' 
+                : 'linear-gradient(135deg, #4b5563 0%, #374151 100%)',
+              border: 'none',
+              borderRadius: '8px',
+              color: isValid ? '#ffffff' : '#9ca3af',
+              fontWeight: '600',
+              fontSize: '15px',
+              cursor: isValid ? 'pointer' : 'not-allowed',
+              boxShadow: isValid ? '0 4px 12px rgba(249, 115, 22, 0.2)' : 'none',
+              opacity: isValid ? 1 : 0.4,
+              transition: 'all 0.2s ease'
+            }}
+          >
             Connect WordPress Site
           </button>
         </form>
