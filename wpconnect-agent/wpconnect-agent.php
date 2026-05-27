@@ -3,7 +3,7 @@
  * Plugin Name: wpConnect Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 1.1.3
+ * Version: 1.2.0
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -599,7 +599,8 @@ class WPConnect_Agent {
                 <?php
                 $site_url = $new_token_data['site_url'];
                 $raw_token = $new_token_data['raw_token'];
-                $claude_cmd = 'claude mcp add wpconnect npx -y wpconnect-mcp --site "' . $site_url . '" --token "' . $raw_token . '"';
+                $claude_cmd = 'claude mcp add wpconnect npx -y wpconnect-mcp';
+                $add_site_cmd = 'npx -y wpconnect-mcp add-site --site "' . $site_url . '" --token "' . $raw_token . '"';
                 
                 $cursor_config = json_encode([
                     'mcpServers' => [
@@ -607,11 +608,7 @@ class WPConnect_Agent {
                             'command' => 'npx',
                             'args' => [
                                 '-y',
-                                'wpconnect-mcp',
-                                '--site',
-                                $site_url,
-                                '--token',
-                                $raw_token
+                                'wpconnect-mcp'
                             ]
                         ]
                     ]
@@ -623,12 +620,13 @@ class WPConnect_Agent {
                     </div>
                     
                     <h3 style="color: #c0392b; margin: 0 0 12px 0; font-size: 18px; font-weight: 700; display: flex; align-items: center; gap: 8px;">
-                        ⚠️ Security Alert: Copy Your Connection Details Now
+                        ⚠️ Security Alert: Copy Connection Credentials Now
                     </h3>
                     <p style="font-size: 14px; color: #555; line-height: 1.5; margin-bottom: 20px;">
                         For your security, this raw connection token is stored in the database as a SHA-256 hash. <strong>It cannot be displayed again.</strong> Please copy the configuration below now.
                     </p>
                     
+                    <!-- Token -->
                     <div style="background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
                         <div style="font-size: 12px; font-weight: 600; text-transform: uppercase; color: #7f8c8d; margin-bottom: 5px;">Connection Token</div>
                         <div style="display: flex; align-items: center; gap: 10px;">
@@ -637,13 +635,14 @@ class WPConnect_Agent {
                         </div>
                     </div>
 
+                    <!-- Step 1: Register Server -->
                     <div style="margin-bottom: 20px;">
                         <div style="font-size: 13px; font-weight: 600; color: #2c3e50; margin-bottom: 8px; display: flex; align-items: center; gap: 5px;">
-                            💻 Claude CLI setup command (Claude Code / Desktop)
+                            💻 Step 1: Register wpConnect in Claude (Run Once Globally)
                         </div>
                         
                         <!-- Interactive Scope Selector -->
-                        <div style="margin-bottom: 15px; display: flex; gap: 15px; align-items: center; background: #f8f9fa; padding: 10px 15px; border-radius: 6px; border: 1px solid #e9ecef;">
+                        <div style="margin-bottom: 12px; display: flex; gap: 15px; align-items: center; background: #f8f9fa; padding: 10px 15px; border-radius: 6px; border: 1px solid #e9ecef;">
                             <span style="font-size: 12px; font-weight: 600; text-transform: uppercase; color: #7f8c8d;">Command Scope:</span>
                             <label style="display: flex; align-items: center; gap: 5px; font-size: 13px; cursor: pointer; font-weight: 500; color: #2c3e50; margin: 0;">
                                 <input type="radio" name="claude_scope" value="local" checked onclick="updateClaudeScope('local')" style="margin: 0;" />
@@ -665,36 +664,52 @@ class WPConnect_Agent {
                         </div>
                     </div>
 
+                    <!-- Step 2: Link Site -->
+                    <div style="margin-bottom: 25px;">
+                        <div style="font-size: 13px; font-weight: 600; color: #2c3e50; margin-bottom: 8px;">
+                            🔗 Step 2: Link This WordPress Site (Run per WordPress Site)
+                        </div>
+                        <p style="font-size: 12px; color: #7f8c8d; margin-top: 0; margin-bottom: 8px;">Run this command once in your terminal to save this site's credentials to your local config file.</p>
+                        <div style="display: flex; gap: 10px; align-items: stretch;">
+                            <textarea readonly style="font-family: monospace; font-size: 12px; background: #2c3e50; color: #ecf0f1; padding: 12px; border-radius: 6px; border: none; width: 100%; height: 60px; resize: none; line-height: 1.4; box-shadow: inset 0 2px 5px rgba(0,0,0,0.2);" id="claude-add-site-text"><?php echo esc_textarea($add_site_cmd); ?></textarea>
+                            <button type="button" class="button button-primary" onclick="document.getElementById('claude-add-site-text').select(); document.execCommand('copy'); alert('Site linking command copied!');" style="height: 60px; background: #34495e; border-color: #2c3e50; border-radius: 6px;">Copy Command</button>
+                        </div>
+                    </div>
+
                     <script>
                     function updateClaudeScope(scope) {
-                        const siteUrl = "<?php echo esc_js($site_url); ?>";
-                        const rawToken = "<?php echo esc_js($raw_token); ?>";
                         let cmd = "claude mcp add ";
                         if (scope === "user") {
                             cmd += "--scope user ";
                         } else if (scope === "project") {
                             cmd += "--scope project ";
                         }
-                        cmd += 'wpconnect npx -y wpconnect-mcp --site "' + siteUrl + '" --token "' + rawToken + '"';
+                        cmd += 'wpconnect npx -y wpconnect-mcp';
                         document.getElementById('claude-cmd-text').value = cmd;
                     }
                     </script>
 
-                    <div>
+                    <!-- Cursor Config -->
+                    <div style="margin-bottom: 20px;">
                         <div style="font-size: 13px; font-weight: 600; color: #2c3e50; margin-bottom: 8px;">
                             🛠️ Cursor IDE / Alternative MCP Client Config (JSON)
                         </div>
-                        <div style="position: relative;">
+                        <div style="position: relative; margin-bottom: 8px;">
                             <pre style="margin: 0; background: #2c3e50; color: #ecf0f1; padding: 15px; border-radius: 6px; font-family: monospace; font-size: 12px; line-height: 1.4; overflow-x: auto; box-shadow: inset 0 2px 5px rgba(0,0,0,0.2);"><code id="cursor-config-code"><?php echo esc_html($cursor_config); ?></code></pre>
                             <button type="button" class="button" onclick="const code = document.getElementById('cursor-config-code').innerText; navigator.clipboard.writeText(code).then(() => alert('Cursor Config JSON copied!'))" style="position: absolute; top: 10px; right: 10px; background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.2); color: #fff; text-shadow: none;">Copy JSON</button>
                         </div>
+                        <p style="font-size: 12px; color: #7f8c8d; margin: 0;">*Note: After adding the Cursor config, you must run the **Step 2** terminal command once to link this site's credentials.*</p>
                     </div>
                     
-                    <div style="margin-top: 20px; font-size: 13px; color: #31708f; background: #d9edf7; border: 1px solid #bce8f1; border-radius: 6px; padding: 12px; line-height: 1.5; display: flex; align-items: flex-start; gap: 8px;">
+                    <!-- Dev Tip -->
+                    <div style="margin-top: 25px; font-size: 13px; color: #31708f; background: #d9edf7; border: 1px solid #bce8f1; border-radius: 6px; padding: 15px; line-height: 1.5; display: flex; align-items: flex-start; gap: 8px;">
                         <span style="font-size: 16px;">💡</span>
                         <div>
-                            <strong>Local Development Tip:</strong> Since <code>wpconnect-mcp</code> is not yet published to npm, <code>npx</code> cannot find it. 
-                            To run it locally during development, replace <code>npx -y wpconnect-mcp</code> in your command with <code>node /absolute/path/to/wpConnect/wpconnect-mcp/index.js</code> (and ensure you've run <code>npm install</code> in that directory first).
+                            <strong>Local Development Tip:</strong> Since <code>wpconnect-mcp</code> is not yet published to npm, use local path parameters:
+                            <ul style="margin: 5px 0 0 15px; padding: 0; list-style-type: disc;">
+                                <li><strong>Register Server (Step 1):</strong> Replace <code>npx -y wpconnect-mcp</code> with <code>node /Users/stefanhz/Documents/aiSpace/wpConnect/wpconnect-mcp/index.js</code></li>
+                                <li><strong>Link Site (Step 2):</strong> Replace <code>npx -y wpconnect-mcp</code> with <code>node /Users/stefanhz/Documents/aiSpace/wpConnect/wpconnect-mcp/index.js</code></li>
+                            </ul>
                         </div>
                     </div>
                 </div>
