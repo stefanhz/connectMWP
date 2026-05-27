@@ -7,9 +7,11 @@ connectMWP is a decentralized Model Context Protocol (MCP) server that links loc
 Yes. All requests and credentials bypass our servers entirely. The local MCP client communicates directly with your WordPress installation over HTTPS using custom authentication headers and cryptographic signatures. 
 
 Furthermore, **website owners have full, absolute control** at any point:
-- Access tokens are generated locally on your own WordPress site.
-- Tokens are stored in your WordPress database using secure one-way SHA-256 hashing. The raw token is displayed to you once and is never stored on the server.
-- You can revoke or delete any active connection token at any time from your WordPress settings page (**Settings -> connectMWP**), which immediately blocks all future access from that client.
+- Pairing is completed locally using a single-use enrollment code generated inside your WordPress settings page (**Settings -> connectMWP**).
+- The local MCP client generates a secure Ed25519 cryptographic keypair at pairing time and uploads only the **public key** to your site.
+- The **private key** never leaves your local machine, and no secret keys or passwords are stored in your WordPress database.
+- Every API call is verified using detached cryptographic signatures, preventing token interception or theft.
+- You can revoke or delete any paired client key at any time from your WordPress settings page, which immediately blocks all future access.
 
 ## Do I need to run a local server (like localhost)?
 
@@ -17,7 +19,7 @@ No. The MCP server runs via standard input/output (stdio) directly inside your A
 
 ## How does it handle edge caching and hosting WAFs?
 
-Standard WordPress API calls get blocked or cached by reverse proxies and web application firewalls (like SiteGround Security, Sucuri, Kinsta). connectMWP uses an early-hooked custom auth header and dynamic cache-busting queries to bypass these blocks cleanly.
+Standard WordPress API calls and sessions are often policed or blocked by WAFs, 2FA requirements, and edge proxies (like SiteGround Security, Sucuri, Kinsta, Cloudflare). connectMWP bypasses these issues by operating **session-less** (never logging in a user session or using cookies) and verifying request signatures directly. This prevents 2FA prompts from intercepting API calls and ensures compatibility with strict hosting policies.
 
 ## Can I manage multiple WordPress sites?
 

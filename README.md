@@ -1,10 +1,10 @@
-# connectMWP (connectmwp.com)
+# connectMWP
 
-**Current Release Version: v1.2.3**
+**Current Release Version: v2.0.0**
 
-connectMWP is a secure, decentralized bridge that connects local AI clients (such as Claude Desktop, Cursor, and Claude Code) directly to self-hosted WordPress websites to draft content, upload media, and manage posts directly from your workspace.
+connectMWP is a secure, decentralized Model Context Protocol (MCP) server that connects local AI clients (such as Claude Desktop, Cursor, and Claude Code) directly to self-hosted WordPress websites to draft content, upload media, and manage posts directly from your workspace.
 
-The architecture is **100% decentralized for daily operations**. All AI requests are executed directly from your local machine to your WordPress site over HTTPS, bypassing any central servers and carrying $0 proxy costs.
+The architecture is **100% decentralized and session-less**. AI requests are authenticated on a per-request basis using Ed25519 detached signatures over HTTPS, bypassing any central servers and carrying $0 proxy costs. This makes it completely immune to WAF blocks and WordPress login security/2FA plugin restrictions.
 
 ---
 
@@ -13,7 +13,7 @@ The architecture is **100% decentralized for daily operations**. All AI requests
 Because the npm package `connectmwp-mcp` is not yet published to the public registry, you must point your configurations to your local files. 
 
 ### Step 1: Install & Activate the WordPress Plugin
-1. Download the latest WordPress plugin zip from [connectmwp.com/connectmwp-agent.zip](https://connectmwp.com/connectmwp-agent.zip)
+1. Download the latest WordPress plugin zip from `connectmwp-agent.zip` (found in the root of this repo, or downloaded from the settings page of an active installation).
 2. Log into your WordPress site's admin dashboard (e.g. `https://2morrow.ai`).
 3. Go to **Plugins -> Add New -> Upload Plugin**, upload the ZIP, and click **Activate**.
 4. Go to **Settings -> connectMWP** in your WP sidebar.
@@ -25,12 +25,13 @@ claude mcp add connectmwp node /Users/stefanhz/Documents/aiSpace/connectMWP/conn
 ```
 *(To make the server available globally across all folders on your Mac, add the `--scope user` flag: `claude mcp add --scope user connectmwp node ...`)*
 
-### Step 3: Link Your WordPress Sites (Run per Site)
-From the WordPress settings screen (**Settings -> connectMWP**), generate a connection token. Copy the linking command and execute it in your terminal:
+### Step 3: Pair Your WordPress Sites (Run per Site)
+1. In the WordPress settings screen (**Settings -> connectMWP**), click **Generate Pairing Code**.
+2. Copy the generated pairing terminal command and execute it in your terminal. For local files, run:
 ```bash
-node /Users/stefanhz/Documents/aiSpace/connectMWP/connectmwp-mcp/index.js add-site --site "https://2morrow.ai" --token "connectmwp_tk_your_token"
+node /Users/stefanhz/Documents/aiSpace/connectMWP/connectmwp-mcp/index.js add-site --enroll "https://yourblog.com|pairing_code"
 ```
-This saves the credentials securely into your local config file (`~/.connectmwp.json`). 
+During this flow, your local client generates a secure Ed25519 keypair and uploads only the public key to your site. The private key remains secure on your machine (`~/.connectmwp/<hostname>.ed25519`), and the site details are stored in `~/.connectmwp.json`.
 
 ---
 
@@ -39,12 +40,15 @@ This saves the credentials securely into your local config file (`~/.connectmwp.
 Once setup is complete, the AI client will automatically discover the following tools in the background. You can target specific sites using the optional `site` parameter.
 
 ### List of Tools
-*   `connectmwp_get_posts` — Retrieves titles, contents, URLs, and IDs of existing posts.
+*   `connectmwp_get_posts` — Retrieves titles, date, URLs, and IDs of existing posts.
+*   `connectmwp_get_post` — Retrieves full details of a single post by ID (to analyze link opportunities).
 *   `connectmwp_create_post` — Creates a new post draft or publishes it immediately.
 *   `connectmwp_update_post` — Updates an existing post (essential for injecting internal SEO links).
 *   `connectmwp_upload_media` — Uploads featured or inline images/graphs to your media library.
 *   `connectmwp_list_tags` — Lists all active tags on the site.
 *   `connectmwp_list_categories` — Lists all active categories on the site.
+*   `connectmwp_create_category` — Creates a new category on the site.
+*   `connectmwp_create_tag` — Creates a new tag on the site.
 
 ### Prompt Examples
 *   **Query Default Site:** *"Show me the latest 5 posts using connectMWP."*
@@ -69,7 +73,7 @@ Add the following JSON block to your Cursor MCP settings (Settings -> Features -
   }
 }
 ```
-*Note: After adding the config in Cursor, you must run the **Step 3 (Link Site)** terminal command once to link each website's credentials.*
+*Note: After adding the config in Cursor, you must run the **Step 3 (Pair Site)** terminal command once to link each website's credentials.*
 
 ### Claude Desktop Setup
 If you prefer configuring Claude Desktop manually, add the following to `claude_desktop_config.json`:
@@ -88,7 +92,7 @@ If you prefer configuring Claude Desktop manually, add the following to `claude_
 
 ---
 
-## 4. Public Release Setup (SaaS Flow)
+## 4. Public Release Setup
 
 Once `connectmwp-mcp` is published to the public npm registry, the commands will simplify for regular users:
 
@@ -96,8 +100,7 @@ Once `connectmwp-mcp` is published to the public npm registry, the commands will
    ```bash
    claude mcp add connectmwp npx -y connectmwp-mcp
    ```
-2. **Link Site (Per Site):**
+2. **Pair Site (Per Site):**
    ```bash
-   npx -y connectmwp-mcp add-site --site "https://domain.com" --token "connectmwp_tk_..."
+   npx -y connectmwp-mcp add-site --enroll "https://domain.com|pairing_code"
    ```
-3. **Central Handshake:** Users can optionally go to `https://connectmwp.com` (deployed in `/connectmwp-server`) to complete the oauth connection flow automatically.

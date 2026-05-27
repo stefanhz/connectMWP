@@ -4,6 +4,33 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-27 — v2.0.0
+
+### Added
+- **Signature-Based Session-less Authentication:** Rebuilt the entire authentication layer using Ed25519 asymmetric cryptography. The client signs every outgoing request using its private key, and the WordPress plugin verifies request signatures using PHP's native `sodium_crypto_sign_verify_detached` on custom headers (`X-ConnectMWP-Key`, `X-ConnectMWP-Timestamp`, `X-ConnectMWP-Signature`).
+- **WAF and 2FA Bypass:** Eliminated WordPress user session creation (`wp_set_current_user` and `determine_current_user` hooks), allowing requests to pass cleanly through 2FA/login-security plugins and WAFs.
+- **Local Enrollment Command:** Added `add-site --enroll` command to `connectmwp-mcp` CLI to initiate secure pairing via a short-lived dashboard-generated pairing code.
+- **New tools:** Registered `connectmwp_get_post`, `connectmwp_create_category`, and `connectmwp_create_tag` as MCP tools, making the functional API fully aligned with the content creation pipeline.
+
+### Changed
+- **Next.js Homepage Redesign:** Replaced the obsolete URL redirect input and OAuth callback flow on `connectmwp.com` with a static step-by-step setup and local pairing instructions portal.
+
+### Fixed
+- **Dynamic Plugin Version:** Resolved badge drift by referencing the new class version constant dynamically in the dashboard settings page.
+
+## 2026-05-27 — Architecture (no component version change)
+
+### Changed
+- **Decided to re-found auth on session-less Ed25519 request signatures (`_internal/ARCHITECTURE.md` v2).**
+  Investigation proved v1's model — logging the caller in as a WordPress user via
+  `determine_current_user` — is *generally* incompatible with 2FA/security plugins,
+  which discard the login within the same request (401 despite a valid token). The
+  v2 design authorizes each *request* by detached signature in the
+  `permission_callback`, never creates a WP session, and scopes operations to the
+  enrolling user's capabilities via `user_can()`. The local MCP client holds the
+  private key (decentralized, no central server in the daily path). Implementation
+  pending (handed to the implementing agent). No code shipped in this entry.
+
 ## 2026-05-27 — connectmwp-agent 1.2.6
 
 ### Fixed

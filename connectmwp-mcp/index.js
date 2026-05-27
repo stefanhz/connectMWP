@@ -6,6 +6,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import dns from 'dns/promises';
+import crypto from 'crypto';
 
 // Configuration file path
 const CONFIG_PATH = path.join(os.homedir(), '.connectmwp.json');
@@ -55,13 +56,7 @@ async function getCredentials(requestedSite) {
   }
   
   if (!targetSite) {
-    // Check environment variables as a legacy fallback
-    const envSite = process.env.CONNECTMWP_SITE;
-    const envToken = process.env.CONNECTMWP_TOKEN;
-    if (envSite && envToken) {
-      return { siteUrl: normalizeSiteUrl(envSite), token: envToken };
-    }
-    throw new Error('No WordPress site configured. Run "connectmwp-mcp add-site --site <url> --token <token>" in your terminal first.');
+    throw new Error('No WordPress site configured. Run "npx connectmwp-mcp add-site --enroll <enrollment_string>" in your terminal first.');
   }
 
   // Attempt direct lookup
@@ -88,10 +83,18 @@ async function getCredentials(requestedSite) {
   }
   
   if (!siteConfig) {
-    throw new Error(`WordPress site "${targetSite}" is not configured. Configure it first using "connectmwp-mcp add-site --site "${targetSite}" --token <token>".`);
+    throw new Error(`WordPress site "${targetSite}" is not configured. Configure it first using "npx connectmwp-mcp add-site --enroll <enrollment_string>".`);
   }
   
-  return { siteUrl: targetSite, token: siteConfig.token };
+  if (siteConfig.token) {
+    throw new Error(`WordPress site "${targetSite}" is configured with a v1 token. Please re-enroll it using "npx connectmwp-mcp add-site --enroll <enrollment_string>".`);
+  }
+  
+  return { 
+    siteUrl: targetSite, 
+    keyId: siteConfig.key_id, 
+    privateKeyPath: siteConfig.private_key_path 
+  };
 }
 
 /**
@@ -155,6 +158,8 @@ const command = args[0];
 if (command === 'add-site') {
   let site = '';
   let token = '';
+  let enroll = '';
+  let label = '';
   let isDefault = false;
 
   for (let i = 1; i < args.length; i++) {
@@ -162,37 +167,117 @@ if (command === 'add-site') {
       site = args[i + 1];
     } else if (args[i] === '--token' && args[i + 1]) {
       token = args[i + 1];
+    } else if (args[i] === '--enroll' && args[i + 1]) {
+      enroll = args[i + 1];
+    } else if (args[i] === '--label' && args[i + 1]) {
+      label = args[i + 1];
     } else if (args[i] === '--default') {
       isDefault = true;
     }
   }
 
-  if (!site || !token) {
-    console.error('Error: Both --site and --token parameters are required.');
-    console.error('Usage: connectmwp-mcp add-site --site <site_url> --token <token> [--default]');
+  if (enroll) {
+    // New enrollment flow
+    const parts = enroll.split('|');
+    if (parts.length < 2) {
+      console.error('Error: Invalid enrollment string format. Must be "site_url|enrollment_code".');
+      process.exit(1);
+    }
+    const siteUrl = normalizeSiteUrl(parts[0]);
+    const enrollCode = parts[1];
+
+    console.log(`[INFO] Initiating Ed25519 pairing with WordPress site: ${siteUrl}`);
+    
+    // Generate Ed25519 keypair
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+    const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' });
+
+    // Store private key securely
+    const host = new URL(siteUrl).hostname;
+    const privateKeyDir = path.join(os.homedir(), '.connectmwp');
+    const privateKeyPath = path.join(privateKeyDir, `${host}.ed25519`);
+
+    try {
+      await fs.mkdir(privateKeyDir, { recursive: true });
+      await fs.writeFile(privateKeyPath, privateKeyPem, 'utf-8');
+      await fs.chmod(privateKeyPath, 0o600);
+    } catch (err) {
+      console.error(`[ERROR] Failed to save private key: ${err.message}`);
+      process.exit(1);
+    }
+
+    // Export raw 32-byte public key (last 32 bytes of DER SPKI format) to base64
+    const spkiDer = publicKey.export({ type: 'spki', format: 'der' });
+    const rawPublicKey = spkiDer.subarray(-32);
+    const pubKeyBase64 = rawPublicKey.toString('base64');
+
+    // Post public key to WordPress agent
+    const enrollUrl = `${siteUrl}/wp-json/connectmwp/v1/enroll`;
+    const payload = {
+      public_key: pubKeyBase64,
+      label: label || `Local client (${os.hostname()})`
+    };
+
+    try {
+      const response = await fetch(enrollUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-ConnectMWP-Enroll-Code': enrollCode
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        let errMsg = `HTTP ${response.status}`;
+        try {
+          const errData = await response.json();
+          errMsg = errData.error || errData.message || errMsg;
+        } catch {}
+        throw new Error(errMsg);
+      }
+
+      const resData = await response.json();
+      if (!resData.success || !resData.key_id) {
+        throw new Error('Plugin enrollment response did not return a key ID.');
+      }
+
+      const config = await readConfig();
+      config.sites = config.sites || {};
+      config.sites[siteUrl] = {
+        key_id: resData.key_id,
+        private_key_path: privateKeyPath,
+        label: label || host,
+        updated: new Date().toISOString()
+      };
+
+      if (isDefault || !config.defaultSite) {
+        config.defaultSite = siteUrl;
+      }
+
+      await writeConfig(config);
+      console.log(`[SUCCESS] Client paired and enrolled successfully! Key ID: ${resData.key_id}`);
+      if (config.defaultSite === siteUrl) {
+        console.log(`[INFO] Set ${siteUrl} as default target site.`);
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(`[ERROR] Pairing failed: ${error.message}`);
+      // Clean up local private key on failure
+      try {
+        await fs.unlink(privateKeyPath);
+      } catch {}
+      process.exit(1);
+    }
+  } else if (site && token) {
+    console.error('Error: Token-based authentication is deprecated in v2.');
+    console.error('Usage: connectmwp-mcp add-site --enroll "<site_url>|<enrollment_code>" [--default] [--label <label>]');
+    process.exit(1);
+  } else {
+    console.error('Error: --enroll parameter is required.');
+    console.error('Usage: connectmwp-mcp add-site --enroll "<site_url>|<enrollment_code>" [--default] [--label <label>]');
     process.exit(1);
   }
-
-  const normalizedSite = normalizeSiteUrl(site);
-  const config = await readConfig();
-
-  config.sites = config.sites || {};
-  config.sites[normalizedSite] = {
-    token: token,
-    label: new URL(normalizedSite).hostname,
-    updated: new Date().toISOString()
-  };
-
-  if (isDefault || !config.defaultSite) {
-    config.defaultSite = normalizedSite;
-  }
-
-  await writeConfig(config);
-  console.log(`[SUCCESS] Configured connection for site: ${normalizedSite}`);
-  if (config.defaultSite === normalizedSite) {
-    console.log(`[INFO] Set ${normalizedSite} as default target site.`);
-  }
-  process.exit(0);
 }
 
 if (command === 'list-sites') {
@@ -274,34 +359,82 @@ if (command === 'set-default') {
   process.exit(0);
 }
 
-// ============================================================================
-// NETWORK REQUEST EXECUTORS
-// ============================================================================
-
 /**
  * Make a secure call to the WordPress Plugin REST API
  */
-async function callWordPress(siteUrl, token, endpoint, method = 'GET', data = null, isUpload = false) {
+async function callWordPress(siteUrl, keyId, privateKeyPath, endpoint, method = 'GET', data = null, isUpload = false) {
   const timestamp = Math.floor(Date.now() / 1000).toString();
-  const nonce = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+  const [endpointPath, endpointQuery] = endpoint.split('?');
+
+  // Build canonical request path for REST
+  const requestPath = `/connectmwp/v1/${endpointPath}`;
+
+  // Query parameters hashing
+  let sortedQuery = '';
+  if (endpointQuery) {
+    const queryParams = new URLSearchParams(endpointQuery);
+    const keys = [...queryParams.keys()].sort();
+    const sortedParams = [];
+    for (const key of keys) {
+      const values = queryParams.getAll(key).sort();
+      for (const val of values) {
+        const encodedKey = encodeURIComponent(key)
+          .replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+        const encodedVal = encodeURIComponent(val)
+          .replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+        sortedParams.push(`${encodedKey}=${encodedVal}`);
+      }
+    }
+    sortedQuery = sortedParams.join('&');
+  }
+  const queryHash = crypto.createHash('sha256').update(sortedQuery).digest('hex');
+
+  // Body hashing
+  let rawBody = '';
+  if (data && method !== 'GET' && method !== 'HEAD') {
+    if (isUpload) {
+      rawBody = '';
+    } else {
+      rawBody = JSON.stringify(data);
+    }
+  }
+  const bodyHash = crypto.createHash('sha256').update(rawBody).digest('hex');
+
+  // Rebuild canonical string
+  const canonical = [
+    timestamp,
+    method.toUpperCase(),
+    requestPath,
+    queryHash,
+    bodyHash
+  ].join('\n');
+
+  // Sign canonical string
+  let signature;
+  try {
+    const pem = await fs.readFile(privateKeyPath, 'utf-8');
+    const privateKey = crypto.createPrivateKey(pem);
+    const sigBuffer = crypto.sign(null, Buffer.from(canonical, 'utf-8'), privateKey);
+    signature = sigBuffer.toString('base64');
+  } catch (err) {
+    throw new Error(`Failed to sign request using private key at ${privateKeyPath}: ${err.message}`);
+  }
 
   const url = `${siteUrl}/wp-json/connectmwp/v1/${endpoint}`;
   
   const headers = {
-    'X-ConnectMWP-Auth': `Bearer ${token}`,
+    'X-ConnectMWP-Key': keyId,
     'X-ConnectMWP-Timestamp': timestamp,
-    'X-ConnectMWP-Nonce': nonce
+    'X-ConnectMWP-Signature': signature
   };
 
   let body = null;
-  // GET/HEAD requests must never carry a body (native fetch throws otherwise).
-  // GET parameters travel in the endpoint query string instead.
   if (data && method !== 'GET' && method !== 'HEAD') {
     if (isUpload) {
       body = data; // FormData
     } else {
       headers['Content-Type'] = 'application/json';
-      body = JSON.stringify(data);
+      body = rawBody;
     }
   }
 
@@ -310,21 +443,21 @@ async function callWordPress(siteUrl, token, endpoint, method = 'GET', data = nu
 
     // If REST API is not found or fails with auth/security block, try Admin-AJAX fallback
     if (response.status === 401 || response.status === 404 || response.status === 403) {
-      return await callWordPressAjax(siteUrl, token, endpoint, method, data, isUpload, headers);
+      return await callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, method, data, isUpload);
     }
 
     const resData = await response.json();
     return resData;
   } catch (error) {
     console.error(`connectMWP: REST call failed (${error.message}). Attempting Admin-AJAX fallback...`);
-    return await callWordPressAjax(siteUrl, token, endpoint, method, data, isUpload, headers);
+    return await callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, method, data, isUpload);
   }
 }
 
 /**
  * Fallback handler: Routes requests through admin-ajax.php
  */
-async function callWordPressAjax(siteUrl, token, endpoint, method, data, isUpload, headers) {
+async function callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, method, data, isUpload) {
   const ajaxUrl = `${siteUrl}/wp-admin/admin-ajax.php`;
 
   // Endpoint may carry a query string (e.g. "posts?limit=50&fields=..."); split
@@ -345,15 +478,14 @@ async function callWordPressAjax(siteUrl, token, endpoint, method, data, isUploa
     action = 'get_categories';
   }
 
-  const ajaxHeaders = { ...headers };
   let body;
+  let headers = {};
 
   if (isUpload) {
     body = data;
     body.append('action', 'connectmwp_api');
     body.append('connectmwp_action', action);
   } else {
-    ajaxHeaders['Content-Type'] = 'application/x-www-form-urlencoded';
     const params = new URLSearchParams();
     params.append('action', 'connectmwp_api');
     params.append('connectmwp_action', action);
@@ -382,7 +514,46 @@ async function callWordPressAjax(siteUrl, token, endpoint, method, data, isUploa
     body = params.toString();
   }
 
-  const response = await fetch(ajaxUrl, { method: 'POST', headers: ajaxHeaders, body });
+  // Calculate signature for AJAX fallback
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const requestPath = `/connectmwp/v1/${action}`;
+  const queryHash = crypto.createHash('sha256').update('').digest('hex'); // no query parameters in AJAX URL
+
+  // Body hash
+  let bodyHash = '';
+  if (isUpload) {
+    bodyHash = crypto.createHash('sha256').update('').digest('hex');
+  } else {
+    bodyHash = crypto.createHash('sha256').update(body).digest('hex');
+  }
+
+  const canonical = [
+    timestamp,
+    'POST', // AJAX is always POST
+    requestPath,
+    queryHash,
+    bodyHash
+  ].join('\n');
+
+  let signature;
+  try {
+    const pem = await fs.readFile(privateKeyPath, 'utf-8');
+    const privateKey = crypto.createPrivateKey(pem);
+    const sigBuffer = crypto.sign(null, Buffer.from(canonical, 'utf-8'), privateKey);
+    signature = sigBuffer.toString('base64');
+  } catch (err) {
+    throw new Error(`Failed to sign AJAX request using private key at ${privateKeyPath}: ${err.message}`);
+  }
+
+  headers['X-ConnectMWP-Key'] = keyId;
+  headers['X-ConnectMWP-Timestamp'] = timestamp;
+  headers['X-ConnectMWP-Signature'] = signature;
+
+  if (!isUpload) {
+    headers['Content-Type'] = 'application/x-www-form-urlencoded';
+  }
+
+  const response = await fetch(ajaxUrl, { method: 'POST', headers, body });
   return await response.json();
 }
 
@@ -574,6 +745,76 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
         },
       },
+      {
+        name: 'connectmwp_get_post',
+        description: 'Retrieve full details of a single post by ID (to analyze link opportunities).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            site: {
+              type: 'string',
+              description: 'Optional domain or site URL of the target WordPress site (e.g. "2morrow.ai"). Uses the default site if omitted.'
+            },
+            id: {
+              type: 'integer',
+              description: 'WordPress Post ID to retrieve'
+            },
+            fields: {
+              type: 'string',
+              description: 'Optional comma-separated list of fields to return (e.g. "id,title,content,url").'
+            }
+          },
+          required: ['id']
+        }
+      },
+      {
+        name: 'connectmwp_create_category',
+        description: 'Create a new category on the WordPress site.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            site: {
+              type: 'string',
+              description: 'Optional domain or site URL of the target WordPress site (e.g. "2morrow.ai"). Uses the default site if omitted.'
+            },
+            name: {
+              type: 'string',
+              description: 'Category name'
+            },
+            slug: {
+              type: 'string',
+              description: 'Optional URL-friendly slug for the category'
+            },
+            parent: {
+              type: 'integer',
+              description: 'Optional parent category ID'
+            }
+          },
+          required: ['name']
+        }
+      },
+      {
+        name: 'connectmwp_create_tag',
+        description: 'Create a new tag on the WordPress site.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            site: {
+              type: 'string',
+              description: 'Optional domain or site URL of the target WordPress site (e.g. "2morrow.ai"). Uses the default site if omitted.'
+            },
+            name: {
+              type: 'string',
+              description: 'Tag name'
+            },
+            slug: {
+              type: 'string',
+              description: 'Optional URL-friendly slug for the tag'
+            }
+          },
+          required: ['name']
+        }
+      }
     ],
   };
 });
@@ -586,7 +827,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     switch (name) {
       case 'connectmwp_get_posts': {
         const { site, limit = 50, fields } = args;
-        const { siteUrl, token } = await getCredentials(site);
+        const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
 
         // GET params travel in the query string only — never as a request body.
         const queryParams = new URLSearchParams();
@@ -595,27 +836,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           queryParams.append('fields', fields);
         }
 
-        const res = await callWordPress(siteUrl, token, `posts?${queryParams.toString()}`, 'GET', null);
+        const res = await callWordPress(siteUrl, keyId, privateKeyPath, `posts?${queryParams.toString()}`, 'GET', null);
         return { content: [{ type: 'text', text: JSON.stringify(res) }] };
       }
 
       case 'connectmwp_create_post': {
         const { site, ...postParams } = args;
-        const { siteUrl, token } = await getCredentials(site);
-        const res = await callWordPress(siteUrl, token, 'posts', 'POST', postParams);
+        const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
+        const res = await callWordPress(siteUrl, keyId, privateKeyPath, 'posts', 'POST', postParams);
         return { content: [{ type: 'text', text: JSON.stringify(res) }] };
       }
 
       case 'connectmwp_update_post': {
         const { site, id, ...postParams } = args;
-        const { siteUrl, token } = await getCredentials(site);
-        const res = await callWordPress(siteUrl, token, `posts/${id}`, 'POST', postParams);
+        const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
+        const res = await callWordPress(siteUrl, keyId, privateKeyPath, `posts/${id}`, 'POST', postParams);
         return { content: [{ type: 'text', text: JSON.stringify(res) }] };
       }
 
       case 'connectmwp_upload_media': {
         const { site, file_path, image_url, filename } = args;
-        const { siteUrl, token } = await getCredentials(site);
+        const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
         let fileBuffer;
         let nameToUse = filename || 'image.png';
 
@@ -673,21 +914,49 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const blob = new Blob([fileBuffer]);
         formData.append('file', blob, nameToUse);
 
-        const res = await callWordPress(siteUrl, token, 'media', 'POST', formData, true);
+        const res = await callWordPress(siteUrl, keyId, privateKeyPath, 'media', 'POST', formData, true);
         return { content: [{ type: 'text', text: JSON.stringify(res) }] };
       }
 
       case 'connectmwp_list_tags': {
         const { site } = args;
-        const { siteUrl, token } = await getCredentials(site);
-        const res = await callWordPress(siteUrl, token, 'tags', 'GET');
+        const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
+        const res = await callWordPress(siteUrl, keyId, privateKeyPath, 'tags', 'GET');
         return { content: [{ type: 'text', text: JSON.stringify(res) }] };
       }
 
       case 'connectmwp_list_categories': {
         const { site } = args;
-        const { siteUrl, token } = await getCredentials(site);
-        const res = await callWordPress(siteUrl, token, 'categories', 'GET');
+        const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
+        const res = await callWordPress(siteUrl, keyId, privateKeyPath, 'categories', 'GET');
+        return { content: [{ type: 'text', text: JSON.stringify(res) }] };
+      }
+
+      case 'connectmwp_get_post': {
+        const { site, id, fields } = args;
+        const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
+
+        const queryParams = new URLSearchParams();
+        if (fields) {
+          queryParams.append('fields', fields);
+        }
+        const endpoint = fields ? `posts/${id}?${queryParams.toString()}` : `posts/${id}`;
+
+        const res = await callWordPress(siteUrl, keyId, privateKeyPath, endpoint, 'GET', null);
+        return { content: [{ type: 'text', text: JSON.stringify(res) }] };
+      }
+
+      case 'connectmwp_create_category': {
+        const { site, ...catParams } = args;
+        const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
+        const res = await callWordPress(siteUrl, keyId, privateKeyPath, 'categories', 'POST', catParams);
+        return { content: [{ type: 'text', text: JSON.stringify(res) }] };
+      }
+
+      case 'connectmwp_create_tag': {
+        const { site, ...tagParams } = args;
+        const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
+        const res = await callWordPress(siteUrl, keyId, privateKeyPath, 'tags', 'POST', tagParams);
         return { content: [{ type: 'text', text: JSON.stringify(res) }] };
       }
 
