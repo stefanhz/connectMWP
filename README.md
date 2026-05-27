@@ -1,6 +1,6 @@
 # wpConnect (connectmwp.com)
 
-**Current Release Version: v1.2.2**
+**Current Release Version: v1.2.3**
 
 wpConnect is a secure, decentralized bridge that connects local AI clients (such as Claude Desktop, Cursor, and Claude Code) directly to self-hosted WordPress websites to automate research, topic generation, content drafting, image uploading, and remote publishing.
 

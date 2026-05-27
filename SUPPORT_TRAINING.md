@@ -64,7 +64,7 @@ Every single command sent by the local MCP client includes two validation header
 
 The WordPress plugin verifies these on every incoming request:
 * **Clock Skew Window:** The timestamp must match the WordPress server's clock within **5 minutes (300 seconds)**. 
-* **Atomic Nonce Storage:** Each nonce is checked and saved as an individual atomic option (`wpc_nonce_[hash]`) in the database. If a nonce was already registered, it is rejected immediately, preventing replay attacks and race conditions. An automated prune job runs periodically to clear expired nonces.
+* **Atomic Nonce Storage:** Each nonce is checked and saved as an individual atomic option (`wpc_nonce_[hash]`) in the database. If a nonce was already registered, it is rejected immediately, preventing replay attacks and race conditions. A pruning query runs synchronously on every valid authenticated request to immediately clear expired nonces and keep database option table bloat at zero.
 * **Token Verification First:** The plugin checks if the token is valid in user metadata *before* executing the nonce check, preventing unauthenticated database-write floods (DoS protection).
 
 ### Safe Redirection & Fragment Token Delivery (Implicit Flow)
