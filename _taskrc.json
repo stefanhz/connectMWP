@@ -1,0 +1,14 @@
+{
+  "project_name": "connectMWP",
+  "directories": {
+    "internal_folder": "_internal",
+    "tasks_file": "TASKS.md",
+    "vector_db": "chroma_db"
+  },
+  "prompts": {
+    "plan_template": "For TASK_ID={ids}: Write the complete implementation plan into a {filename} file before starting the implemention. \nRemember that, if needed, you should have direct access to the db through the Supabase remote mcp server tools (e.g., to apply migrations directly or get the current state of the DB; but use responsibly for best use of tokens) and the mcp chrome devtools. \nCreate the plan in alignment with the APP_VISON.md document (if it exists) and in a way and level of detail (incl. context, intented outcome, and acceptance criteria) that another programmer could implement the plan without you if need be. // NOTE: if the subfolder _internal does not exist, create it."
+  },
+  "features": {
+    "db_provider": "n/a"
+  }
+}

@@ -4,6 +4,17 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-27 — connectmwp-mcp 1.2.5
+
+### Chore
+- **Completed folder-rename cleanup (`wpConnect` → `connectMWP`).** The project
+  directory was renamed on disk; an audit confirmed all in-repo file paths and
+  brand references already pointed to `connectMWP`. The one straggler was
+  `connectmwp-mcp/package-lock.json`, which still carried the old self-name
+  `wpconnect-mcp` (in `name` and `bin`) and a stale self-version `1.0.0`. Synced
+  both to match `package.json` (`connectmwp-mcp` / 1.2.5). No functional change.
+  (`connectmwp-mcp/package-lock.json`, `connectmwp-mcp/package.json`)
+
 ## 2026-05-26 — connectmwp-mcp 1.2.4, connectmwp-server 1.2.4
 
 ### Fixed
