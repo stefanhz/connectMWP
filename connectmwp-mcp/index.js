@@ -8,7 +8,7 @@ import os from 'os';
 import dns from 'dns/promises';
 
 // Configuration file path
-const CONFIG_PATH = path.join(os.homedir(), '.wpconnect.json');
+const CONFIG_PATH = path.join(os.homedir(), '.connectmwp.json');
 
 /**
  * Clean and normalize site URLs
@@ -56,12 +56,12 @@ async function getCredentials(requestedSite) {
   
   if (!targetSite) {
     // Check environment variables as a legacy fallback
-    const envSite = process.env.WPCONNECT_SITE;
-    const envToken = process.env.WPCONNECT_TOKEN;
+    const envSite = process.env.CONNECTMWP_SITE;
+    const envToken = process.env.CONNECTMWP_TOKEN;
     if (envSite && envToken) {
       return { siteUrl: normalizeSiteUrl(envSite), token: envToken };
     }
-    throw new Error('No WordPress site configured. Run "wpconnect-mcp add-site --site <url> --token <token>" in your terminal first.');
+    throw new Error('No WordPress site configured. Run "connectmwp-mcp add-site --site <url> --token <token>" in your terminal first.');
   }
 
   // Attempt direct lookup
@@ -88,7 +88,7 @@ async function getCredentials(requestedSite) {
   }
   
   if (!siteConfig) {
-    throw new Error(`WordPress site "${targetSite}" is not configured. Configure it first using "wpconnect-mcp add-site --site "${targetSite}" --token <token>".`);
+    throw new Error(`WordPress site "${targetSite}" is not configured. Configure it first using "connectmwp-mcp add-site --site "${targetSite}" --token <token>".`);
   }
   
   return { siteUrl: targetSite, token: siteConfig.token };
@@ -169,7 +169,7 @@ if (command === 'add-site') {
 
   if (!site || !token) {
     console.error('Error: Both --site and --token parameters are required.');
-    console.error('Usage: wpconnect-mcp add-site --site <site_url> --token <token> [--default]');
+    console.error('Usage: connectmwp-mcp add-site --site <site_url> --token <token> [--default]');
     process.exit(1);
   }
 
@@ -200,12 +200,12 @@ if (command === 'list-sites') {
   const sitesList = Object.keys(config.sites || {});
 
   if (sitesList.length === 0) {
-    console.log('No WordPress sites configured in ~/.wpconnect.json yet.');
-    console.log('Configure a site using: wpconnect-mcp add-site --site <url> --token <token>');
+    console.log('No WordPress sites configured in ~/.connectmwp.json yet.');
+    console.log('Configure a site using: connectmwp-mcp add-site --site <url> --token <token>');
     process.exit(0);
   }
 
-  console.log('\nConfigured wpConnect WordPress Sites:');
+  console.log('\nConfigured connectMWP WordPress Sites:');
   console.log('===========================================================================');
   for (const site of sitesList) {
     const isDefault = config.defaultSite === site ? ' [DEFAULT]' : '';
@@ -225,7 +225,7 @@ if (command === 'remove-site') {
 
   if (!site) {
     console.error('Error: --site parameter is required.');
-    console.error('Usage: wpconnect-mcp remove-site --site <site_url>');
+    console.error('Usage: connectmwp-mcp remove-site --site <site_url>');
     process.exit(1);
   }
 
@@ -256,7 +256,7 @@ if (command === 'set-default') {
 
   if (!site) {
     console.error('Error: --site parameter is required.');
-    console.error('Usage: wpconnect-mcp set-default --site <site_url>');
+    console.error('Usage: connectmwp-mcp set-default --site <site_url>');
     process.exit(1);
   }
 
@@ -285,12 +285,12 @@ async function callWordPress(siteUrl, token, endpoint, method = 'GET', data = nu
   const timestamp = Math.floor(Date.now() / 1000).toString();
   const nonce = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 
-  const url = `${siteUrl}/wp-json/wpconnect/v1/${endpoint}`;
+  const url = `${siteUrl}/wp-json/connectmwp/v1/${endpoint}`;
   
   const headers = {
-    'X-WPConnect-Auth': `Bearer ${token}`,
-    'X-WPConnect-Timestamp': timestamp,
-    'X-WPConnect-Nonce': nonce
+    'X-ConnectMWP-Auth': `Bearer ${token}`,
+    'X-ConnectMWP-Timestamp': timestamp,
+    'X-ConnectMWP-Nonce': nonce
   };
 
   let body = null;
@@ -314,7 +314,7 @@ async function callWordPress(siteUrl, token, endpoint, method = 'GET', data = nu
     const resData = await response.json();
     return resData;
   } catch (error) {
-    console.error(`wpConnect: REST call failed (${error.message}). Attempting Admin-AJAX fallback...`);
+    console.error(`connectMWP: REST call failed (${error.message}). Attempting Admin-AJAX fallback...`);
     return await callWordPressAjax(siteUrl, token, endpoint, method, data, isUpload, headers);
   }
 }
@@ -344,13 +344,13 @@ async function callWordPressAjax(siteUrl, token, endpoint, method, data, isUploa
 
   if (isUpload) {
     body = data;
-    body.append('action', 'wpconnect_api');
-    body.append('wpconnect_action', action);
+    body.append('action', 'connectmwp_api');
+    body.append('connectmwp_action', action);
   } else {
     ajaxHeaders['Content-Type'] = 'application/x-www-form-urlencoded';
     const params = new URLSearchParams();
-    params.append('action', 'wpconnect_api');
-    params.append('wpconnect_action', action);
+    params.append('action', 'connectmwp_api');
+    params.append('connectmwp_action', action);
     
     if (action === 'update_post') {
       const postId = endpoint.split('/')[1];
@@ -380,7 +380,7 @@ async function callWordPressAjax(siteUrl, token, endpoint, method, data, isUploa
 // Create the MCP Server instance
 const server = new Server(
   {
-    name: 'wpconnect-mcp',
+    name: 'connectmwp-mcp',
     version: '1.2.3',
   },
   {
@@ -395,7 +395,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
-        name: 'wpconnect_get_posts',
+        name: 'connectmwp_get_posts',
         description: 'Retrieve titles, content, URLs, and IDs of existing posts from the WordPress site.',
         inputSchema: {
           type: 'object',
@@ -412,7 +412,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: 'wpconnect_create_post',
+        name: 'connectmwp_create_post',
         description: 'Create a new post draft or publish directly on a WordPress site.',
         inputSchema: {
           type: 'object',
@@ -453,7 +453,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: 'wpconnect_update_post',
+        name: 'connectmwp_update_post',
         description: 'Update an existing post (e.g., to insert SEO internal links).',
         inputSchema: {
           type: 'object',
@@ -494,7 +494,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: 'wpconnect_upload_media',
+        name: 'connectmwp_upload_media',
         description: 'Upload a featured or inline image/graph to the WordPress media library.',
         inputSchema: {
           type: 'object',
@@ -519,7 +519,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: 'wpconnect_list_tags',
+        name: 'connectmwp_list_tags',
         description: 'List all tags on the WordPress site to select the 1-5 most relevant ones.',
         inputSchema: {
           type: 'object',
@@ -532,7 +532,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: 'wpconnect_list_categories',
+        name: 'connectmwp_list_categories',
         description: 'List all categories on the WordPress site.',
         inputSchema: {
           type: 'object',
@@ -554,28 +554,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     switch (name) {
-      case 'wpconnect_get_posts': {
+      case 'connectmwp_get_posts': {
         const { site, limit = 50 } = args;
         const { siteUrl, token } = await getCredentials(site);
         const res = await callWordPress(siteUrl, token, 'posts', 'GET', { limit });
         return { content: [{ type: 'text', text: JSON.stringify(res) }] };
       }
 
-      case 'wpconnect_create_post': {
+      case 'connectmwp_create_post': {
         const { site, ...postParams } = args;
         const { siteUrl, token } = await getCredentials(site);
         const res = await callWordPress(siteUrl, token, 'posts', 'POST', postParams);
         return { content: [{ type: 'text', text: JSON.stringify(res) }] };
       }
 
-      case 'wpconnect_update_post': {
+      case 'connectmwp_update_post': {
         const { site, id, ...postParams } = args;
         const { siteUrl, token } = await getCredentials(site);
         const res = await callWordPress(siteUrl, token, `posts/${id}`, 'POST', postParams);
         return { content: [{ type: 'text', text: JSON.stringify(res) }] };
       }
 
-      case 'wpconnect_upload_media': {
+      case 'connectmwp_upload_media': {
         const { site, file_path, image_url, filename } = args;
         const { siteUrl, token } = await getCredentials(site);
         let fileBuffer;
@@ -639,14 +639,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: JSON.stringify(res) }] };
       }
 
-      case 'wpconnect_list_tags': {
+      case 'connectmwp_list_tags': {
         const { site } = args;
         const { siteUrl, token } = await getCredentials(site);
         const res = await callWordPress(siteUrl, token, 'tags', 'GET');
         return { content: [{ type: 'text', text: JSON.stringify(res) }] };
       }
 
-      case 'wpconnect_list_categories': {
+      case 'connectmwp_list_categories': {
         const { site } = args;
         const { siteUrl, token } = await getCredentials(site);
         const res = await callWordPress(siteUrl, token, 'categories', 'GET');
@@ -668,7 +668,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function run() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('wpConnect MCP Server running on stdio');
+  console.error('connectMWP MCP Server running on stdio');
 }
 
 run().catch((error) => {

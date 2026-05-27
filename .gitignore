@@ -26,6 +26,6 @@ dist
 /connectmwp-server/.env.development.local
 /connectmwp-server/.env.test.local
 /connectmwp-server/.env.production.local
-/wpconnect-mcp/node_modules/
-wpconnect-agent.zip
+/connectmwp-mcp/node_modules/
+connectmwp-agent.zip
 

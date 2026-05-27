@@ -1,6 +1,6 @@
 <?php
 /**
- * Plugin Name: wpConnect Agent
+ * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
  * Version: 1.2.3
@@ -11,11 +11,11 @@
 
 defined('ABSPATH') || exit;
 
-class WPConnect_Agent {
+class ConnectMWP_Agent {
 
-    const OPTION_TOKENS = 'wpconnect_agent_tokens';
-    const OPTION_NONCES = 'wpconnect_agent_nonces';
-    const API_NAMESPACE = 'wpconnect/v1';
+    const OPTION_TOKENS = 'connectmwp_agent_tokens';
+    const OPTION_NONCES = 'connectmwp_agent_nonces';
+    const API_NAMESPACE = 'connectmwp/v1';
 
     private static $instance = null;
 
@@ -34,8 +34,8 @@ class WPConnect_Agent {
         add_action('rest_api_init', [$this, 'register_rest_routes']);
 
         // Admin-AJAX routes
-        add_action('wp_ajax_wpconnect_api', [$this, 'handle_ajax_request']);
-        add_action('wp_ajax_nopriv_wpconnect_api', [$this, 'handle_ajax_request']);
+        add_action('wp_ajax_connectmwp_api', [$this, 'handle_ajax_request']);
+        add_action('wp_ajax_nopriv_connectmwp_api', [$this, 'handle_ajax_request']);
 
         // Admin pages
         add_action('admin_menu', [$this, 'add_settings_page']);
@@ -46,7 +46,7 @@ class WPConnect_Agent {
     }
 
     /**
-     * Authenticate remote requests using the custom X-WPConnect-Auth header
+     * Authenticate remote requests using the custom X-ConnectMWP-Auth header
      */
     public function authenticate_request($user_id) {
         if ($user_id) {
@@ -80,15 +80,15 @@ class WPConnect_Agent {
         if (function_exists('getallheaders')) {
             $headers = getallheaders();
             foreach ($headers as $name => $value) {
-                if (strcasecmp($name, 'X-WPConnect-Auth') === 0) {
+                if (strcasecmp($name, 'X-ConnectMWP-Auth') === 0) {
                     $custom_auth = $value;
                     break;
                 }
             }
         }
 
-        if (empty($custom_auth) && isset($_SERVER['HTTP_X_WPCONNECT_AUTH'])) {
-            $custom_auth = $_SERVER['HTTP_X_WPCONNECT_AUTH'];
+        if (empty($custom_auth) && isset($_SERVER['HTTP_X_CONNECTMWP_AUTH'])) {
+            $custom_auth = $_SERVER['HTTP_X_CONNECTMWP_AUTH'];
         }
 
         if (empty($custom_auth)) {
@@ -113,19 +113,19 @@ class WPConnect_Agent {
         if (function_exists('getallheaders')) {
             $headers = getallheaders();
             foreach ($headers as $name => $value) {
-                if (strcasecmp($name, 'X-WPConnect-Timestamp') === 0) {
+                if (strcasecmp($name, 'X-ConnectMWP-Timestamp') === 0) {
                     $timestamp = $value;
-                } elseif (strcasecmp($name, 'X-WPConnect-Nonce') === 0) {
+                } elseif (strcasecmp($name, 'X-ConnectMWP-Nonce') === 0) {
                     $nonce = $value;
                 }
             }
         }
 
-        if (empty($timestamp) && isset($_SERVER['HTTP_X_WPCONNECT_TIMESTAMP'])) {
-            $timestamp = $_SERVER['HTTP_X_WPCONNECT_TIMESTAMP'];
+        if (empty($timestamp) && isset($_SERVER['HTTP_X_CONNECTMWP_TIMESTAMP'])) {
+            $timestamp = $_SERVER['HTTP_X_CONNECTMWP_TIMESTAMP'];
         }
-        if (empty($nonce) && isset($_SERVER['HTTP_X_WPCONNECT_NONCE'])) {
-            $nonce = $_SERVER['HTTP_X_WPCONNECT_NONCE'];
+        if (empty($nonce) && isset($_SERVER['HTTP_X_CONNECTMWP_NONCE'])) {
+            $nonce = $_SERVER['HTTP_X_CONNECTMWP_NONCE'];
         }
 
         // If either is missing, fail validation
@@ -140,7 +140,7 @@ class WPConnect_Agent {
 
         // Sanitize nonce and check atomically via individual transient options (C-3 / I-1 Fix)
         $nonce_hash = md5($nonce);
-        $nonce_key = 'wpc_nonce_' . $nonce_hash;
+        $nonce_key = 'cmwp_nonce_' . $nonce_hash;
 
         $expiry = time() + 360;
         // add_option returns false if the option already exists
@@ -151,7 +151,7 @@ class WPConnect_Agent {
         // Prune expired nonces (100% probability, safe as it only runs for authenticated requests)
         global $wpdb;
         $wpdb->query($wpdb->prepare(
-            "DELETE FROM {$wpdb->options} WHERE option_name LIKE 'wpc_nonce_%' AND option_value < %d",
+            "DELETE FROM {$wpdb->options} WHERE option_name LIKE 'cmwp_nonce_%' AND option_value < %d",
             time()
         ));
 
@@ -160,7 +160,7 @@ class WPConnect_Agent {
 
     private function find_user_by_token_hash($token_hash) {
         $users = get_users([
-            'meta_key'     => '_wpconnect_tokens',
+            'meta_key'     => '_connectmwp_tokens',
             'meta_value'   => $token_hash,
             'meta_compare' => 'LIKE',
             'number'       => 1
@@ -171,7 +171,7 @@ class WPConnect_Agent {
         }
 
         $user = $users[0];
-        $tokens = get_user_meta($user->ID, '_wpconnect_tokens', true);
+        $tokens = get_user_meta($user->ID, '_connectmwp_tokens', true);
         if (is_array($tokens)) {
             foreach ($tokens as $token) {
                 if (isset($token['hash']) && hash_equals($token['hash'], $token_hash)) {
@@ -184,7 +184,7 @@ class WPConnect_Agent {
     }
 
     private function update_token_last_used($user_id, $token_hash) {
-        $tokens = get_user_meta($user_id, '_wpconnect_tokens', true);
+        $tokens = get_user_meta($user_id, '_connectmwp_tokens', true);
         if (is_array($tokens)) {
             $updated = false;
             foreach ($tokens as $key => $token) {
@@ -196,7 +196,7 @@ class WPConnect_Agent {
                 }
             }
             if ($updated) {
-                update_user_meta($user_id, '_wpconnect_tokens', $tokens);
+                update_user_meta($user_id, '_connectmwp_tokens', $tokens);
             }
         }
     }
@@ -366,7 +366,7 @@ class WPConnect_Agent {
         ]);
 
         if (is_wp_error($post_id)) {
-            error_log('wpConnect error inserting post: ' . $post_id->get_error_message());
+            error_log('connectMWP error inserting post: ' . $post_id->get_error_message());
             return new WP_REST_Response(['success' => false, 'error' => 'Failed to create post. Check site logs.'], 500);
         }
 
@@ -422,7 +422,7 @@ class WPConnect_Agent {
 
         $updated_id = wp_update_post($post_data);
         if (is_wp_error($updated_id)) {
-            error_log('wpConnect error updating post: ' . $updated_id->get_error_message());
+            error_log('connectMWP error updating post: ' . $updated_id->get_error_message());
             return new WP_REST_Response(['success' => false, 'error' => 'Failed to update post. Check site logs.'], 500);
         }
 
@@ -457,7 +457,7 @@ class WPConnect_Agent {
         $attachment_id = media_handle_upload('file', 0); // 0 means unattached
 
         if (is_wp_error($attachment_id)) {
-            error_log('wpConnect error uploading media: ' . $attachment_id->get_error_message());
+            error_log('connectMWP error uploading media: ' . $attachment_id->get_error_message());
             return new WP_REST_Response(['success' => false, 'error' => 'Failed to upload media. Check site logs.'], 500);
         }
 
@@ -499,7 +499,7 @@ class WPConnect_Agent {
      */
     public function handle_ajax_request() {
         // Simple bridge from AJAX to REST endpoints
-        $action = isset($_REQUEST['wpconnect_action']) ? sanitize_key($_REQUEST['wpconnect_action']) : '';
+        $action = isset($_REQUEST['connectmwp_action']) ? sanitize_key($_REQUEST['connectmwp_action']) : '';
         if (empty($action)) {
             wp_send_json_error(['error' => 'Missing action'], 400);
         }
@@ -519,7 +519,7 @@ class WPConnect_Agent {
         // For brevity, the bridge translates AJAX arguments and formats output
         $request = new WP_REST_Request($_SERVER['REQUEST_METHOD']);
         foreach ($_REQUEST as $k => $v) {
-            if ($k !== 'action' && $k !== 'wpconnect_action') {
+            if ($k !== 'action' && $k !== 'connectmwp_action') {
                 $request->set_param($k, $v);
             }
         }
@@ -562,20 +562,20 @@ class WPConnect_Agent {
      */
     public function add_settings_page() {
         add_options_page(
-            'wpConnect Settings',
-            'wpConnect',
+            'connectMWP Settings',
+            'connectMWP',
             'manage_options',
-            'wpconnect',
+            'connectmwp',
             [$this, 'render_settings_page']
         );
 
         // Register the hidden auth page slug so WordPress permits access to it
         add_submenu_page(
             null,
-            'Authorize wpConnect',
-            'Authorize wpConnect',
+            'Authorize connectMWP',
+            'Authorize connectMWP',
             'edit_posts',
-            'wpconnect-auth',
+            'connectmwp-auth',
             [$this, 'render_oauth_screen']
         );
     }
@@ -586,8 +586,8 @@ class WPConnect_Agent {
         }
 
         // Process revocation
-        if (isset($_POST['wpconnect_action']) && $_POST['wpconnect_action'] === 'revoke' && isset($_POST['token_hash'])) {
-            check_admin_referer('wpconnect_revoke_token');
+        if (isset($_POST['connectmwp_action']) && $_POST['connectmwp_action'] === 'revoke' && isset($_POST['token_hash'])) {
+            check_admin_referer('connectmwp_revoke_token');
             $hash_to_revoke = sanitize_text_field($_POST['token_hash']);
             $this->revoke_token_globally($hash_to_revoke);
             echo '<div class="notice notice-success is-dismissible"><p>Token successfully revoked.</p></div>';
@@ -595,15 +595,15 @@ class WPConnect_Agent {
 
         // Process manual token generation
         $new_token_data = null;
-        if (isset($_POST['wpconnect_action']) && $_POST['wpconnect_action'] === 'generate' && isset($_POST['token_name'])) {
-            check_admin_referer('wpconnect_generate_token');
+        if (isset($_POST['connectmwp_action']) && $_POST['connectmwp_action'] === 'generate' && isset($_POST['token_name'])) {
+            check_admin_referer('connectmwp_generate_token');
             $token_name = sanitize_text_field($_POST['token_name']);
             
-            $raw_token = 'wpconnect_tk_' . bin2hex(random_bytes(24));
+            $raw_token = 'connectmwp_tk_' . bin2hex(random_bytes(24));
             $token_hash = hash('sha256', $raw_token);
             
             $user = wp_get_current_user();
-            $tokens = get_user_meta($user->ID, '_wpconnect_tokens', true);
+            $tokens = get_user_meta($user->ID, '_connectmwp_tokens', true);
             if (!is_array($tokens)) {
                 $tokens = [];
             }
@@ -616,7 +616,7 @@ class WPConnect_Agent {
                 'last_ip'   => '',
             ];
             
-            update_user_meta($user->ID, '_wpconnect_tokens', $tokens);
+            update_user_meta($user->ID, '_connectmwp_tokens', $tokens);
             
             $new_token_data = [
                 'raw_token' => $raw_token,
@@ -626,13 +626,13 @@ class WPConnect_Agent {
         }
 
         $users = get_users([
-            'meta_key'     => '_wpconnect_tokens',
+            'meta_key'     => '_connectmwp_tokens',
             'meta_compare' => 'EXISTS'
         ]);
 
         $all_tokens = [];
         foreach ($users as $user) {
-            $tokens = get_user_meta($user->ID, '_wpconnect_tokens', true);
+            $tokens = get_user_meta($user->ID, '_connectmwp_tokens', true);
             if (is_array($tokens)) {
                 foreach ($tokens as $token) {
                     $token['user_login'] = $user->user_login;
@@ -652,7 +652,7 @@ class WPConnect_Agent {
                 <div style="position: absolute; right: 50px; bottom: -80px; width: 150px; height: 150px; border-radius: 50%; background: rgba(255,255,255,0.03);"></div>
                 
                 <h1 style="color: #fff; margin: 0 0 8px 0; font-size: 28px; font-weight: 700; display: flex; align-items: center; gap: 10px;">
-                    <span style="font-size: 32px;">🔌</span> wpConnect Agent
+                    <span style="font-size: 32px;">🔌</span> connectMWP Agent
                 </h1>
                 <p style="margin: 0; font-size: 16px; opacity: 0.9; line-height: 1.4;">
                     Secure, direct connection bridge between your local AI platforms (Claude Desktop, Cursor, etc.) and this WordPress site.
@@ -664,16 +664,16 @@ class WPConnect_Agent {
                 <?php
                 $site_url = $new_token_data['site_url'];
                 $raw_token = $new_token_data['raw_token'];
-                $claude_cmd = 'claude mcp add wpconnect npx -y wpconnect-mcp';
-                $add_site_cmd = 'npx -y wpconnect-mcp add-site --site "' . $site_url . '" --token "' . $raw_token . '"';
+                $claude_cmd = 'claude mcp add connectmwp npx -y connectmwp-mcp';
+                $add_site_cmd = 'npx -y connectmwp-mcp add-site --site "' . $site_url . '" --token "' . $raw_token . '"';
                 
                 $cursor_config = json_encode([
                     'mcpServers' => [
-                        'wpconnect' => [
+                        'connectmwp' => [
                             'command' => 'npx',
                             'args' => [
                                 '-y',
-                                'wpconnect-mcp'
+                                'connectmwp-mcp'
                             ]
                         ]
                     ]
@@ -703,7 +703,7 @@ class WPConnect_Agent {
                     <!-- Step 1: Register Server -->
                     <div style="margin-bottom: 20px;">
                         <div style="font-size: 13px; font-weight: 600; color: #2c3e50; margin-bottom: 8px; display: flex; align-items: center; gap: 5px;">
-                            💻 Step 1: Register wpConnect in Claude (Run Once Globally)
+                            💻 Step 1: Register connectMWP in Claude (Run Once Globally)
                         </div>
                         
                         <!-- Interactive Scope Selector -->
@@ -749,7 +749,7 @@ class WPConnect_Agent {
                         } else if (scope === "project") {
                             cmd += "--scope project ";
                         }
-                        cmd += 'wpconnect npx -y wpconnect-mcp';
+                        cmd += 'connectmwp npx -y connectmwp-mcp';
                         document.getElementById('claude-cmd-text').value = cmd;
                     }
                     </script>
@@ -770,10 +770,10 @@ class WPConnect_Agent {
                     <div style="margin-top: 25px; font-size: 13px; color: #31708f; background: #d9edf7; border: 1px solid #bce8f1; border-radius: 6px; padding: 15px; line-height: 1.5; display: flex; align-items: flex-start; gap: 8px;">
                         <span style="font-size: 16px;">💡</span>
                         <div>
-                            <strong>Local Development Tip:</strong> Since <code>wpconnect-mcp</code> is not yet published to npm, you can use the local path of your index.js file:
+                            <strong>Local Development Tip:</strong> Since <code>connectmwp-mcp</code> is not yet published to npm, you can use the local path of your index.js file:
                             <ul style="margin: 5px 0 0 15px; padding: 0; list-style-type: disc;">
-                                <li><strong>Register Server (Step 1):</strong> Replace <code>npx -y wpconnect-mcp</code> with <code>node /path/to/wpconnect-mcp/index.js</code></li>
-                                <li><strong>Link Site (Step 2):</strong> Replace <code>npx -y wpconnect-mcp</code> with <code>node /path/to/wpconnect-mcp/index.js</code></li>
+                                <li><strong>Register Server (Step 1):</strong> Replace <code>npx -y connectmwp-mcp</code> with <code>node /path/to/connectmwp-mcp/index.js</code></li>
+                                <li><strong>Link Site (Step 2):</strong> Replace <code>npx -y connectmwp-mcp</code> with <code>node /path/to/connectmwp-mcp/index.js</code></li>
                             </ul>
                         </div>
                     </div>
@@ -792,8 +792,8 @@ class WPConnect_Agent {
                     </p>
                     
                     <form method="post" action="">
-                        <?php wp_nonce_field('wpconnect_generate_token'); ?>
-                        <input type="hidden" name="wpconnect_action" value="generate" />
+                        <?php wp_nonce_field('connectmwp_generate_token'); ?>
+                        <input type="hidden" name="connectmwp_action" value="generate" />
                         
                         <div style="margin-bottom: 20px;">
                             <label for="token_name" style="display: block; font-size: 14px; font-weight: 600; color: #2c3e50; margin-bottom: 8px;">Connection Name</label>
@@ -835,8 +835,8 @@ class WPConnect_Agent {
                                         <td style="padding: 12px 10px; vertical-align: middle; font-family: monospace; font-size: 12px; color: #7f8c8d;"><?php echo esc_html(!empty($token['last_ip']) ? $token['last_ip'] : '-'); ?></td>
                                         <td style="padding: 12px 10px; vertical-align: middle; text-align: right;">
                                             <form method="post" style="display:inline;">
-                                                <?php wp_nonce_field('wpconnect_revoke_token'); ?>
-                                                <input type="hidden" name="wpconnect_action" value="revoke" />
+                                                <?php wp_nonce_field('connectmwp_revoke_token'); ?>
+                                                <input type="hidden" name="connectmwp_action" value="revoke" />
                                                 <input type="hidden" name="token_hash" value="<?php echo esc_attr($token['hash']); ?>" />
                                                 <button type="submit" class="button button-link-delete" onclick="return confirm('Are you sure you want to revoke this connection?');" style="color: #d63638; border-color: #ccd0d4; padding: 2px 10px; height: auto;">Revoke</button>
                                             </form>
@@ -874,17 +874,17 @@ class WPConnect_Agent {
 
     private function revoke_token_globally($hash) {
         $users = get_users([
-            'meta_key'     => '_wpconnect_tokens',
+            'meta_key'     => '_connectmwp_tokens',
             'meta_compare' => 'EXISTS'
         ]);
 
         foreach ($users as $user) {
-            $tokens = get_user_meta($user->ID, '_wpconnect_tokens', true);
+            $tokens = get_user_meta($user->ID, '_connectmwp_tokens', true);
             if (is_array($tokens)) {
                 $filtered = array_filter($tokens, function($token) use ($hash) {
                     return !hash_equals($token['hash'], $hash);
                 });
-                update_user_meta($user->ID, '_wpconnect_tokens', array_values($filtered));
+                update_user_meta($user->ID, '_connectmwp_tokens', array_values($filtered));
             }
         }
     }
@@ -893,7 +893,7 @@ class WPConnect_Agent {
      * Handle OAuth Handshake Authorize Flow
      */
     public function handle_oauth_approve() {
-        if (!isset($_GET['page']) || $_GET['page'] !== 'wpconnect-auth') {
+        if (!isset($_GET['page']) || $_GET['page'] !== 'connectmwp-auth') {
             return;
         }
 
@@ -919,31 +919,31 @@ class WPConnect_Agent {
         }
 
         // Handle Approve POST
-        if (isset($_POST['wpconnect_oauth_action'])) {
-            check_admin_referer('wpconnect_oauth_approve');
+        if (isset($_POST['connectmwp_oauth_action'])) {
+            check_admin_referer('connectmwp_oauth_approve');
             
-            if ($_POST['wpconnect_oauth_action'] === 'approve') {
+            if ($_POST['connectmwp_oauth_action'] === 'approve') {
                 $user = wp_get_current_user();
                 
                 // Generate secure token
-                $raw_token = 'wpconnect_tk_' . bin2hex(random_bytes(24));
+                $raw_token = 'connectmwp_tk_' . bin2hex(random_bytes(24));
                 $token_hash = hash('sha256', $raw_token);
                 
                 // Save token metadata to user
-                $tokens = get_user_meta($user->ID, '_wpconnect_tokens', true);
+                $tokens = get_user_meta($user->ID, '_connectmwp_tokens', true);
                 if (!is_array($tokens)) {
                     $tokens = [];
                 }
                 
                 $tokens[] = [
-                    'name'      => isset($_POST['app_name']) ? sanitize_text_field($_POST['app_name']) : 'wpConnect Client',
+                    'name'      => isset($_POST['app_name']) ? sanitize_text_field($_POST['app_name']) : 'connectMWP Client',
                     'hash'      => $token_hash,
                     'created'   => current_time('mysql'),
                     'last_used' => '',
                     'last_ip'   => '',
                 ];
                 
-                update_user_meta($user->ID, '_wpconnect_tokens', $tokens);
+                update_user_meta($user->ID, '_connectmwp_tokens', $tokens);
                 
                 // Redirect back to callback URL with credentials in hash fragment (C-2 Fix)
                 $redirect_url = $callback . '#token=' . urlencode($raw_token) . 
@@ -984,7 +984,7 @@ class WPConnect_Agent {
         <head>
             <meta charset="<?php bloginfo( 'charset' ); ?>">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Authorize wpConnect</title>
+            <title>Authorize connectMWP</title>
             <style>
                 body {
                     background: #f0f2f5;
@@ -1092,7 +1092,7 @@ class WPConnect_Agent {
         </head>
         <body>
             <div class="card">
-                <h2>Authorize wpConnect</h2>
+                <h2>Authorize connectMWP</h2>
                 <p>
                     An AI tool is requesting permission to connect to <strong><?php echo esc_html(get_bloginfo('name')); ?></strong>. This will authorize remote commands under your user profile.
                 </p>
@@ -1102,15 +1102,15 @@ class WPConnect_Agent {
                 </div>
                 
                 <form method="post">
-                    <?php wp_nonce_field('wpconnect_oauth_approve'); ?>
+                    <?php wp_nonce_field('connectmwp_oauth_approve'); ?>
                     <div>
                         <label for="app_name">Client Name</label>
                         <input type="text" name="app_name" id="app_name" value="Claude Client" required />
                     </div>
                     
                     <div class="actions">
-                        <button type="submit" name="wpconnect_oauth_action" value="deny" class="btn btn-deny">Deny</button>
-                        <button type="submit" name="wpconnect_oauth_action" value="approve" class="btn btn-approve">Approve & Connect</button>
+                        <button type="submit" name="connectmwp_oauth_action" value="deny" class="btn btn-deny">Deny</button>
+                        <button type="submit" name="connectmwp_oauth_action" value="approve" class="btn btn-approve">Approve & Connect</button>
                     </div>
                 </form>
             </div>
@@ -1121,4 +1121,4 @@ class WPConnect_Agent {
 }
 
 // Instantiate
-WPConnect_Agent::instance();
+ConnectMWP_Agent::instance();

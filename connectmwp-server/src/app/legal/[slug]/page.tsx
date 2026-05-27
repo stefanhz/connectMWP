@@ -23,13 +23,13 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const allowedSlugs = ['privacy', 'terms', 'about'];
   if (!allowedSlugs.includes(slug)) {
     return {
-      title: 'Page Not Found — wpConnect',
+      title: 'Page Not Found — connectMWP',
       description: 'The requested legal page could not be located.'
     };
   }
   const capitalized = slug.charAt(0).toUpperCase() + slug.slice(1);
   return {
-    title: `${capitalized} — wpConnect`,
+    title: `${capitalized} — connectMWP`,
     description: `Read the ${slug} guidelines for connectmwp.com. Secure, decentralized WordPress AI integration.`
   };
 }
@@ -142,7 +142,7 @@ export default async function LegalPage({ params }: PageProps) {
             fontWeight: 'bold',
             boxShadow: '0 4px 10px rgba(99, 102, 241, 0.2)'
           }}>
-            wpConnect v1.2.3
+            connectMWP v1.2.3
           </div>
         </div>
 

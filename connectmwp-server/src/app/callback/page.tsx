@@ -33,15 +33,15 @@ export default function Callback() {
     }
   }, []);
 
-  const cliCommand = `claude mcp add wpconnect npx -y wpconnect-mcp --site "${site}" --token "${token}"`;
+  const cliCommand = `claude mcp add connectmwp npx -y connectmwp-mcp --site "${site}" --token "${token}"`;
 
   const jsonConfig = JSON.stringify({
     mcpServers: {
-      wpconnect: {
+      connectmwp: {
         command: "npx",
         args: [
           "-y",
-          "wpconnect-mcp",
+          "connectmwp-mcp",
           "--site",
           site,
           "--token",
