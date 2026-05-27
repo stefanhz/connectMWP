@@ -58,7 +58,7 @@ export default function Home() {
     },
     {
       q: "Can I manage multiple WordPress sites?",
-      a: "Yes! wpConnect v1.2.2 supports multi-site configurations. You register the background server process once, and add multiple domains via the 'add-site' CLI helper. You can target specific sites using the optional 'site' parameter."
+      a: "Yes! wpConnect v1.2.3 supports multi-site configurations. You register the background server process once, and add multiple domains via the 'add-site' CLI helper. You can target specific sites using the optional 'site' parameter."
     }
   ];
 
@@ -286,7 +286,7 @@ export default function Home() {
           Brought to you by <a href="https://2morrow.ai" target="_blank" rel="noopener noreferrer" style={{ color: '#818cf8', textDecoration: 'none' }}>2morrow.ai</a>
         </div>
         <div style={{ fontSize: '11px', opacity: 0.6 }}>
-          wpConnect Client v1.2.2
+          wpConnect Client v1.2.3
         </div>
       </footer>
     </div>

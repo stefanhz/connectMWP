@@ -381,7 +381,7 @@ async function callWordPressAjax(siteUrl, token, endpoint, method, data, isUploa
 const server = new Server(
   {
     name: 'wpconnect-mcp',
-    version: '1.2.2',
+    version: '1.2.3',
   },
   {
     capabilities: {

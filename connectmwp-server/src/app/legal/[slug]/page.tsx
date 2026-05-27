@@ -18,9 +18,15 @@ export async function generateStaticParams() {
   ];
 }
 
-// Generate metadata dynamically
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { slug } = await params;
+  const allowedSlugs = ['privacy', 'terms', 'about'];
+  if (!allowedSlugs.includes(slug)) {
+    return {
+      title: 'Page Not Found — wpConnect',
+      description: 'The requested legal page could not be located.'
+    };
+  }
   const capitalized = slug.charAt(0).toUpperCase() + slug.slice(1);
   return {
     title: `${capitalized} — wpConnect`,
@@ -71,10 +77,13 @@ function parseMarkdown(markdown: string): string {
 
 export default async function LegalPage({ params }: PageProps) {
   const { slug } = await params;
-  const filePath = path.join(process.cwd(), 'content', `${slug}.md`);
-
   let parsedHtml = '';
   try {
+    const allowedSlugs = ['privacy', 'terms', 'about'];
+    if (!allowedSlugs.includes(slug)) {
+      throw new Error('Invalid or unauthorized slug parameter.');
+    }
+    const filePath = path.join(process.cwd(), 'content', `${slug}.md`);
     const rawContent = await fs.readFile(filePath, 'utf-8');
     parsedHtml = parseMarkdown(rawContent);
   } catch (error) {
@@ -133,7 +142,7 @@ export default async function LegalPage({ params }: PageProps) {
             fontWeight: 'bold',
             boxShadow: '0 4px 10px rgba(99, 102, 241, 0.2)'
           }}>
-            wpConnect v1.2.2
+            wpConnect v1.2.3
           </div>
         </div>
 

@@ -3,7 +3,7 @@
  * Plugin Name: wpConnect Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 1.2.2
+ * Version: 1.2.3
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -148,14 +148,12 @@ class WPConnect_Agent {
             return false; // Nonce already claimed (replay attack or race condition)
         }
 
-        // Periodically prune expired nonces (10% chance per request)
-        if (wp_rand(1, 100) <= 10) {
-            global $wpdb;
-            $wpdb->query($wpdb->prepare(
-                "DELETE FROM {$wpdb->options} WHERE option_name LIKE 'wpc_nonce_%' AND option_value < %d",
-                time()
-            ));
-        }
+        // Prune expired nonces (100% probability, safe as it only runs for authenticated requests)
+        global $wpdb;
+        $wpdb->query($wpdb->prepare(
+            "DELETE FROM {$wpdb->options} WHERE option_name LIKE 'wpc_nonce_%' AND option_value < %d",
+            time()
+        ));
 
         return true;
     }
@@ -163,16 +161,21 @@ class WPConnect_Agent {
     private function find_user_by_token_hash($token_hash) {
         $users = get_users([
             'meta_key'     => '_wpconnect_tokens',
-            'meta_compare' => 'EXISTS'
+            'meta_value'   => $token_hash,
+            'meta_compare' => 'LIKE',
+            'number'       => 1
         ]);
 
-        foreach ($users as $user) {
-            $tokens = get_user_meta($user->ID, '_wpconnect_tokens', true);
-            if (is_array($tokens)) {
-                foreach ($tokens as $token) {
-                    if (isset($token['hash']) && hash_equals($token['hash'], $token_hash)) {
-                        return $user->ID;
-                    }
+        if (empty($users)) {
+            return false;
+        }
+
+        $user = $users[0];
+        $tokens = get_user_meta($user->ID, '_wpconnect_tokens', true);
+        if (is_array($tokens)) {
+            foreach ($tokens as $token) {
+                if (isset($token['hash']) && hash_equals($token['hash'], $token_hash)) {
+                    return $user->ID;
                 }
             }
         }
@@ -443,6 +446,11 @@ class WPConnect_Agent {
         // Check if file is uploaded
         if (empty($_FILES['file'])) {
             return new WP_REST_Response(['success' => false, 'error' => 'No file uploaded'], 400);
+        }
+
+        // Enforce server-side size limit of 10MB (10 * 1024 * 1024 bytes) (API4 Fix)
+        if (!empty($_FILES['file']['size']) && $_FILES['file']['size'] > 10 * 1024 * 1024) {
+            return new WP_REST_Response(['success' => false, 'error' => 'File size exceeds maximum limit of 10MB.'], 400);
         }
 
         // Perform the upload
