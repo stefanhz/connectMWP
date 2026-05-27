@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.2
+ * Version: 2.0.3
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -13,7 +13,7 @@ defined('ABSPATH') || exit;
 
 class ConnectMWP_Agent {
 
-    const VERSION = '2.0.2';
+    const VERSION = '2.0.3';
     const OPTION_TOKENS = 'connectmwp_agent_tokens';
     const OPTION_NONCES = 'connectmwp_agent_nonces';
     const API_NAMESPACE = 'connectmwp/v1';
@@ -1078,8 +1078,11 @@ class ConnectMWP_Agent {
                         <div style="font-size: 13px; font-weight: 600; color: #2c3e50; margin-bottom: 8px;">
                             📋 Cursor IDE Configuration (Settings -> Features -> MCP)
                         </div>
-                        <pre style="background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; color: #2c3e50; overflow-x: auto; line-height: 1.4; margin: 0;">{
-  "mcpServers": {
+                        <div style="font-size: 12px; color: #7f8c8d; margin-bottom: 12px; line-height: 1.4;">
+                            💡 <strong>Integration Tip:</strong> If you already have other MCP servers configured, copy and merge only the <strong style="color: #2980b9;">highlighted block</strong> inside your existing <code>"mcpServers"</code> object (remember to add a comma between servers).
+                        </div>
+                        <pre style="background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; color: #2c3e50; overflow-x: auto; line-height: 1.4; margin: 0;"><span style="color: #95a5a6;">{
+  "mcpServers": {</span><span style="font-weight: 700; color: #2c3e50; background: rgba(52, 152, 219, 0.08); display: inline-block; width: 100%; border-left: 3px solid #3498db; padding: 6px 0 6px 8px; margin: 4px 0;">
     "connectmwp": {
       "command": "npx",
       "args": [
@@ -1087,16 +1090,19 @@ class ConnectMWP_Agent {
         "connectmwp-mcp"
       ]
     }
-  }
-}</pre>
+</span><span style="color: #95a5a6;">  }
+}</span></pre>
                     </div>
 
                     <div>
                         <div style="font-size: 13px; font-weight: 600; color: #2c3e50; margin-bottom: 8px;">
                             📋 Claude Desktop Configuration (claude_desktop_config.json)
                         </div>
-                        <pre style="background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; color: #2c3e50; overflow-x: auto; line-height: 1.4; margin: 0;">{
-  "mcpServers": {
+                        <div style="font-size: 12px; color: #7f8c8d; margin-bottom: 12px; line-height: 1.4;">
+                            💡 <strong>Integration Tip:</strong> If you already have other MCP servers configured, copy and merge only the <strong style="color: #2980b9;">highlighted block</strong> inside your existing <code>"mcpServers"</code> object (remember to add a comma between servers).
+                        </div>
+                        <pre style="background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; color: #2c3e50; overflow-x: auto; line-height: 1.4; margin: 0;"><span style="color: #95a5a6;">{
+  "mcpServers": {</span><span style="font-weight: 700; color: #2c3e50; background: rgba(52, 152, 219, 0.08); display: inline-block; width: 100%; border-left: 3px solid #3498db; padding: 6px 0 6px 8px; margin: 4px 0;">
     "connectmwp": {
       "command": "npx",
       "args": [
@@ -1104,8 +1110,8 @@ class ConnectMWP_Agent {
         "connectmwp-mcp"
       ]
     }
-  }
-}</pre>
+</span><span style="color: #95a5a6;">  }
+}</span></pre>
                     </div>
                 </div>
             </div>

@@ -4,6 +4,15 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-27 — v2.0.3
+
+### Changed
+- **connectmwp-agent — visually highlighted configuration snippets.** Redesigned the Cursor and Claude Desktop JSON config codeblocks inside the settings page to fade out standard `mcpServers` boilerplate and draw focus directly to the `connectmwp` server block.
+- **connectmwp-agent — added integration merge tips.** Added a helpful notice above configuration pre-blocks to guide users on merging the server definition block if they have existing MCP servers configured.
+
+### Chore
+- Bumped versions of all components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) to `2.0.3`.
+
 ## 2026-05-27 — v2.0.2
 
 ### Changed
