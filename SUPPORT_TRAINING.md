@@ -64,7 +64,16 @@ Every single command sent by the local MCP client includes two validation header
 
 The WordPress plugin verifies these on every incoming request:
 * **Clock Skew Window:** The timestamp must match the WordPress server's clock within **5 minutes (300 seconds)**. 
-* **Nonce Storage:** Used nonces are stored in the WordPress database for **6 minutes** and rejected if reused.
+* **Atomic Nonce Storage:** Each nonce is checked and saved as an individual atomic option (`wpc_nonce_[hash]`) in the database. If a nonce was already registered, it is rejected immediately, preventing replay attacks and race conditions. An automated prune job runs periodically to clear expired nonces.
+* **Token Verification First:** The plugin checks if the token is valid in user metadata *before* executing the nonce check, preventing unauthenticated database-write floods (DoS protection).
+
+### Safe Redirection & Fragment Token Delivery (Implicit Flow)
+* **Allowed Host Check:** Redirection during the connection handshake is restricted to authorized domains only (`connectmwp.com` and `connect-mwp.vercel.app`). Other targets are blocked automatically.
+* **Fragment-Based Token Exchange:** Tokens are delivered back to the setup site inside the URL hash fragment (`#token=...`) instead of the query parameters (`?token=...`). Since fragments are kept entirely in the browser and never sent over the HTTP request line, the client's token never leaks into Vercel or proxy access logs.
+
+### Outbound Fetch and SSRF Protections
+* **Host Filtering:** The local MCP client blocks outbound file/image downloads attempting to access loopback (`127.0.0.1`, `::1`), link-local (`169.254.0.0/16`), or RFC1918 private ranges, preventing Server-Side Request Forgery.
+* **File Upload Filters:** Local media uploads are restricted to approved image file extensions (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.bmp`, `.tiff`) and capped to a maximum size of 10MB to protect memory resources.
 
 ---
 

@@ -5,6 +5,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
+import dns from 'dns/promises';
 
 // Configuration file path
 const CONFIG_PATH = path.join(os.homedir(), '.wpconnect.json');
@@ -91,6 +92,58 @@ async function getCredentials(requestedSite) {
   }
   
   return { siteUrl: targetSite, token: siteConfig.token };
+}
+
+/**
+ * Helper to check if an IP address is in a private, loopback, or link-local range (I-2)
+ */
+function isPrivateIp(ip) {
+  // IPv4 Checks
+  if (/^(127\.|10\.|169\.254\.|192\.168\.)/.test(ip)) {
+    return true;
+  }
+  // 172.16.0.0/12
+  if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip)) {
+    return true;
+  }
+  // IPv6 Checks
+  if (ip === '::1' || ip.startsWith('fe80:') || ip.startsWith('fc00:') || ip.startsWith('fd00:')) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Validate image URL to prevent SSRF (I-2)
+ */
+async function validateImageUrl(imageUrl) {
+  const url = new URL(imageUrl);
+  if (url.protocol !== 'https:') {
+    throw new Error('Only HTTPS image URLs are allowed for security.');
+  }
+
+  const hostname = url.hostname;
+  let ips = [];
+
+  try {
+    // Attempt resolving hostname to IP addresses
+    const addresses = await dns.resolve(hostname);
+    ips = addresses;
+  } catch (error) {
+    try {
+      // Fallback for direct IP hostnames or DNS lookup
+      const lookupResult = await dns.lookup(hostname);
+      ips = [lookupResult.address];
+    } catch {
+      throw new Error(`Could not resolve hostname: ${hostname}`);
+    }
+  }
+
+  for (const ip of ips) {
+    if (isPrivateIp(ip)) {
+      throw new Error(`Access to private IP range is blocked: ${ip}`);
+    }
+  }
 }
 
 // ============================================================================
@@ -328,7 +381,7 @@ async function callWordPressAjax(siteUrl, token, endpoint, method, data, isUploa
 const server = new Server(
   {
     name: 'wpconnect-mcp',
-    version: '1.2.1',
+    version: '1.2.2',
   },
   {
     capabilities: {
@@ -533,18 +586,47 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         if (image_url) {
+          // SSRF Validation (I-2 Fix)
+          await validateImageUrl(image_url);
+
           // Fetch image from URL
           const imgRes = await fetch(image_url);
           if (!imgRes.ok) throw new Error(`Failed to download image from URL: ${image_url}`);
+
+          // Size limit check on Content-Length header if present
+          const contentLength = imgRes.headers.get('content-length');
+          if (contentLength && parseInt(contentLength, 10) > 10 * 1024 * 1024) {
+            throw new Error('Image size exceeds the maximum limit of 10MB.');
+          }
+
           fileBuffer = Buffer.from(await imgRes.arrayBuffer());
+          
+          // Verify final buffer size
+          if (fileBuffer.byteLength > 10 * 1024 * 1024) {
+            throw new Error('Image size exceeds the maximum limit of 10MB.');
+          }
+
           if (!filename) {
             const urlPath = new URL(image_url).pathname;
             const parsedName = path.basename(urlPath);
             if (parsedName && parsedName.includes('.')) nameToUse = parsedName;
           }
         } else {
+          // File extension allowlist validation (I-2 Fix)
+          const ALLOWED_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.tiff'];
+          const ext = path.extname(file_path).toLowerCase();
+          if (!ALLOWED_EXTENSIONS.includes(ext)) {
+            throw new Error(`Invalid file extension: ${ext}. Only image files (${ALLOWED_EXTENSIONS.join(', ')}) are allowed.`);
+          }
+
           // Read local file
           fileBuffer = await fs.readFile(file_path);
+          
+          // Verify buffer size
+          if (fileBuffer.byteLength > 10 * 1024 * 1024) {
+            throw new Error('File size exceeds the maximum limit of 10MB.');
+          }
+
           if (!filename) nameToUse = path.basename(file_path);
         }
 

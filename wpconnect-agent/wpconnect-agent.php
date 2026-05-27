@@ -3,7 +3,7 @@
  * Plugin Name: wpConnect Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 1.2.1
+ * Version: 1.2.2
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -40,6 +40,9 @@ class WPConnect_Agent {
         // Admin pages
         add_action('admin_menu', [$this, 'add_settings_page']);
         add_action('admin_init', [$this, 'handle_oauth_approve']);
+
+        // Allowed hosts for safe redirects (C-1)
+        add_filter('allowed_redirect_hosts', [$this, 'filter_allowed_redirect_hosts']);
     }
 
     /**
@@ -55,21 +58,21 @@ class WPConnect_Agent {
             return $user_id;
         }
 
-        // Validate replay attack prevention
-        if (!$this->validate_replay_headers()) {
-            return $user_id;
-        }
-
-        // Search for matching token in database
+        // 1. Search for matching token in database FIRST (C-3 Fix)
         $token_hash = hash('sha256', $token);
         $user_id_found = $this->find_user_by_token_hash($token_hash);
 
-        if ($user_id_found) {
-            $this->update_token_last_used($user_id_found, $token_hash);
-            return $user_id_found;
+        if (!$user_id_found) {
+            return $user_id;
         }
 
-        return $user_id;
+        // 2. Validate replay attack prevention (only for valid tokens)
+        if (!$this->validate_replay_headers()) {
+            return 0; // Deny auth if replay validation fails
+        }
+
+        $this->update_token_last_used($user_id_found, $token_hash);
+        return $user_id_found;
     }
 
     private function get_auth_token_from_header() {
@@ -135,22 +138,24 @@ class WPConnect_Agent {
             return false;
         }
 
-        // Verify nonce hasn't been claimed yet within the window
-        $nonces = get_option(self::OPTION_NONCES, []);
-        $now = time();
+        // Sanitize nonce and check atomically via individual transient options (C-3 / I-1 Fix)
+        $nonce_hash = md5($nonce);
+        $nonce_key = 'wpc_nonce_' . $nonce_hash;
 
-        // Prune expired nonces
-        $nonces = array_filter($nonces, function($expiry) use ($now) {
-            return $expiry > $now;
-        });
-
-        if (isset($nonces[$nonce])) {
-            return false; // Replay attack detected
+        $expiry = time() + 360;
+        // add_option returns false if the option already exists
+        if (!add_option($nonce_key, $expiry, '', 'no')) {
+            return false; // Nonce already claimed (replay attack or race condition)
         }
 
-        // Store nonce with a 6-minute expiry window
-        $nonces[$nonce] = $now + 360;
-        update_option(self::OPTION_NONCES, $nonces, false);
+        // Periodically prune expired nonces (10% chance per request)
+        if (wp_rand(1, 100) <= 10) {
+            global $wpdb;
+            $wpdb->query($wpdb->prepare(
+                "DELETE FROM {$wpdb->options} WHERE option_name LIKE 'wpc_nonce_%' AND option_value < %d",
+                time()
+            ));
+        }
 
         return true;
     }
@@ -194,16 +199,8 @@ class WPConnect_Agent {
     }
 
     private function get_client_ip() {
-        foreach (['HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP', 'REMOTE_ADDR'] as $header) {
-            if (!empty($_SERVER[$header])) {
-                $ip = $_SERVER[$header];
-                if (strpos($ip, ',') !== false) {
-                    $ip = trim(explode(',', $ip)[0]);
-                }
-                if (filter_var($ip, FILTER_VALIDATE_IP)) {
-                    return $ip;
-                }
-            }
+        if (!empty($_SERVER['REMOTE_ADDR']) && filter_var($_SERVER['REMOTE_ADDR'], FILTER_VALIDATE_IP)) {
+            return $_SERVER['REMOTE_ADDR'];
         }
         return 'unknown';
     }
@@ -258,6 +255,31 @@ class WPConnect_Agent {
         ]);
     }
 
+    /**
+     * Allowed redirect hosts for OAuth callback (C-1)
+     */
+    public function filter_allowed_redirect_hosts($hosts) {
+        $hosts[] = 'connectmwp.com';
+        $hosts[] = 'connect-mwp.vercel.app';
+        return $hosts;
+    }
+
+    /**
+     * Check if callback host is authorized (C-1)
+     */
+    private function is_allowed_callback($callback) {
+        if (empty($callback)) {
+            return false;
+        }
+        $host = wp_parse_url($callback, PHP_URL_HOST);
+        if (!$host) {
+            return false;
+        }
+        $host = strtolower($host);
+        $allowed = ['connectmwp.com', 'connect-mwp.vercel.app'];
+        return in_array($host, $allowed, true);
+    }
+
     // Permission callbacks
     public function check_read_permission() {
         return is_user_logged_in() && current_user_can('edit_posts');
@@ -279,12 +301,21 @@ class WPConnect_Agent {
     // Handlers
     public function get_posts_handler(WP_REST_Request $request) {
         $limit = $request->get_param('limit') ? intval($request->get_param('limit')) : 50;
+        // Clamp query limit to [1, 100] (H-4 Fix)
+        $limit = min(100, max(1, $limit));
         
-        $posts_query = new WP_Query([
+        $query_args = [
             'post_type'      => 'post',
             'post_status'    => ['publish', 'draft'],
             'posts_per_page' => $limit,
-        ]);
+        ];
+
+        // Scope drafts to own user if user lacks edit_others_posts (H-2 Fix)
+        if (!current_user_can('edit_others_posts')) {
+            $query_args['author'] = get_current_user_id();
+        }
+
+        $posts_query = new WP_Query($query_args);
 
         $posts = [];
         foreach ($posts_query->posts as $post) {
@@ -318,6 +349,11 @@ class WPConnect_Agent {
             return new WP_REST_Response(['success' => false, 'error' => 'Title is required'], 400);
         }
 
+        // Contributor publish privilege check (H-1 Fix)
+        if ($status === 'publish' && !current_user_can('publish_posts')) {
+            $status = 'pending';
+        }
+
         $post_id = wp_insert_post([
             'post_title'     => $title,
             'post_content'   => $content,
@@ -327,11 +363,16 @@ class WPConnect_Agent {
         ]);
 
         if (is_wp_error($post_id)) {
-            return new WP_REST_Response(['success' => false, 'error' => $post_id->get_error_message()], 500);
+            error_log('wpConnect error inserting post: ' . $post_id->get_error_message());
+            return new WP_REST_Response(['success' => false, 'error' => 'Failed to create post. Check site logs.'], 500);
         }
 
+        // Validate featured media exists and is attachment type (API1 Ownership/Validation Check)
         if ($featured_media > 0) {
-            set_post_thumbnail($post_id, $featured_media);
+            $attachment = get_post($featured_media);
+            if ($attachment && $attachment->post_type === 'attachment') {
+                set_post_thumbnail($post_id, $featured_media);
+            }
         }
 
         return new WP_REST_Response([
@@ -358,7 +399,16 @@ class WPConnect_Agent {
             $post_data['post_content'] = wp_kses_post($params['content']);
         }
         if (isset($params['status'])) {
-            $post_data['post_status'] = sanitize_key($params['status']);
+            $status = sanitize_key($params['status']);
+            // Contributor publish privilege check (H-1 Fix)
+            if ($status === 'publish' && !current_user_can('publish_posts')) {
+                $current_post = get_post($post_id);
+                if ($current_post && $current_post->post_status !== 'publish') {
+                    $post_data['post_status'] = 'pending';
+                }
+            } else {
+                $post_data['post_status'] = $status;
+            }
         }
         if (isset($params['categories'])) {
             $post_data['post_category'] = array_map('intval', (array) $params['categories']);
@@ -369,11 +419,17 @@ class WPConnect_Agent {
 
         $updated_id = wp_update_post($post_data);
         if (is_wp_error($updated_id)) {
-            return new WP_REST_Response(['success' => false, 'error' => $updated_id->get_error_message()], 500);
+            error_log('wpConnect error updating post: ' . $updated_id->get_error_message());
+            return new WP_REST_Response(['success' => false, 'error' => 'Failed to update post. Check site logs.'], 500);
         }
 
+        // Validate featured media exists and is attachment type (API1 Ownership/Validation Check)
         if (!empty($params['featured_media'])) {
-            set_post_thumbnail($post_id, intval($params['featured_media']));
+            $featured_media = intval($params['featured_media']);
+            $attachment = get_post($featured_media);
+            if ($attachment && $attachment->post_type === 'attachment') {
+                set_post_thumbnail($post_id, $featured_media);
+            }
         }
 
         return new WP_REST_Response(['success' => true, 'post_id' => $post_id, 'url' => get_permalink($post_id)], 200);
@@ -393,7 +449,8 @@ class WPConnect_Agent {
         $attachment_id = media_handle_upload('file', 0); // 0 means unattached
 
         if (is_wp_error($attachment_id)) {
-            return new WP_REST_Response(['success' => false, 'error' => $attachment_id->get_error_message()], 500);
+            error_log('wpConnect error uploading media: ' . $attachment_id->get_error_message());
+            return new WP_REST_Response(['success' => false, 'error' => 'Failed to upload media. Check site logs.'], 500);
         }
 
         return new WP_REST_Response([
@@ -705,10 +762,10 @@ class WPConnect_Agent {
                     <div style="margin-top: 25px; font-size: 13px; color: #31708f; background: #d9edf7; border: 1px solid #bce8f1; border-radius: 6px; padding: 15px; line-height: 1.5; display: flex; align-items: flex-start; gap: 8px;">
                         <span style="font-size: 16px;">💡</span>
                         <div>
-                            <strong>Local Development Tip:</strong> Since <code>wpconnect-mcp</code> is not yet published to npm, use local path parameters:
+                            <strong>Local Development Tip:</strong> Since <code>wpconnect-mcp</code> is not yet published to npm, you can use the local path of your index.js file:
                             <ul style="margin: 5px 0 0 15px; padding: 0; list-style-type: disc;">
-                                <li><strong>Register Server (Step 1):</strong> Replace <code>npx -y wpconnect-mcp</code> with <code>node /Users/stefanhz/Documents/aiSpace/wpConnect/wpconnect-mcp/index.js</code></li>
-                                <li><strong>Link Site (Step 2):</strong> Replace <code>npx -y wpconnect-mcp</code> with <code>node /Users/stefanhz/Documents/aiSpace/wpConnect/wpconnect-mcp/index.js</code></li>
+                                <li><strong>Register Server (Step 1):</strong> Replace <code>npx -y wpconnect-mcp</code> with <code>node /path/to/wpconnect-mcp/index.js</code></li>
+                                <li><strong>Link Site (Step 2):</strong> Replace <code>npx -y wpconnect-mcp</code> with <code>node /path/to/wpconnect-mcp/index.js</code></li>
                             </ul>
                         </div>
                     </div>
@@ -836,11 +893,21 @@ class WPConnect_Agent {
             auth_redirect();
         }
 
+        // Gate to users with edit_posts capability (H-3 Fix)
+        if (!current_user_can('edit_posts')) {
+            wp_die('Error: You do not have sufficient privileges to authorize connections.', 'Permission Denied', ['response' => 403]);
+        }
+
         $callback = isset($_GET['callback']) ? esc_url_raw($_GET['callback']) : '';
         $state = isset($_GET['state']) ? sanitize_text_field($_GET['state']) : '';
 
         if (empty($callback)) {
-            wp_die('Error: Missing callback URL parameter.');
+            wp_die('Error: Missing callback URL parameter.', 'Bad Request', ['response' => 400]);
+        }
+
+        // Validate callback domain (C-1 Fix)
+        if (!$this->is_allowed_callback($callback)) {
+            wp_die('Error: Redirection callback domain is not authorized.', 'Authorization Error', ['response' => 400]);
         }
 
         // Handle Approve POST
@@ -870,22 +937,17 @@ class WPConnect_Agent {
                 
                 update_user_meta($user->ID, '_wpconnect_tokens', $tokens);
                 
-                // Redirect back to callback serverless URL with token
-                $redirect_url = add_query_arg([
-                    'token' => $raw_token,
-                    'state' => $state,
-                    'site'  => esc_url(home_url())
-                ], $callback);
+                // Redirect back to callback URL with credentials in hash fragment (C-2 Fix)
+                $redirect_url = $callback . '#token=' . urlencode($raw_token) . 
+                                '&state=' . urlencode($state) . 
+                                '&site=' . urlencode(esc_url(home_url()));
                 
-                wp_redirect($redirect_url);
+                wp_safe_redirect($redirect_url);
                 exit;
             } else {
-                // Denied connection
-                $redirect_url = add_query_arg([
-                    'error' => 'access_denied',
-                    'state' => $state
-                ], $callback);
-                wp_redirect($redirect_url);
+                // Denied connection redirects back with error in fragment (C-2 Fix)
+                $redirect_url = $callback . '#error=access_denied&state=' . urlencode($state);
+                wp_safe_redirect($redirect_url);
                 exit;
             }
         }
@@ -896,7 +958,15 @@ class WPConnect_Agent {
     }
 
     public function render_clean_oauth_screen() {
+        if (!current_user_can('edit_posts')) {
+            wp_die('Error: You do not have sufficient privileges to authorize connections.', 'Permission Denied', ['response' => 403]);
+        }
+
         $callback = isset($_GET['callback']) ? esc_url_raw($_GET['callback']) : '';
+        if (!$this->is_allowed_callback($callback)) {
+            wp_die('Error: Redirection callback domain is not authorized.', 'Authorization Error', ['response' => 400]);
+        }
+
         $state = isset($_GET['state']) ? sanitize_text_field($_GET['state']) : '';
         $user = wp_get_current_user();
         
@@ -1027,7 +1097,7 @@ class WPConnect_Agent {
                     <?php wp_nonce_field('wpconnect_oauth_approve'); ?>
                     <div>
                         <label for="app_name">Client Name</label>
-                        <input type="text" name="app_name" id="app_name" value="Claude Cowork - Stefan's Mac" required />
+                        <input type="text" name="app_name" id="app_name" value="Claude Client" required />
                     </div>
                     
                     <div class="actions">

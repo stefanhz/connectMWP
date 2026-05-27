@@ -133,7 +133,7 @@ export default async function LegalPage({ params }: PageProps) {
             fontWeight: 'bold',
             boxShadow: '0 4px 10px rgba(99, 102, 241, 0.2)'
           }}>
-            wpConnect v1.2.1
+            wpConnect v1.2.2
           </div>
         </div>
 

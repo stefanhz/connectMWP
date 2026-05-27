@@ -10,9 +10,26 @@ export default function Callback() {
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const searchParams = new URLSearchParams(window.location.search);
-      setToken(searchParams.get('token') || '');
-      setSite(searchParams.get('site') || '');
+      // Check fragment (hash) first for secure modern flow (C-2 Fix)
+      let tokenVal = '';
+      let siteVal = '';
+      
+      if (window.location.hash) {
+        const hashStr = window.location.hash.substring(1);
+        const hashParams = new URLSearchParams(hashStr);
+        tokenVal = hashParams.get('token') || '';
+        siteVal = hashParams.get('site') || '';
+      }
+      
+      // Fallback to query params if hash is empty (backward compatibility)
+      if (!tokenVal || !siteVal) {
+        const searchParams = new URLSearchParams(window.location.search);
+        tokenVal = searchParams.get('token') || '';
+        siteVal = searchParams.get('site') || '';
+      }
+      
+      setToken(tokenVal);
+      setSite(siteVal);
     }
   }, []);
 
