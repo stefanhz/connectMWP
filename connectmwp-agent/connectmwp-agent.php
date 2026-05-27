@@ -307,6 +307,15 @@ class ConnectMWP_Agent {
         // Clamp query limit to [1, 100] (H-4 Fix)
         $limit = min(100, max(1, $limit));
         
+        // Parse requested fields (SSOT Over-fetching Fix)
+        $fields_param = $request->get_param('fields');
+        if ($fields_param) {
+            $requested_fields = array_map('trim', explode(',', strtolower($fields_param)));
+        } else {
+            // Default fields exclude the heavy content body
+            $requested_fields = ['id', 'title', 'url', 'status', 'date'];
+        }
+        
         $query_args = [
             'post_type'      => 'post',
             'post_status'    => ['publish', 'draft'],
@@ -322,14 +331,26 @@ class ConnectMWP_Agent {
 
         $posts = [];
         foreach ($posts_query->posts as $post) {
-            $posts[] = [
-                'id'        => $post->ID,
-                'title'     => $post->post_title,
-                'url'       => get_permalink($post->ID),
-                'status'    => $post->post_status,
-                'date'      => $post->post_date,
-                'content'   => $post->post_content,
-            ];
+            $post_item = [];
+            if (in_array('id', $requested_fields, true)) {
+                $post_item['id'] = $post->ID;
+            }
+            if (in_array('title', $requested_fields, true)) {
+                $post_item['title'] = $post->post_title;
+            }
+            if (in_array('url', $requested_fields, true)) {
+                $post_item['url'] = get_permalink($post->ID);
+            }
+            if (in_array('status', $requested_fields, true)) {
+                $post_item['status'] = $post->post_status;
+            }
+            if (in_array('date', $requested_fields, true)) {
+                $post_item['date'] = $post->post_date;
+            }
+            if (in_array('content', $requested_fields, true)) {
+                $post_item['content'] = $post->post_content;
+            }
+            $posts[] = $post_item;
         }
 
         return new WP_REST_Response(['success' => true, 'posts' => $posts], 200);

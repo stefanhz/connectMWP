@@ -13,6 +13,7 @@ interface ClientPageProps {
 export default function ClientPage({ faqs }: ClientPageProps) {
   const [siteUrl, setSiteUrl] = useState('');
   const [error, setError] = useState('');
+  const [warning, setWarning] = useState('');
   const [touched, setTouched] = useState(false);
   const [openFaq, setOpenFaq] = useState<number | null>(null);
   const [isVerifying, setIsVerifying] = useState(false);
@@ -66,6 +67,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
     e.preventDefault();
     setTouched(true);
     setError('');
+    setWarning('');
 
     if (!isValid) {
       return;
@@ -77,6 +79,8 @@ export default function ClientPage({ faqs }: ClientPageProps) {
       // Validate and clean URL
       let cleanUrl = siteUrl.trim();
       let resolvedUrl = cleanUrl;
+      let isHardError = false;
+      let warningMsg = '';
 
       try {
         const response = await fetch(`/api/verify-site?url=${encodeURIComponent(cleanUrl)}`);
@@ -86,9 +90,28 @@ export default function ClientPage({ faqs }: ClientPageProps) {
             resolvedUrl = data.url;
             setSiteUrl(resolvedUrl); // Dynamically update the input value so the user sees the verified protocol
           }
+          if (data.status === 'WARNING') {
+            if (data.warning === 'DNS_FAILURE') {
+              isHardError = true;
+              setError(data.message || 'DNS resolution failed.');
+            } else {
+              warningMsg = data.message + ' Attempting to connect anyway...';
+              setWarning(warningMsg);
+            }
+          }
         }
       } catch (verifyErr) {
         console.warn('Protocol verification failed, falling back:', verifyErr);
+      }
+
+      if (isHardError) {
+        setIsVerifying(false);
+        return;
+      }
+
+      // If we have a soft warning, pause for 1.5s so the user can read the notice
+      if (warningMsg) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
       }
 
       // Final fallback if verification completely failed to add a protocol
@@ -488,7 +511,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
           Brought to you by <a href="https://2morrow.ai" target="_blank" rel="noopener noreferrer" style={{ color: '#fbbf24', textDecoration: 'none' }}>2morrow.ai</a>
         </div>
         <div style={{ fontSize: '11px', opacity: 0.6 }}>
-          connectMWP Client v1.2.3
+          connectMWP Client v1.2.4
         </div>
       </footer>
     </div>

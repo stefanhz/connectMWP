@@ -294,7 +294,9 @@ async function callWordPress(siteUrl, token, endpoint, method = 'GET', data = nu
   };
 
   let body = null;
-  if (data) {
+  // GET/HEAD requests must never carry a body (native fetch throws otherwise).
+  // GET parameters travel in the endpoint query string instead.
+  if (data && method !== 'GET' && method !== 'HEAD') {
     if (isUpload) {
       body = data; // FormData
     } else {
@@ -324,18 +326,22 @@ async function callWordPress(siteUrl, token, endpoint, method = 'GET', data = nu
  */
 async function callWordPressAjax(siteUrl, token, endpoint, method, data, isUpload, headers) {
   const ajaxUrl = `${siteUrl}/wp-admin/admin-ajax.php`;
-  
+
+  // Endpoint may carry a query string (e.g. "posts?limit=50&fields=..."); split
+  // it off so the action mapping matches and the query params can be forwarded.
+  const [endpointPath, endpointQuery] = endpoint.split('?');
+
   // Translate REST route to AJAX action
   let action = '';
-  if (endpoint === 'posts') {
+  if (endpointPath === 'posts') {
     action = method === 'GET' ? 'get_posts' : 'create_post';
-  } else if (endpoint.startsWith('posts/')) {
+  } else if (endpointPath.startsWith('posts/')) {
     action = 'update_post';
-  } else if (endpoint === 'media') {
+  } else if (endpointPath === 'media') {
     action = 'upload_media';
-  } else if (endpoint === 'tags') {
+  } else if (endpointPath === 'tags') {
     action = 'get_tags';
-  } else if (endpoint === 'categories') {
+  } else if (endpointPath === 'categories') {
     action = 'get_categories';
   }
 
@@ -351,10 +357,17 @@ async function callWordPressAjax(siteUrl, token, endpoint, method, data, isUploa
     const params = new URLSearchParams();
     params.append('action', 'connectmwp_api');
     params.append('connectmwp_action', action);
-    
+
     if (action === 'update_post') {
-      const postId = endpoint.split('/')[1];
+      const postId = endpointPath.split('/')[1];
       params.append('post_id', postId);
+    }
+
+    // Forward any GET query-string params (e.g. limit, fields) into the AJAX body.
+    if (endpointQuery) {
+      for (const [key, value] of new URLSearchParams(endpointQuery).entries()) {
+        params.append(key, value);
+      }
     }
 
     if (data) {
@@ -377,11 +390,24 @@ async function callWordPressAjax(siteUrl, token, endpoint, method, data, isUploa
 // MCP SERVER INITIALIZATION
 // ============================================================================
 
+// Load package version dynamically (Architectural Review Fix)
+let version = '1.2.4';
+try {
+  const pkgPath = new URL('./package.json', import.meta.url);
+  const pkgContent = await fs.readFile(pkgPath, 'utf-8');
+  const pkg = JSON.parse(pkgContent);
+  if (pkg.version) {
+    version = pkg.version;
+  }
+} catch (err) {
+  // Fallback to static version if package.json cannot be read at runtime
+}
+
 // Create the MCP Server instance
 const server = new Server(
   {
     name: 'connectmwp-mcp',
-    version: '1.2.3',
+    version: version,
   },
   {
     capabilities: {
@@ -408,6 +434,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'integer',
               description: 'Maximum number of posts to retrieve (default 50)',
             },
+            fields: {
+              type: 'string',
+              description: 'Optional comma-separated list of fields to return (e.g. "id,title,content"). Defaults to excluding content to save bandwidth.'
+            }
           },
         },
       },
@@ -555,9 +585,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case 'connectmwp_get_posts': {
-        const { site, limit = 50 } = args;
+        const { site, limit = 50, fields } = args;
         const { siteUrl, token } = await getCredentials(site);
-        const res = await callWordPress(siteUrl, token, 'posts', 'GET', { limit });
+
+        // GET params travel in the query string only — never as a request body.
+        const queryParams = new URLSearchParams();
+        queryParams.append('limit', limit.toString());
+        if (fields) {
+          queryParams.append('fields', fields);
+        }
+
+        const res = await callWordPress(siteUrl, token, `posts?${queryParams.toString()}`, 'GET', null);
         return { content: [{ type: 'text', text: JSON.stringify(res) }] };
       }
 

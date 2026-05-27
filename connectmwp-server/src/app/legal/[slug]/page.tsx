@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import Link from 'next/link';
 import { Metadata } from 'next';
+import { parseMarkdown } from '@/lib/markdown';
 
 interface PageProps {
   params: Promise<{
@@ -34,47 +35,6 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   };
 }
 
-/**
- * Custom lightweight Markdown parser
- */
-function parseMarkdown(markdown: string): string {
-  // Escape HTML
-  let html = markdown
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-
-  // Headers (H1, H2, H3)
-  html = html.replace(/^# (.*?)$/gm, '<h1>$1</h1>');
-  html = html.replace(/^## (.*?)$/gm, '<h2>$1</h2>');
-  html = html.replace(/^### (.*?)$/gm, '<h3>$1</h3>');
-
-  // Bold
-  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-
-  // Links [text](url)
-  html = html.replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-
-  // Lists (Unordered)
-  html = html.replace(/^- (.*?)$/gm, '<li>$1</li>');
-  
-  // Wrap contiguous <li> elements in <ul>
-  html = html.replace(/(<li>[\s\S]*?<\/li>)+/g, '<ul>$&</ul>');
-
-  // Paragraphs
-  const blocks = html.split(/\n\s*\n/);
-  const parsedBlocks = blocks.map(block => {
-    const trimmed = block.trim();
-    if (!trimmed) return '';
-    if (trimmed.startsWith('<h') || trimmed.startsWith('<ul') || trimmed.startsWith('<li')) {
-      return trimmed;
-    }
-    return `<p>${trimmed.replace(/\n/g, '<br>')}</p>`;
-  });
-
-  return parsedBlocks.join('\n');
-}
-
 export default async function LegalPage({ params }: PageProps) {
   const { slug } = await params;
   let parsedHtml = '';
@@ -86,7 +46,7 @@ export default async function LegalPage({ params }: PageProps) {
     const filePath = path.join(process.cwd(), 'content', `${slug}.md`);
     const rawContent = await fs.readFile(filePath, 'utf-8');
     parsedHtml = parseMarkdown(rawContent);
-  } catch (error) {
+  } catch {
     parsedHtml = `<h1>Page Not Found</h1><p>The requested legal page could not be located.</p>`;
   }
 
@@ -142,7 +102,7 @@ export default async function LegalPage({ params }: PageProps) {
             fontWeight: 'bold',
             boxShadow: '0 4px 10px rgba(249, 115, 22, 0.2)'
           }}>
-            connectMWP v1.2.3
+            connectMWP v1.2.4
           </div>
         </div>
 
