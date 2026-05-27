@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.10
+ * Version: 2.0.11
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -13,7 +13,7 @@ defined('ABSPATH') || exit;
 
 class ConnectMWP_Agent {
 
-    const VERSION = '2.0.10';
+    const VERSION = '2.0.11';
     const OPTION_TOKENS = 'connectmwp_agent_tokens';
     const OPTION_NONCES = 'connectmwp_agent_nonces';
     const API_NAMESPACE = 'connectmwp/v1';
@@ -820,7 +820,7 @@ class ConnectMWP_Agent {
         ], 200);
     }
 
-    public function get_tags_handler(WP_REST_Request $request = null) {
+    public function get_tags_handler(?WP_REST_Request $request = null) {
         $limit = 50;
         $offset = 0;
         $search = '';
@@ -855,7 +855,7 @@ class ConnectMWP_Agent {
         return new WP_REST_Response(['success' => true, 'tags' => $result], 200);
     }
 
-    public function get_categories_handler(WP_REST_Request $request = null) {
+    public function get_categories_handler(?WP_REST_Request $request = null) {
         $limit = 50;
         $offset = 0;
         $search = '';

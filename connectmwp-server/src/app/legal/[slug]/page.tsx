@@ -3,6 +3,7 @@ import path from 'path';
 import Link from 'next/link';
 import { Metadata } from 'next';
 import { parseMarkdown } from '@/lib/markdown';
+import pkg from '../../../../package.json';
 
 interface PageProps {
   params: Promise<{
@@ -47,26 +48,26 @@ export default async function LegalPage({ params }: PageProps) {
     const rawContent = await fs.readFile(filePath, 'utf-8');
     parsedHtml = parseMarkdown(rawContent);
   } catch {
-    parsedHtml = `<h1>Page Not Found</h1><p>The requested legal page could not be located.</p>`;
+    parsedHtml = `<h1 class="md-h1">Page Not Found</h1><p class="md-p">The requested legal page could not be located.</p>`;
   }
 
   return (
-    <div className="app-container" style={{ justifyContent: 'center' }}>
-      <div className="legal-card-container">
+    <div className="min-h-screen w-full flex flex-col justify-center items-center bg-[radial-gradient(circle_at_top,_#1e1e2f_0%,_#0d0d15_100%)] text-white font-sans px-5 py-20 box-border">
+      <div className="max-w-[700px] w-full bg-white/3 backdrop-blur-[16px] border border-white/8 rounded-2xl p-10 shadow-[0_20px_50px_rgba(0,0,0,0.3)] text-left">
         {/* Header navigation */}
-        <div className="legal-header">
-          <Link href="/" className="legal-back-btn">
+        <div className="flex justify-between items-center mb-6 pb-4 border-b border-white/8">
+          <Link href="/" className="text-zinc-400 no-underline text-sm hover:text-white transition-colors">
             ← Back Home
           </Link>
-          <div className="legal-version-badge">
-            connectMWP v1.2.4
+          <div className="text-[11px] text-zinc-500 opacity-60">
+            connectMWP v{pkg.version}
           </div>
         </div>
 
         {/* Dynamic HTML Content */}
-        <div 
-          className="legal-content"
-          dangerouslySetInnerHTML={{ __html: parsedHtml }} 
+        <div
+          className="text-[14px] leading-relaxed text-zinc-300"
+          dangerouslySetInnerHTML={{ __html: parsedHtml }}
         />
       </div>
     </div>

@@ -4,6 +4,30 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-27 — connectmwp-server 2.0.11, connectmwp-agent 2.0.11
+
+### Fixed
+- **connectmwp-server — legal pages broken by the v2.0.10 CSS migration (regression).** The v2.0.10
+  commit converted `ClientPage` to Tailwind and deleted ~596 lines of `globals.css`, but did not
+  update `legal/[slug]/page.tsx`, which still referenced the now-deleted semantic classes
+  (`app-container`, `legal-card-container`, `legal-content`, …) — leaving `/legal/privacy|terms|about`
+  unstyled. Rewrote the legal page in Tailwind (consistent with `ClientPage`) and replaced a stale
+  hardcoded `connectMWP v1.2.4` badge with the dynamic `package.json` version.
+  (`connectmwp-server/src/app/legal/[slug]/page.tsx`)
+- **connectmwp-agent — PHP 8.4 implicit-nullable deprecations.** `get_tags_handler` and
+  `get_categories_handler` declared `WP_REST_Request $request = null` (implicitly nullable), which
+  emits `E_DEPRECATED` on PHP 8.4+ (the target host runs 8.4) and becomes a fatal in PHP 9. Changed to
+  explicit `?WP_REST_Request`. Surfaced by `php -l` (the original author had no local PHP).
+  (`connectmwp-agent/connectmwp-agent.php`)
+
+### Note
+- Completed the dev's v2.0.10 review-remediation pass: verified the central `rest_pre_dispatch` auth
+  filter is correctly namespace-scoped (won't break the site's wider REST API), the replay claim is
+  atomic (`add_option`) with a per-request memo preventing double-claim, and the multipart body hash
+  is verified against `hash_file()` of the actual upload. `connectmwp-mcp` left at 2.0.10 (unchanged).
+  Optional cosmetic items (magic-number constants, empty-catch logging) left as backlog to avoid
+  churn in a security release.
+
 ## 2026-05-27 — v2.0.10
 
 ### Fixed
