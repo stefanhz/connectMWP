@@ -51,57 +51,14 @@ export default async function LegalPage({ params }: PageProps) {
   }
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      flexDirection: 'column',
-      justifyContent: 'center',
-      alignItems: 'center',
-      background: 'radial-gradient(circle at top, #1e1e2f 0%, #0d0d15 100%)',
-      color: '#ffffff',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-      padding: '40px 20px',
-      boxSizing: 'border-box'
-    }}>
-      <div style={{
-        maxWidth: '800px',
-        width: '100%',
-        background: 'rgba(255, 255, 255, 0.03)',
-        backdropFilter: 'blur(16px)',
-        border: '1px solid rgba(255, 255, 255, 0.08)',
-        borderRadius: '16px',
-        padding: '40px',
-        boxShadow: '0 20px 50px rgba(0,0,0,0.3)',
-      }}>
+    <div className="app-container" style={{ justifyContent: 'center' }}>
+      <div className="legal-card-container">
         {/* Header navigation */}
-        <div style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
-          paddingBottom: '20px',
-          marginBottom: '30px'
-        }}>
-          <Link href="/" style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '8px',
-            color: '#a1a1aa',
-            textDecoration: 'none',
-            fontSize: '14px',
-            fontWeight: '600',
-            transition: 'color 0.2s'
-          }}>
+        <div className="legal-header">
+          <Link href="/" className="legal-back-btn">
             ← Back Home
           </Link>
-          <div style={{
-            padding: '6px 12px',
-            background: 'linear-gradient(135deg, #f97316 0%, #f59e0b 100%)',
-            borderRadius: '6px',
-            fontSize: '12px',
-            fontWeight: 'bold',
-            boxShadow: '0 4px 10px rgba(249, 115, 22, 0.2)'
-          }}>
+          <div className="legal-version-badge">
             connectMWP v1.2.4
           </div>
         </div>
@@ -110,62 +67,8 @@ export default async function LegalPage({ params }: PageProps) {
         <div 
           className="legal-content"
           dangerouslySetInnerHTML={{ __html: parsedHtml }} 
-          style={{
-            lineHeight: '1.7',
-            fontSize: '15px',
-            color: '#d1d1d6'
-          }}
         />
       </div>
-
-      {/* Inline styles for markdown compiled HTML tags */}
-      <style dangerouslySetInnerHTML={{ __html: `
-        .legal-content h1 {
-          font-size: 32px;
-          font-weight: 800;
-          color: #ffffff;
-          margin-top: 0;
-          margin-bottom: 24px;
-          letter-spacing: -0.5px;
-        }
-        .legal-content h2 {
-          font-size: 20px;
-          font-weight: 700;
-          color: #ffffff;
-          margin-top: 35px;
-          margin-bottom: 15px;
-        }
-        .legal-content h3 {
-          font-size: 16px;
-          font-weight: 600;
-          color: #ffffff;
-          margin-top: 25px;
-          margin-bottom: 10px;
-        }
-        .legal-content p {
-          margin-bottom: 20px;
-        }
-        .legal-content strong {
-          color: #ffffff;
-        }
-        .legal-content a {
-          color: #fbbf24;
-          text-decoration: none;
-          border-bottom: 1px dashed rgba(251, 191, 36, 0.4);
-          transition: border-color 0.2s;
-        }
-        .legal-content a:hover {
-          border-bottom-style: solid;
-        }
-        .legal-content ul {
-          margin-left: 20px;
-          margin-bottom: 20px;
-          list-style-type: disc;
-        }
-        .legal-content li {
-          margin-bottom: 8px;
-        }
-      `}} />
     </div>
   );
 }

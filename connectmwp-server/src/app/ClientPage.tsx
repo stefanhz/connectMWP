@@ -149,109 +149,35 @@ export default function ClientPage({ faqs }: ClientPageProps) {
   };
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      flexDirection: 'column',
-      justifyContent: 'flex-start',
-      alignItems: 'center',
-      background: 'radial-gradient(circle at top, #1e1e2f 0%, #0d0d15 100%)',
-      color: '#ffffff',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-      padding: '80px 20px 40px 20px',
-      boxSizing: 'border-box'
-    }}>
+    <div className="app-container">
       {/* Main Container Card */}
-      <div style={{
-        maxWidth: '550px',
-        width: '100%',
-        background: 'rgba(255, 255, 255, 0.03)',
-        backdropFilter: 'blur(16px)',
-        border: '1px solid rgba(255, 255, 255, 0.08)',
-        borderRadius: '16px',
-        padding: '40px',
-        boxShadow: '0 20px 50px rgba(0,0,0,0.3)',
-        textAlign: 'center'
-      }}>
-        <div style={{
-          display: 'inline-flex',
-          padding: '12px',
-          background: 'linear-gradient(135deg, #f97316 0%, #f59e0b 100%)',
-          borderRadius: '12px',
-          marginBottom: '24px',
-          fontWeight: 'bold',
-          fontSize: '22px',
-          boxShadow: '0 8px 20px rgba(249, 115, 22, 0.3)'
-        }}>
+      <div className="card-container">
+        <div className="logo-badge">
           MWP
         </div>
 
         {/* Development Warning Notice */}
         <div>
-          <div style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '8px',
-            padding: '8px 16px',
-            background: 'rgba(245, 158, 11, 0.08)',
-            border: '1px solid rgba(245, 158, 11, 0.25)',
-            borderRadius: '30px',
-            fontSize: '12.5px',
-            color: '#fbbf24',
-            marginBottom: '24px',
-            fontWeight: '500',
-            lineHeight: '1.4',
-            textAlign: 'left'
-          }}>
+          <div className="dev-badge">
             <span>⚠️</span> Active Development — Use at your own risk
           </div>
         </div>
 
-        <h1 style={{
-          fontSize: '32px',
-          fontWeight: '800',
-          marginBottom: '12px',
-          letterSpacing: '-0.5px',
-          background: 'linear-gradient(to right, #ffffff, #a3a3a3)',
-          WebkitBackgroundClip: 'text',
-          WebkitTextFillColor: 'transparent'
-        }}>
+        <h1 className="card-title">
           Connect My WordPress
         </h1>
 
-        <p style={{
-          fontSize: '15px',
-          lineHeight: '1.6',
-          color: '#a1a1aa',
-          marginBottom: '20px'
-        }}>
+        <p className="card-desc">
           Bridge your local AI clients (Claude Cowork, Cursor, etc.) directly to your WordPress sites. Secure, 100% private, and serverless.
         </p>
 
-        <p style={{
-          fontSize: '13.5px',
-          color: '#fbbf24',
-          marginBottom: '32px',
-          padding: '12px',
-          background: 'rgba(251, 191, 36, 0.05)',
-          borderRadius: '8px',
-          border: '1px dashed rgba(251, 191, 36, 0.2)',
-          lineHeight: '1.5'
-        }}>
-          First time? Download the <a href="/connectmwp-agent.zip" download style={{ color: '#fbbf24', textDecoration: 'underline', fontWeight: '600' }}>WordPress Agent Plugin (ZIP)</a> and activate it on your site.
+        <p className="download-banner">
+          First time? Download the <a href="/connectmwp-agent.zip" download>WordPress Agent Plugin (ZIP)</a> and activate it on your site.
         </p>
 
         <form onSubmit={handleConnect} style={{ width: '100%' }}>
-          <div style={{ marginBottom: '20px', textAlign: 'left' }}>
-            <label htmlFor="siteUrl" style={{
-              display: 'block',
-              fontSize: '12px',
-              fontWeight: '600',
-              textTransform: 'uppercase',
-              letterSpacing: '1px',
-              color: '#a1a1aa',
-              marginBottom: '8px'
-            }}>
+          <div className="input-group">
+            <label htmlFor="siteUrl" className="input-label">
               WordPress Site URL
             </label>
             <input
@@ -266,90 +192,39 @@ export default function ClientPage({ faqs }: ClientPageProps) {
                   setTouched(false);
                 }
               }}
-              style={{
-                width: '100%',
-                padding: '14px 18px',
-                background: 'rgba(0, 0, 0, 0.3)',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                borderRadius: '8px',
-                color: '#ffffff',
-                fontSize: '15px',
-                outline: 'none',
-                transition: 'border-color 0.2s',
-                boxSizing: 'border-box'
-              }}
+              className="input-field"
             />
             {displayError && (
-              <p style={{
-                color: '#f87171',
-                fontSize: '13px',
-                marginTop: '8px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '4px'
-              }}>
+              <p className="error-text">
                 {displayError}
               </p>
             )}
-            <p style={{
-              fontSize: '12.5px',
-              color: '#a1a1aa',
-              marginTop: '10px',
-              lineHeight: '1.4'
-            }}>
+            {warning && (
+              <p className="warning-text">
+                ⚠️ {warning}
+              </p>
+            )}
+            <p className="tip-text">
               💡 <strong>Tip:</strong> Log in to your WordPress dashboard in this browser tab first to ensure a smooth redirection.
             </p>
           </div>
 
           {/* Advanced Settings Toggle & Panel */}
-          <div style={{ marginBottom: '24px', textAlign: 'left' }}>
+          <div className="advanced-group">
             <button
               type="button"
               onClick={() => setShowAdvanced(!showAdvanced)}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: '#a1a1aa',
-                fontSize: '13px',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '4px 0',
-                outline: 'none',
-                fontWeight: '500'
-              }}
+              className="advanced-toggle"
             >
-              <span style={{
-                fontSize: '9px',
-                color: '#fbbf24',
-                display: 'inline-block',
-                transform: showAdvanced ? 'rotate(90deg)' : 'rotate(0deg)',
-                transition: 'transform 0.2s'
-              }}>
+              <span className={`advanced-arrow ${showAdvanced ? 'open' : ''}`}>
                 ▶
               </span>
               Advanced Settings
             </button>
 
             {showAdvanced && (
-              <div style={{
-                marginTop: '12px',
-                padding: '16px',
-                background: 'rgba(255, 255, 255, 0.02)',
-                border: '1px solid rgba(255, 255, 255, 0.05)',
-                borderRadius: '8px',
-                animation: 'fadeIn 0.2s ease-out'
-              }}>
-                <label htmlFor="adminPath" style={{
-                  display: 'block',
-                  fontSize: '11px',
-                  fontWeight: '600',
-                  textTransform: 'uppercase',
-                  letterSpacing: '1px',
-                  color: '#a1a1aa',
-                  marginBottom: '6px'
-                }}>
+              <div className="advanced-panel">
+                <label htmlFor="adminPath" className="advanced-panel-label">
                   Custom Admin Path
                 </label>
                 <input
@@ -358,25 +233,9 @@ export default function ClientPage({ faqs }: ClientPageProps) {
                   placeholder="/wp-admin"
                   value={adminPath}
                   onChange={(e) => setAdminPath(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '10px 14px',
-                    background: 'rgba(0, 0, 0, 0.3)',
-                    border: '1px solid rgba(255, 255, 255, 0.1)',
-                    borderRadius: '6px',
-                    color: '#ffffff',
-                    fontSize: '14px',
-                    outline: 'none',
-                    boxSizing: 'border-box'
-                  }}
+                  className="advanced-panel-input"
                 />
-                <p style={{
-                  fontSize: '11.5px',
-                  color: '#71717a',
-                  marginTop: '6px',
-                  lineHeight: '1.4',
-                  marginBottom: 0
-                }}>
+                <p className="advanced-panel-desc">
                   Change this if you use security plugins (like WPS Hide Login) that rename the admin path.
                 </p>
               </div>
@@ -386,22 +245,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
           <button 
             type="submit" 
             disabled={!isValid || isVerifying}
-            style={{
-              width: '100%',
-              padding: '14px',
-              background: (isValid && !isVerifying)
-                ? 'linear-gradient(135deg, #f97316 0%, #f59e0b 100%)' 
-                : 'linear-gradient(135deg, #4b5563 0%, #374151 100%)',
-              border: 'none',
-              borderRadius: '8px',
-              color: (isValid && !isVerifying) ? '#ffffff' : '#9ca3af',
-              fontWeight: '600',
-              fontSize: '15px',
-              cursor: (isValid && !isVerifying) ? 'pointer' : 'not-allowed',
-              boxShadow: (isValid && !isVerifying) ? '0 4px 12px rgba(249, 115, 22, 0.2)' : 'none',
-              opacity: (isValid && !isVerifying) ? 1 : 0.4,
-              transition: 'all 0.2s ease'
-            }}
+            className="connect-btn"
           >
             {isVerifying ? 'Verifying site...' : 'Connect WordPress Site'}
           </button>
@@ -409,72 +253,24 @@ export default function ClientPage({ faqs }: ClientPageProps) {
       </div>
 
       {/* FAQ Accordion Card */}
-      <div style={{
-        maxWidth: '550px',
-        width: '100%',
-        marginTop: '40px',
-        background: 'rgba(255, 255, 255, 0.02)',
-        border: '1px solid rgba(255, 255, 255, 0.06)',
-        borderRadius: '16px',
-        padding: '35px',
-        boxSizing: 'border-box',
-        boxShadow: '0 10px 30px rgba(0,0,0,0.15)'
-      }}>
-        <h2 style={{
-          fontSize: '18px',
-          fontWeight: '700',
-          color: '#ffffff',
-          marginTop: 0,
-          marginBottom: '20px',
-          borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
-          paddingBottom: '12px'
-        }}>
+      <div className="faq-container">
+        <h2 className="faq-title">
           Frequently Asked Questions
         </h2>
         {faqs.map((item, index) => (
-          <div key={index} style={{
-            borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
-            paddingBottom: '12px',
-            marginBottom: '12px'
-          }}>
+          <div key={index} className="faq-item">
             <button
               onClick={() => setOpenFaq(openFaq === index ? null : index)}
-              style={{
-                width: '100%',
-                background: 'none',
-                border: 'none',
-                color: '#ffffff',
-                fontSize: '14px',
-                fontWeight: '600',
-                textAlign: 'left',
-                cursor: 'pointer',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                padding: '6px 0',
-                outline: 'none'
-              }}
+              className="faq-trigger"
             >
               <span>{item.q}</span>
-              <span style={{
-                color: '#fbbf24',
-                transform: openFaq === index ? 'rotate(180deg)' : 'rotate(0deg)',
-                transition: 'transform 0.2s',
-                fontSize: '10px'
-              }}>
+              <span className={`faq-arrow ${openFaq === index ? 'open' : ''}`}>
                 ▼
               </span>
             </button>
             {openFaq === index && (
               <div
-                style={{
-                  fontSize: '13.5px',
-                  lineHeight: '1.6',
-                  color: '#a1a1aa',
-                  margin: '8px 0 0 0',
-                  animation: 'fadeIn 0.2s ease-out',
-                  textAlign: 'left'
-                }}
+                className="faq-content"
                 dangerouslySetInnerHTML={{ __html: item.a }}
               />
             )}
@@ -483,34 +279,22 @@ export default function ClientPage({ faqs }: ClientPageProps) {
       </div>
 
       {/* Footer Links & Info */}
-      <footer style={{
-        marginTop: '50px',
-        fontSize: '13px',
-        color: '#71717a',
-        textAlign: 'center',
-        lineHeight: '1.8'
-      }}>
-        <div style={{
-          display: 'flex',
-          justifyContent: 'center',
-          gap: '15px',
-          marginBottom: '12px',
-          flexWrap: 'wrap'
-        }}>
-          <Link href="/legal/about" style={{ color: '#a1a1aa', textDecoration: 'none' }}>About</Link>
+      <footer className="footer-container">
+        <div className="footer-links">
+          <Link href="/legal/about" className="footer-link">About</Link>
           <span>•</span>
-          <Link href="/legal/privacy" style={{ color: '#a1a1aa', textDecoration: 'none' }}>Privacy Policy</Link>
+          <Link href="/legal/privacy" className="footer-link">Privacy Policy</Link>
           <span>•</span>
-          <Link href="/legal/terms" style={{ color: '#a1a1aa', textDecoration: 'none' }}>Terms of Service</Link>
+          <Link href="/legal/terms" className="footer-link">Terms of Service</Link>
           <span>•</span>
-          <a href="mailto:support@connectmwp.com" style={{ color: '#a1a1aa', textDecoration: 'none' }}>Support</a>
+          <a href="mailto:support@connectmwp.com" className="footer-link">Support</a>
           <span>•</span>
-          <a href="https://buy.stripe.com/aFa8wQ0rH2PQ4Msama5kk0l" target="_blank" rel="noopener noreferrer" style={{ color: '#fbbf24', textDecoration: 'none', fontWeight: '600' }}>☕ Buy me a coffee</a>
+          <a href="https://buy.stripe.com/aFa8wQ0rH2PQ4Msama5kk0l" target="_blank" rel="noopener noreferrer" className="footer-link coffee">☕ Buy me a coffee</a>
         </div>
-        <div style={{ marginBottom: '15px' }}>
-          Brought to you by <a href="https://2morrow.ai" target="_blank" rel="noopener noreferrer" style={{ color: '#fbbf24', textDecoration: 'none' }}>2morrow.ai</a>
+        <div className="footer-credit">
+          Brought to you by <a href="https://2morrow.ai" target="_blank" rel="noopener noreferrer">2morrow.ai</a>
         </div>
-        <div style={{ fontSize: '11px', opacity: 0.6 }}>
+        <div className="footer-version">
           connectMWP Client v1.2.4
         </div>
       </footer>
