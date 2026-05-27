@@ -146,9 +146,22 @@ export default function ClientPage({ faqs }: ClientPageProps) {
           fontSize: '15px',
           lineHeight: '1.6',
           color: '#a1a1aa',
-          marginBottom: '32px'
+          marginBottom: '20px'
         }}>
           Bridge your local AI clients (Claude Cowork, Cursor, etc.) directly to your WordPress sites. Secure, 100% private, and serverless.
+        </p>
+
+        <p style={{
+          fontSize: '13.5px',
+          color: '#fbbf24',
+          marginBottom: '32px',
+          padding: '12px',
+          background: 'rgba(251, 191, 36, 0.05)',
+          borderRadius: '8px',
+          border: '1px dashed rgba(251, 191, 36, 0.2)',
+          lineHeight: '1.5'
+        }}>
+          First time? Download the <a href="/connectmwp-agent.zip" download style={{ color: '#fbbf24', textDecoration: 'underline', fontWeight: '600' }}>WordPress Agent Plugin (ZIP)</a> and activate it on your site.
         </p>
 
         <form onSubmit={handleConnect} style={{ width: '100%' }}>

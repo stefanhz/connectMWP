@@ -2,7 +2,7 @@
 
 **Current Release Version: v1.2.3**
 
-connectMWP is a secure, decentralized bridge that connects local AI clients (such as Claude Desktop, Cursor, and Claude Code) directly to self-hosted WordPress websites to automate research, topic generation, content drafting, image uploading, and remote publishing.
+connectMWP is a secure, decentralized bridge that connects local AI clients (such as Claude Desktop, Cursor, and Claude Code) directly to self-hosted WordPress websites to draft content, upload media, and manage posts directly from your workspace.
 
 The architecture is **100% decentralized for daily operations**. All AI requests are executed directly from your local machine to your WordPress site over HTTPS, bypassing any central servers and carrying $0 proxy costs.
 
@@ -13,7 +13,7 @@ The architecture is **100% decentralized for daily operations**. All AI requests
 Because the npm package `connectmwp-mcp` is not yet published to the public registry, you must point your configurations to your local files. 
 
 ### Step 1: Install & Activate the WordPress Plugin
-1. Locate the packaged plugin file: [connectmwp-agent.zip](./connectmwp-agent.zip)
+1. Download the latest WordPress plugin zip from [connectmwp.com/connectmwp-agent.zip](https://connectmwp.com/connectmwp-agent.zip)
 2. Log into your WordPress site's admin dashboard (e.g. `https://2morrow.ai`).
 3. Go to **Plugins -> Add New -> Upload Plugin**, upload the ZIP, and click **Activate**.
 4. Go to **Settings -> connectMWP** in your WP sidebar.
