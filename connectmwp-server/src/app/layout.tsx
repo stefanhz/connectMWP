@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "wpConnect — Decentralized AI-to-WordPress Bridge",
+  title: "connectMWP — Decentralized AI-to-WordPress Bridge",
   description: "Connect local AI clients (Claude Desktop, Cursor, Claude Code) directly to your self-hosted WordPress sites securely and privately.",
 };
 

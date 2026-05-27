@@ -652,7 +652,7 @@ class ConnectMWP_Agent {
                 <div style="position: absolute; right: 50px; bottom: -80px; width: 150px; height: 150px; border-radius: 50%; background: rgba(255,255,255,0.03);"></div>
                 
                 <h1 style="color: #fff; margin: 0 0 8px 0; font-size: 28px; font-weight: 700; display: flex; align-items: center; gap: 10px;">
-                    <span style="font-size: 32px;">🔌</span> connectMWP Agent
+                    <span style="font-size: 32px;">🔌</span> connectMWP Agent <span style="font-size: 13px; font-weight: 400; opacity: 0.8; background: rgba(255,255,255,0.15); padding: 3px 10px; border-radius: 20px; vertical-align: middle;">v1.2.3</span>
                 </h1>
                 <p style="margin: 0; font-size: 16px; opacity: 0.9; line-height: 1.4;">
                     Secure, direct connection bridge between your local AI platforms (Claude Desktop, Cursor, etc.) and this WordPress site.

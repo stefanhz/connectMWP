@@ -1,9 +1,9 @@
 # Privacy Policy
 
-Your privacy is extremely important to us. This policy explains how wpConnect handles data, security, and credentials.
+Your privacy is extremely important to us. This policy explains how connectMWP handles data, security, and credentials.
 
 ## 1. 100% Decentralized Design
-wpConnect is a decentralized connection bridge. All operations, posts, media uploads, and configuration syncs go directly from your local machine to your WordPress site over secure HTTPS. 
+connectMWP is a decentralized connection bridge. All operations, posts, media uploads, and configuration syncs go directly from your local machine to your WordPress site over secure HTTPS. 
 
 ## 2. No Central Databases
 We do not operate a stateful backend database, nor do we host user accounts or profile storage on our servers. 
@@ -13,7 +13,7 @@ We do not operate a stateful backend database, nor do we host user accounts or p
 ## 3. Local Storage of Tokens
 When you authorize a connection, the connection token is saved:
 1. Under your user profile's metadata on your own self-hosted WordPress database (hashed using SHA-256).
-2. Inside a local JSON configuration file on your own computer (`~/.wpconnect.json`).
+2. Inside a local JSON configuration file on your own computer (`~/.connectmwp.json`).
 
 We have no access to these tokens. You have complete ownership and control. You can revoke any connection at any time directly in your WordPress settings page.
 
