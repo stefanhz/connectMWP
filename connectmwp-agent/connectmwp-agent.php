@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.3
+ * Version: 2.0.4
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -13,7 +13,7 @@ defined('ABSPATH') || exit;
 
 class ConnectMWP_Agent {
 
-    const VERSION = '2.0.3';
+    const VERSION = '2.0.4';
     const OPTION_TOKENS = 'connectmwp_agent_tokens';
     const OPTION_NONCES = 'connectmwp_agent_nonces';
     const API_NAMESPACE = 'connectmwp/v1';
@@ -975,18 +975,31 @@ class ConnectMWP_Agent {
             <?php if ($enrollment_string): ?>
                 <?php
                 $npx_cmd = 'npx -y connectmwp-mcp add-site --enroll "' . $enrollment_string . '"';
+                $stored = get_option('connectmwp_enrollment_code');
+                $remaining = is_array($stored) && isset($stored['expires']) ? intval($stored['expires']) - time() : 600;
+                $remaining = max(0, $remaining);
                 ?>
                 <div style="background: #fff; border: 1px solid #e1e8ed; border-left: 6px solid #e74c3c; border-radius: 12px; padding: 25px; margin-bottom: 25px; box-shadow: 0 10px 30px rgba(231, 76, 60, 0.12); position: relative; animation: fadeIn 0.4s ease-out;">
-                    <div style="position: absolute; top: 15px; right: 15px;">
+                    <div style="position: absolute; top: 15px; right: 15px; display: flex; align-items: center; gap: 10px;">
+                        <span style="background: #fff3cd; border: 1px solid #ffeeba; color: #d35400; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; display: inline-flex; align-items: center; gap: 4px;">
+                            ⏳ Expiring: <span id="connectmwp-countdown" style="font-family: monospace; font-size: 12px;">--:--</span>
+                        </span>
                         <span style="background: rgba(231, 76, 60, 0.1); color: #e74c3c; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;">One-Time Pairing Code</span>
                     </div>
                     
-                    <h3 style="color: #c0392b; margin: 0 0 12px 0; font-size: 18px; font-weight: 700; display: flex; align-items: center; gap: 8px;">
-                        ⚠️ Action Required: Pair Client Now
+                    <h3 style="color: #c0392b; margin: 0 0 15px 0; font-size: 18px; font-weight: 700; display: flex; align-items: center; gap: 8px;">
+                        ⚠️ Action Required: Go Pair Your Local Environment Now
                     </h3>
-                    <p style="font-size: 14px; color: #555; line-height: 1.5; margin-bottom: 20px;">
-                        For your security, this enrollment code is only valid for **10 minutes** and is single-use. Copy the command below and execute it in your local client terminal.
-                    </p>
+
+                    <div style="background: #fdfefe; border: 1px solid #eaeded; border-left: 3px solid #3498db; border-radius: 6px; padding: 15px; margin-bottom: 20px; font-size: 13.5px; color: #34495e; line-height: 1.6;">
+                        <strong style="color: #2c3e50; font-size: 14px; display: block; margin-bottom: 8px;">👉 How to Pair:</strong>
+                        <ol style="margin: 0; padding-left: 20px; list-style-type: decimal;">
+                            <li>Open a <strong>Terminal</strong> window on your local computer.</li>
+                            <li>Ensure you have <strong>Node.js (v18+)</strong> installed (verify by running <code>node -v</code> in the terminal).</li>
+                            <li>Copy and run the <strong>Terminal Pairing Command</strong> below.</li>
+                            <li>Once the terminal reports success (<code>[SUCCESS] Client paired and enrolled successfully!</code>), **refresh this page** to see your client registered in the <strong>Paired Clients</strong> list below.</li>
+                        </ol>
+                    </div>
                     
                     <div style="background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
                         <div style="font-size: 12px; font-weight: 600; text-transform: uppercase; color: #7f8c8d; margin-bottom: 5px;">Pairing Enrollment String</div>
@@ -1005,6 +1018,30 @@ class ConnectMWP_Agent {
                             <button type="button" class="button button-primary" onclick="navigator.clipboard.writeText(document.getElementById('claude-enroll-cmd').value).then(() => showConnectMWPToast(this, 'Command copied!'))" style="height: 60px; background: #34495e; border-color: #2c3e50; border-radius: 6px;">Copy Command</button>
                         </div>
                     </div>
+
+                    <script>
+                    (function() {
+                        let secondsLeft = <?php echo intval($remaining); ?>;
+                        const display = document.getElementById('connectmwp-countdown');
+                        if (!display) return;
+                        
+                        function updateTimer() {
+                            if (secondsLeft <= 0) {
+                                display.textContent = "Expired";
+                                display.style.color = "#c0392b";
+                                display.style.fontWeight = "700";
+                                setTimeout(() => window.location.reload(), 1500);
+                                return;
+                            }
+                            const m = Math.floor(secondsLeft / 60);
+                            const s = secondsLeft % 60;
+                            display.textContent = `${m}:${s < 10 ? '0' : ''}${s}`;
+                            secondsLeft--;
+                            setTimeout(updateTimer, 1000);
+                        }
+                        updateTimer();
+                    })();
+                    </script>
                 </div>
             <?php endif; ?>
 

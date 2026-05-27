@@ -4,6 +4,15 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-27 — v2.0.4
+
+### Added
+- **connectmwp-agent — dynamic countdown timer.** Added a JavaScript countdown timer in the "Action Required: Go Pair Your Local Environment Now" panel, showing exactly how long (minutes/seconds) remains until the single-use pairing code expires.
+- **connectmwp-agent — step-by-step pairing instructions.** Added clear preparation steps in the settings page to guide the user on opening their terminal, checking their local Node.js environment, copying/running the command, and refreshing the settings page to see the client show up in "Paired Clients".
+
+### Chore
+- Bumped versions of all components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) to `2.0.4`.
+
 ## 2026-05-27 — v2.0.3
 
 ### Changed
