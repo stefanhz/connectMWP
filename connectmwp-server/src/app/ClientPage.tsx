@@ -15,6 +15,9 @@ export default function ClientPage({ faqs }: ClientPageProps) {
   const [error, setError] = useState('');
   const [touched, setTouched] = useState(false);
   const [openFaq, setOpenFaq] = useState<number | null>(null);
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [adminPath, setAdminPath] = useState('/wp-admin');
 
   const isValidSiteUrl = (val: string): boolean => {
     let urlStr = val.trim();
@@ -40,7 +43,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
     ? 'Please enter a valid website URL (e.g., mywebsite.com).'
     : error;
 
-  const handleConnect = (e: React.FormEvent) => {
+  const handleConnect = async (e: React.FormEvent) => {
     e.preventDefault();
     setTouched(true);
     setError('');
@@ -49,25 +52,55 @@ export default function ClientPage({ faqs }: ClientPageProps) {
       return;
     }
 
+    setIsVerifying(true);
+
     try {
       // Validate and clean URL
       let cleanUrl = siteUrl.trim();
-      if (!/^https?:\/\//i.test(cleanUrl)) {
-        cleanUrl = 'https://' + cleanUrl;
+      let resolvedUrl = cleanUrl;
+
+      try {
+        const response = await fetch(`/api/verify-site?url=${encodeURIComponent(cleanUrl)}`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.url) {
+            resolvedUrl = data.url;
+          }
+        }
+      } catch (verifyErr) {
+        console.warn('Protocol verification failed, falling back:', verifyErr);
+      }
+
+      // Final fallback if verification completely failed to add a protocol
+      if (!/^https?:\/\//i.test(resolvedUrl)) {
+        resolvedUrl = 'https://' + resolvedUrl;
       }
       
-      const parsedUrl = new URL(cleanUrl);
+      const parsedUrl = new URL(resolvedUrl);
       const origin = parsedUrl.origin;
+
+      // Clean and normalize custom admin path
+      let cleanPath = adminPath.trim();
+      if (!cleanPath.startsWith('/')) {
+        cleanPath = '/' + cleanPath;
+      }
+      if (cleanPath.endsWith('/')) {
+        cleanPath = cleanPath.slice(0, -1);
+      }
+      if (!cleanPath || cleanPath === '/') {
+        cleanPath = '/wp-admin';
+      }
 
       // Redirect to WordPress OAuth authorize endpoint
       const callbackUrl = `${window.location.origin}/callback`;
       const state = Math.random().toString(36).substring(2, 15);
       
-      const authUrl = `${origin}/wp-admin/admin.php?page=connectmwp-auth&callback=${encodeURIComponent(callbackUrl)}&state=${state}`;
+      const authUrl = `${origin}${cleanPath}/admin.php?page=connectmwp-auth&callback=${encodeURIComponent(callbackUrl)}&state=${state}`;
       
       window.location.href = authUrl;
     } catch (err) {
-      setError('Please enter a valid URL (e.g., https://mywebsite.com).');
+      setError('Failed to connect. Please check the URL.');
+      setIsVerifying(false);
     }
   };
 
@@ -214,29 +247,119 @@ export default function ClientPage({ faqs }: ClientPageProps) {
                 {displayError}
               </p>
             )}
+            <p style={{
+              fontSize: '12.5px',
+              color: '#a1a1aa',
+              marginTop: '10px',
+              lineHeight: '1.4'
+            }}>
+              💡 <strong>Tip:</strong> Log in to your WordPress dashboard in this browser tab first to ensure a smooth redirection.
+            </p>
+          </div>
+
+          {/* Advanced Settings Toggle & Panel */}
+          <div style={{ marginBottom: '24px', textAlign: 'left' }}>
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#a1a1aa',
+                fontSize: '13px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '4px 0',
+                outline: 'none',
+                fontWeight: '500'
+              }}
+            >
+              <span style={{
+                fontSize: '9px',
+                color: '#fbbf24',
+                display: 'inline-block',
+                transform: showAdvanced ? 'rotate(90deg)' : 'rotate(0deg)',
+                transition: 'transform 0.2s'
+              }}>
+                ▶
+              </span>
+              Advanced Settings
+            </button>
+
+            {showAdvanced && (
+              <div style={{
+                marginTop: '12px',
+                padding: '16px',
+                background: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid rgba(255, 255, 255, 0.05)',
+                borderRadius: '8px',
+                animation: 'fadeIn 0.2s ease-out'
+              }}>
+                <label htmlFor="adminPath" style={{
+                  display: 'block',
+                  fontSize: '11px',
+                  fontWeight: '600',
+                  textTransform: 'uppercase',
+                  letterSpacing: '1px',
+                  color: '#a1a1aa',
+                  marginBottom: '6px'
+                }}>
+                  Custom Admin Path
+                </label>
+                <input
+                  id="adminPath"
+                  type="text"
+                  placeholder="/wp-admin"
+                  value={adminPath}
+                  onChange={(e) => setAdminPath(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    background: 'rgba(0, 0, 0, 0.3)',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    borderRadius: '6px',
+                    color: '#ffffff',
+                    fontSize: '14px',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                />
+                <p style={{
+                  fontSize: '11.5px',
+                  color: '#71717a',
+                  marginTop: '6px',
+                  lineHeight: '1.4',
+                  marginBottom: 0
+                }}>
+                  Change this if you use security plugins (like WPS Hide Login) that rename the admin path.
+                </p>
+              </div>
+            )}
           </div>
 
           <button 
             type="submit" 
-            disabled={!isValid}
+            disabled={!isValid || isVerifying}
             style={{
               width: '100%',
               padding: '14px',
-              background: isValid 
+              background: (isValid && !isVerifying)
                 ? 'linear-gradient(135deg, #f97316 0%, #f59e0b 100%)' 
                 : 'linear-gradient(135deg, #4b5563 0%, #374151 100%)',
               border: 'none',
               borderRadius: '8px',
-              color: isValid ? '#ffffff' : '#9ca3af',
+              color: (isValid && !isVerifying) ? '#ffffff' : '#9ca3af',
               fontWeight: '600',
               fontSize: '15px',
-              cursor: isValid ? 'pointer' : 'not-allowed',
-              boxShadow: isValid ? '0 4px 12px rgba(249, 115, 22, 0.2)' : 'none',
-              opacity: isValid ? 1 : 0.4,
+              cursor: (isValid && !isVerifying) ? 'pointer' : 'not-allowed',
+              boxShadow: (isValid && !isVerifying) ? '0 4px 12px rgba(249, 115, 22, 0.2)' : 'none',
+              opacity: (isValid && !isVerifying) ? 1 : 0.4,
               transition: 'all 0.2s ease'
             }}
           >
-            Connect WordPress Site
+            {isVerifying ? 'Verifying site...' : 'Connect WordPress Site'}
           </button>
         </form>
       </div>
