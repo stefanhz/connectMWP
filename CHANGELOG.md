@@ -4,7 +4,10 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
-## 2026-05-27 — connectmwp-mcp 1.2.5
+## 2026-05-27 — connectmwp-mcp 1.2.5, connectmwp-server 1.2.5
+
+### Fixed
+- **connectmwp-server — resolve lint warnings & errors.** Cleared unused TS variables and catches in `ClientPage.tsx`. Replaced synchronous state rendering updates in `callback/page.tsx`'s `useEffect` hook with deferred asynchronous state updates to eliminate the React cascade render warnings and block build blocks.
 
 ### Chore
 - **Completed folder-rename cleanup (`wpConnect` → `connectMWP`).** The project
