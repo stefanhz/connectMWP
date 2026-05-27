@@ -1,6 +1,6 @@
 {
   "name": "connectmwp-mcp",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "description": "Local Model Context Protocol (MCP) server for connectmwp.com to connect AI clients directly to self-hosted WordPress sites.",
   "main": "index.js",
   "type": "module",

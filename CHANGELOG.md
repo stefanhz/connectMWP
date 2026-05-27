@@ -4,6 +4,14 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-27 — v2.0.5
+
+### Fixed
+- **connectmwp-agent — layout fix for settings configuration snippets.** Replaced the layout-breaking inline-block block/width styles with standard inline syntax highlight spans (bold blue for the `connectmwp` server block, soft faded grey for surrounding boilerplate). This resolves the alignment issue on closing brackets and eliminates horizontal scrollbar clipping inside the `<pre>` tag.
+
+### Chore
+- Bumped versions of all components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) to `2.0.5`.
+
 ## 2026-05-27 — v2.0.4
 
 ### Added
