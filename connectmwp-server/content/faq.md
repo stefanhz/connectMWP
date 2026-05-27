@@ -57,3 +57,10 @@ If these commands print version numbers (e.g., `v18.x.x` or higher), you are rea
 If they print "command not found" or similar errors:
 1. Download the **LTS (Long Term Support)** version of Node.js from the official [Node.js Website](https://nodejs.org/) and run the installer.
 2. Restart your terminal window and run the commands again to verify the installation.
+
+## Why was connectMWP created instead of using existing solutions?
+
+connectMWP was built to address two primary limitations found in other WordPress MCP servers and integrations:
+
+1. **Compatibility with WordPress Security & 2FA Plugins**: Popular alternatives (including Automattic's official WordPress MCP server) require creating active WordPress user sessions. On production sites running security plugins (such as Wordfence, WP 2FA, Solid Security), these sessions are discarded or blocked due to 2FA enforcement. connectMWP uses **session-less, signature-based authentication** (Ed25519 detached signatures) to authorize individual API requests directly, bypassing session policies and security plugin restrictions without requiring you to reduce your website's security.
+2. **No Extra API Keys or Middleware Fees**: Many other integration tools route requests through a centralized third-party proxy, requiring separate API registration and adding middleware subscription fees. connectMWP connects your local AI client (e.g., Claude) **directly** to your website. There are no middleware servers in the request path and no extra API keys to buy—allowing you to use your existing subscription plans (like Claude Pro/Team) for $0 middleware cost.

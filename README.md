@@ -1,10 +1,17 @@
 # connectMWP
 
-**Current Release Version: v2.0.0**
+**Current Release Version: v2.0.7**
 
 connectMWP is a secure, decentralized Model Context Protocol (MCP) server that connects local AI clients (such as Claude Desktop, Cursor, and Claude Code) directly to self-hosted WordPress websites to draft content, upload media, and manage posts directly from your workspace.
 
 The architecture is **100% decentralized and session-less**. AI requests are authenticated on a per-request basis using Ed25519 detached signatures over HTTPS, bypassing any central servers and carrying $0 proxy costs. This makes it completely immune to WAF blocks and WordPress login security/2FA plugin restrictions.
+
+## Why connectMWP? (Motivation & Design Choices)
+
+While there are other WordPress integration solutions and MCP servers available on the market (such as Automattic's official WordPress MCP server), connectMWP was built to address two critical pain points:
+
+1. **Uncompromised Security & WAF Compatibility**: The prime alternatives require logging in as a WordPress user session on each call, which triggers immediate blocks from security plugins (like Wordfence, Solid Security, miniOrange) or edge firewalls/WAFs enforcing 2FA or cookie policies. connectMWP operates **100% session-less** (verifying per-request cryptographic Ed25519 signatures in the permission callback without establishing a login session), allowing secure connections straight through strict security plugins without compromising your site's safety.
+2. **Direct Connection with No Middleware Costs**: Other platforms act as centralized middleware, routing traffic through third-party proxies that require separate API keys and extra monthly subscription fees. connectMWP is **fully decentralized** (the local MCP server acts as the signer and calls your site directly). It works out of the box with your existing, paid local setup (e.g., Claude.ai Pro/Team subscription) at $0 middleware proxy cost.
 
 ---
 
@@ -29,7 +36,7 @@ claude mcp add connectmwp node /Users/stefanhz/Documents/aiSpace/connectMWP/conn
 1. In the WordPress settings screen (**Settings -> connectMWP**), click **Generate Pairing Code**.
 2. Copy the generated pairing terminal command and execute it in your terminal. For local files, run:
 ```bash
-node /Users/stefanhz/Documents/aiSpace/connectMWP/connectmwp-mcp/index.js add-site --enroll "https://yourblog.com|pairing_code"
+node /Users/stefanhz/Documents/aiSpace/connectMWP/connectmwp-mcp/index.js add-site --enroll "https://yourblog.com,pairing_code"
 ```
 During this flow, your local client generates a secure Ed25519 keypair and uploads only the public key to your site. The private key remains secure on your machine (`~/.connectmwp/<hostname>.ed25519`), and the site details are stored in `~/.connectmwp.json`.
 
@@ -102,5 +109,5 @@ Once `connectmwp-mcp` is published to the public npm registry, the commands will
    ```
 2. **Pair Site (Per Site):**
    ```bash
-   npx -y connectmwp-mcp add-site --enroll "https://domain.com|pairing_code"
+   npx -y connectmwp-mcp add-site --enroll "https://domain.com,pairing_code"
    ```

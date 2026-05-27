@@ -4,6 +4,18 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-27 — v2.0.7
+
+### Added
+- **README.md — design motivation section.** Added a new "Why connectMWP?" section explaining the advantages of connectMWP (session-less request signatures bypassing security/2FA plugins, direct decentralized calls with $0 middleware proxy costs).
+- **connectmwp-server — design motivation FAQ.** Expanded the FAQ page on the website with a dedicated entry answering why connectMWP was built instead of other market solutions.
+
+### Changed
+- **README.md — updated pairing delimiters.** Replaced pipe character (`|`) delimiters with shell-safe commas (`,`) in all CLI pairing instructions to prevent terminal command redirect errors.
+
+### Chore
+- Bumped versions of all components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) to `2.0.7`.
+
 ## 2026-05-27 — v2.0.6
 
 ### Fixed
