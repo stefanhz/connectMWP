@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 1.2.5
+ * Version: 1.2.6
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -18,6 +18,12 @@ class ConnectMWP_Agent {
     const API_NAMESPACE = 'connectmwp/v1';
 
     private static $instance = null;
+
+    // Per-request memo of a successful token authentication. determine_current_user
+    // can be evaluated multiple times in a single request; our replay nonce is
+    // single-use, so re-validating on a later pass would fail and silently
+    // de-authenticate the user. Resolve once, then reuse for the rest of the request.
+    private $resolved_user_id = 0;
 
     public static function instance() {
         if (self::$instance === null) {
@@ -53,6 +59,15 @@ class ConnectMWP_Agent {
             return $user_id;
         }
 
+        // Reuse a token authentication already resolved earlier in this request.
+        // determine_current_user is evaluated more than once per request; the
+        // replay nonce below is single-use, so without this memo the second pass
+        // would fail replay and reset the user to logged-out (causing a 401 even
+        // though the token is valid). See $resolved_user_id declaration.
+        if ($this->resolved_user_id) {
+            return $this->resolved_user_id;
+        }
+
         $token = $this->get_auth_token_from_header();
         if (empty($token)) {
             return $user_id;
@@ -72,6 +87,7 @@ class ConnectMWP_Agent {
         }
 
         $this->update_token_last_used($user_id_found, $token_hash);
+        $this->resolved_user_id = $user_id_found; // memo: skip replay on later passes
         return $user_id_found;
     }
 
@@ -726,7 +742,7 @@ class ConnectMWP_Agent {
                 <div style="position: absolute; right: 50px; bottom: -80px; width: 150px; height: 150px; border-radius: 50%; background: rgba(255,255,255,0.03);"></div>
                 
                 <h1 style="color: #fff; margin: 0 0 8px 0; font-size: 28px; font-weight: 700; display: flex; align-items: center; gap: 10px;">
-                    <span style="font-size: 32px;">🔌</span> connectMWP Agent <span style="font-size: 13px; font-weight: 400; opacity: 0.8; background: rgba(255,255,255,0.15); padding: 3px 10px; border-radius: 20px; vertical-align: middle;">v1.2.5</span>
+                    <span style="font-size: 32px;">🔌</span> connectMWP Agent <span style="font-size: 13px; font-weight: 400; opacity: 0.8; background: rgba(255,255,255,0.15); padding: 3px 10px; border-radius: 20px; vertical-align: middle;">v1.2.6</span>
                 </h1>
                 <p style="margin: 0; font-size: 16px; opacity: 0.9; line-height: 1.4;">
                     Secure, direct connection bridge between your local AI platforms (Claude Desktop, Cursor, etc.) and this WordPress site.

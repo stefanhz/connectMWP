@@ -4,6 +4,26 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-27 — connectmwp-agent 1.2.6
+
+### Fixed
+- **connectmwp-agent — every authenticated request self-destructed (401 despite a valid token).**
+  `authenticate_request()` runs on `determine_current_user`, which WordPress
+  evaluates more than once per request. The single-use replay nonce was claimed
+  on the first pass (token recognized, "Last Used" stamped, user authenticated)
+  and then **rejected on the second pass** — `add_option()` returns false for an
+  already-claimed nonce — causing the filter to return `0` and reset the caller
+  to logged-out. By the time the REST/AJAX permission check ran, the user was
+  anonymous, so every call returned `rest_forbidden` (401) even for a full
+  Administrator with a correct token. Fixed by memoizing the first successful
+  token resolution per request (`$resolved_user_id`) and skipping the replay
+  re-check on subsequent passes. Affects REST and Admin-AJAX paths alike.
+  (`connectmwp-agent/connectmwp-agent.php`)
+
+### Chore
+- Synced the admin-page version badge to v1.2.6. Logged a follow-up (T007) to make
+  that badge read from the plugin header so it can't drift again.
+
 ## 2026-05-27 — connectmwp-agent 1.2.5
 
 ### Fixed
