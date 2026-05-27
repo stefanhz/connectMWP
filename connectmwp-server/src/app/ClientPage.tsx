@@ -20,20 +20,39 @@ export default function ClientPage({ faqs }: ClientPageProps) {
   const [adminPath, setAdminPath] = useState('/wp-admin');
 
   const isValidSiteUrl = (val: string): boolean => {
-    let urlStr = val.trim();
-    if (!urlStr) return false;
+    const clean = val.trim();
+    if (!clean) return false;
+    
+    // Explicitly reject email addresses
+    if (clean.includes('@')) return false;
+
+    let urlStr = clean;
     if (!/^https?:\/\//i.test(urlStr)) {
       urlStr = 'https://' + urlStr;
     }
     try {
       const url = new URL(urlStr);
       const hostname = url.hostname;
+      
+      // Prevent credentials URLs (e.g. stefan@sheinz.com parsed as user credentials)
+      if (url.username || url.password) {
+        return false;
+      }
+
       if (!hostname.includes('.')) {
         return hostname === 'localhost';
       }
       return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(hostname) || hostname === 'localhost';
     } catch (e) {
       return false;
+    }
+  };
+
+  const handleBlur = () => {
+    setTouched(true);
+    let val = siteUrl.trim();
+    if (val && !/^https?:\/\//i.test(val) && !val.includes('@')) {
+      setSiteUrl('https://' + val);
     }
   };
 
@@ -65,6 +84,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
           const data = await response.json();
           if (data.url) {
             resolvedUrl = data.url;
+            setSiteUrl(resolvedUrl); // Dynamically update the input value so the user sees the verified protocol
           }
         }
       } catch (verifyErr) {
@@ -74,6 +94,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
       // Final fallback if verification completely failed to add a protocol
       if (!/^https?:\/\//i.test(resolvedUrl)) {
         resolvedUrl = 'https://' + resolvedUrl;
+        setSiteUrl(resolvedUrl);
       }
       
       const parsedUrl = new URL(resolvedUrl);
@@ -215,7 +236,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
               type="text"
               placeholder="e.g. https://mywebsite.com"
               value={siteUrl}
-              onBlur={() => setTouched(true)}
+              onBlur={handleBlur}
               onChange={(e) => {
                 setSiteUrl(e.target.value);
                 if (e.target.value.trim() === '') {
