@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.7
+ * Version: 2.0.8
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -13,7 +13,7 @@ defined('ABSPATH') || exit;
 
 class ConnectMWP_Agent {
 
-    const VERSION = '2.0.7';
+    const VERSION = '2.0.8';
     const OPTION_TOKENS = 'connectmwp_agent_tokens';
     const OPTION_NONCES = 'connectmwp_agent_nonces';
     const API_NAMESPACE = 'connectmwp/v1';
@@ -1075,11 +1075,12 @@ class ConnectMWP_Agent {
                         <table class="wp-list-table widefat fixed striped" style="border: none; box-shadow: none; margin-top: 10px;">
                             <thead>
                                 <tr>
-                                    <th style="font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; width: 25%;">Client Label</th>
+                                    <th style="font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; width: 20%;">Client Label</th>
                                     <th style="font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; width: 25%;">Key ID</th>
-                                    <th style="font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; width: 15%;">WP User</th>
-                                    <th style="font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; width: 15%;">Created</th>
-                                    <th style="font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; width: 20%; text-align: right;">Action</th>
+                                    <th style="font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; width: 13%;">WP User</th>
+                                    <th style="font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; width: 14%;">Created</th>
+                                    <th style="font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; width: 14%;">Last Used</th>
+                                    <th style="font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; width: 14%; text-align: right;">Action</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -1089,12 +1090,13 @@ class ConnectMWP_Agent {
                                         <td style="padding: 12px 10px; vertical-align: middle; font-family: monospace; font-size: 12px;"><?php echo esc_html($key_data['key_id']); ?></td>
                                         <td style="padding: 12px 10px; vertical-align: middle;"><?php echo esc_html($key_data['user_login']); ?></td>
                                         <td style="padding: 12px 10px; vertical-align: middle; color: #7f8c8d; font-size: 12px;"><?php echo esc_html($key_data['created']); ?></td>
+                                        <td style="padding: 12px 10px; vertical-align: middle; color: #7f8c8d; font-size: 12px;"><?php echo esc_html(!empty($key_data['last_used']) ? $key_data['last_used'] : 'Never'); ?></td>
                                         <td style="padding: 12px 10px; vertical-align: middle; text-align: right;">
                                             <form method="post" style="display:inline;">
                                                 <?php wp_nonce_field('connectmwp_revoke_key'); ?>
                                                 <input type="hidden" name="connectmwp_action" value="revoke_key" />
                                                 <input type="hidden" name="key_id" value="<?php echo esc_attr($key_data['key_id']); ?>" />
-                                                <button type="submit" class="button button-link-delete" onclick="return confirm('Are you sure you want to revoke this client\'s access?');" style="color: #d63638; border-color: #ccd0d4; padding: 2px 10px; height: auto;">Revoke Access</button>
+                                                <button type="submit" class="button button-link-delete" onclick="return confirm('Are you sure you want to revoke this client\'s access?');" style="color: #d63638; border-color: #ccd0d4; padding: 2px 8px; font-size: 11px; line-height: 1.4; min-height: 24px; height: auto; border-radius: 4px;">Revoke Access</button>
                                             </form>
                                         </td>
                                     </tr>

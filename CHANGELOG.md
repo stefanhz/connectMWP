@@ -4,6 +4,17 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-27 — v2.0.8
+
+### Added
+- **connectmwp-agent — exposed Last Used column.** Added back the "Last Used" date column in the WordPress admin "Paired Clients" listing table.
+
+### Changed
+- **connectmwp-agent — styled Revoke Access button.** Made the "Revoke Access" action button in the "Paired Clients" listing more compact (smaller padding, font-size, and height) to save horizontal layout space.
+
+### Chore
+- Bumped versions of all components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) to `2.0.8`.
+
 ## 2026-05-27 — v2.0.7
 
 ### Added
