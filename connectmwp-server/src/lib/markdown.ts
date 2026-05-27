@@ -34,10 +34,15 @@ export function parseMarkdown(markdown: string): string {
     // Bold text (**text**)
     trimmed = trimmed.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
 
-    // Markdown Links ([text](url)) - Render with class instead of inline styles
+    // Markdown Links ([text](url)) - Render with class instead of inline styles and sanitize URL
     trimmed = trimmed.replace(
-      /\[(.*?)\]\((.*?)\)/g, 
-      '<a href="$2" target="_blank" rel="noopener noreferrer" class="md-link">$1</a>'
+      /\[(.*?)\]\((.*?)\)/g,
+      (match, linkText, url) => {
+        const trimmedUrl = url.trim();
+        const isSafe = /^https?:\/\//i.test(trimmedUrl) || trimmedUrl.startsWith('/') || trimmedUrl.startsWith('mailto:');
+        const safeUrl = isSafe ? trimmedUrl : '#';
+        return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" class="md-link">${linkText}</a>`;
+      }
     );
 
     // Markdown Unordered lists (- item)

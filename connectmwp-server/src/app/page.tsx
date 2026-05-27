@@ -11,6 +11,7 @@ export default async function Page() {
     faqs = parseFaqMarkdown(content);
   } catch (error) {
     console.error('Failed to read FAQ file:', error);
+    faqs = [{ q: 'Error Loading FAQ', a: 'We were unable to load the FAQ documentation. Please try refreshing or check server logs.' }];
   }
 
   return <ClientPage faqs={faqs} />;

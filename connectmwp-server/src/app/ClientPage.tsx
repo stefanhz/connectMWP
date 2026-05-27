@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
+import pkg from '../../package.json';
 
 interface ClientPageProps {
   faqs: {
@@ -23,52 +24,52 @@ export default function ClientPage({ faqs }: ClientPageProps) {
   };
 
   return (
-    <div className="app-container">
+    <div className="min-h-screen w-full flex flex-col justify-start items-center bg-[radial-gradient(circle_at_top,_#1e1e2f_0%,_#0d0d15_100%)] text-white font-sans px-5 py-20 box-border">
       {/* Main Container Card */}
-      <div className="card-container" style={{ textAlign: 'left' }}>
-        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '8px' }}>
-          <div className="logo-badge" style={{ marginBottom: 0 }}>
+      <div className="max-w-[550px] w-full bg-white/3 backdrop-blur-[16px] border border-white/8 rounded-2xl p-10 shadow-[0_20px_50px_rgba(0,0,0,0.3)] text-left">
+        <div className="flex justify-center mb-2">
+          <div className="inline-flex p-3 bg-gradient-to-br from-orange-500 to-amber-500 rounded-xl mb-0 font-bold text-2xl shadow-[0_8px_20px_rgba(249,115,22,0.3)] text-white">
             MWP
           </div>
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'center' }}>
-          <div className="dev-badge">
+        <div className="flex justify-center">
+          <div className="inline-flex items-center gap-2 px-4 py-2 bg-amber-500/8 border border-amber-500/25 rounded-[30px] text-[12.5px] text-amber-400 mb-6 font-medium leading-normal text-left">
             <span>⚠️</span> Active Development — Use at your own risk
           </div>
         </div>
 
-        <h1 className="card-title" style={{ textAlign: 'center', display: 'block', margin: '0 auto 16px auto' }}>
+        <h1 className="text-3xl font-extrabold mb-3 tracking-tight bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-transparent text-center block mx-auto">
           Connect My WordPress
         </h1>
 
-        <p className="card-desc" style={{ textAlign: 'center', marginBottom: '24px' }}>
+        <p className="text-[15px] leading-relaxed text-zinc-400 mb-6 text-center">
           Bridge your local AI clients (Claude Desktop, Cursor, etc.) directly to your WordPress sites. Secure, 100% private, and session-less.
         </p>
 
-        <div className="download-banner" style={{ textAlign: 'center', marginBottom: '28px' }}>
-          ⚡ <strong>Step 1:</strong> Download the <a href="/connectmwp-agent.zip" download>WordPress Agent Plugin (ZIP)</a> and activate it on your WordPress site.
+        <div className="text-[13.5px] text-amber-400 mb-7 p-3 bg-amber-400/5 rounded-lg border border-dashed border-amber-400/20 leading-normal text-center">
+          ⚡ <strong>Step 1:</strong> Download the <a href="/connectmwp-agent.zip" download className="text-amber-400 underline font-semibold">WordPress Agent Plugin (ZIP)</a> and activate it on your WordPress site.
         </div>
 
-        <h3 style={{ fontSize: '15px', fontWeight: '700', color: '#ffffff', marginBottom: '12px' }}>
+        <h3 className="text-[15px] font-bold text-white mb-3">
           🚀 Quick Setup &amp; Pairing Guide
         </h3>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', fontSize: '14px', color: '#a1a1aa', lineHeight: '1.5' }}>
+        <div className="flex flex-col gap-4 text-sm text-zinc-400 leading-relaxed">
           <div>
-            <strong style={{ color: '#ffffff' }}>1. Install the Plugin:</strong> Upload and activate the downloaded ZIP file in your WordPress dashboard under <em>Plugins → Add New</em>.
+            <strong className="text-white">1. Install the Plugin:</strong> Upload and activate the downloaded ZIP file in your WordPress dashboard under <em>Plugins → Add New</em>.
           </div>
           <div>
-            <strong style={{ color: '#ffffff' }}>2. Generate a Pairing Code:</strong> Navigate to <em>Settings → connectMWP</em> in your WordPress dashboard and click <strong style={{ color: '#fbbf24' }}>Generate Pairing Code</strong>.
+            <strong className="text-white">2. Generate a Pairing Code:</strong> Navigate to <em>Settings → connectMWP</em> in your WordPress dashboard and click <strong className="text-amber-400">Generate Pairing Code</strong>.
           </div>
           <div>
-            <strong style={{ color: '#ffffff' }}>3. Run Local Setup:</strong> Copy the enrollment string generated on your site, and run the following pairing command in your local terminal:
-            <div className="code-block-container" style={{ marginTop: '8px', paddingRight: '80px', background: 'rgba(0,0,0,0.5)', border: '1px solid rgba(255,255,255,0.08)' }}>
+            <strong className="text-white">3. Run Local Setup:</strong> Copy the enrollment string generated on your site, and run the following pairing command in your local terminal:
+            <div className="relative mt-2 pr-20 bg-black/50 border border-white/10 rounded-lg p-4 font-mono text-[13px] break-all leading-normal text-left">
               {pairingCmd}
               <button
                 onClick={handleCopyCmd}
-                className={`copy-btn ${copiedCmd ? 'copied' : ''}`}
-                style={{ right: '8px' }}
+                className={`absolute top-1/2 right-3 -translate-y-1/2 border-none text-white px-3.5 py-2 rounded font-semibold text-xs cursor-pointer transition-colors ${copiedCmd ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-indigo-500 hover:bg-indigo-600'}`}
+                aria-label="Copy pairing command to clipboard"
               >
                 {copiedCmd ? 'Copied!' : 'Copy'}
               </button>
@@ -78,24 +79,27 @@ export default function ClientPage({ faqs }: ClientPageProps) {
       </div>
 
       {/* FAQ Accordion Card */}
-      <div className="faq-container">
-        <h2 className="faq-title">
+      <div className="max-w-[550px] w-full mt-10 bg-white/2 border border-white/6 rounded-2xl p-9 box-border shadow-[0_10px_30px_rgba(0,0,0,0.15)]">
+        <h2 className="text-lg font-bold text-white mt-0 mb-5 border-b border-white/8 pb-3">
           Frequently Asked Questions
         </h2>
         {faqs.map((item, index) => (
-          <div key={index} className="faq-item">
+          <div key={index} className="border-b border-white/5 pb-3 mb-3 last:border-b-0 last:mb-0 last:pb-0">
             <button
               onClick={() => setOpenFaq(openFaq === index ? null : index)}
-              className="faq-trigger"
+              className="w-full bg-transparent border-none text-white text-[14px] font-semibold text-left cursor-pointer flex justify-between items-center py-1.5 outline-none"
+              aria-expanded={openFaq === index}
+              aria-controls={`faq-content-${index}`}
             >
               <span>{item.q}</span>
-              <span className={`faq-arrow ${openFaq === index ? 'open' : ''}`}>
+              <span className={`text-amber-400 transition-transform duration-200 text-[10px] ${openFaq === index ? 'rotate-180' : 'rotate-0'}`} aria-hidden="true">
                 ▼
               </span>
             </button>
             {openFaq === index && (
               <div
-                className="faq-content"
+                id={`faq-content-${index}`}
+                className="text-[13.5px] leading-relaxed text-zinc-400 mt-2 transition-all text-left"
                 dangerouslySetInnerHTML={{ __html: item.a }}
               />
             )}
@@ -104,23 +108,23 @@ export default function ClientPage({ faqs }: ClientPageProps) {
       </div>
 
       {/* Footer Links & Info */}
-      <footer className="footer-container">
-        <div className="footer-links">
-          <Link href="/legal/about" className="footer-link">About</Link>
+      <footer className="mt-12 text-[13px] text-zinc-500 text-center leading-loose">
+        <div className="flex justify-center gap-4 mb-3 flex-wrap">
+          <Link href="/legal/about" className="text-zinc-400 no-underline hover:text-white transition-colors">About</Link>
           <span>•</span>
-          <Link href="/legal/privacy" className="footer-link">Privacy Policy</Link>
+          <Link href="/legal/privacy" className="text-zinc-400 no-underline hover:text-white transition-colors">Privacy Policy</Link>
           <span>•</span>
-          <Link href="/legal/terms" className="footer-link">Terms of Service</Link>
+          <Link href="/legal/terms" className="text-zinc-400 no-underline hover:text-white transition-colors">Terms of Service</Link>
           <span>•</span>
-          <a href="mailto:support@connectmwp.com" className="footer-link">Support</a>
+          <a href="mailto:support@connectmwp.com" className="text-zinc-400 no-underline hover:text-white transition-colors">Support</a>
           <span>•</span>
-          <a href="https://buy.stripe.com/aFa8wQ0rH2PQ4Msama5kk0l" target="_blank" rel="noopener noreferrer" className="footer-link coffee">☕ Buy me a coffee</a>
+          <a href="https://buy.stripe.com/aFa8wQ0rH2PQ4Msama5kk0l" target="_blank" rel="noopener noreferrer" className="text-amber-400 font-semibold hover:text-amber-500 transition-colors">☕ Buy me a coffee</a>
         </div>
-        <div className="footer-credit">
-          Brought to you by <a href="https://2morrow.ai" target="_blank" rel="noopener noreferrer">2morrow.ai</a>
+        <div className="mb-4">
+          Brought to you by <a href="https://2morrow.ai" target="_blank" rel="noopener noreferrer" className="text-amber-400 no-underline hover:text-amber-500 transition-colors">2morrow.ai</a>
         </div>
-        <div className="footer-version">
-          connectMWP Client v2.0.9
+        <div className="text-[11px] opacity-60">
+          connectMWP Client v{pkg.version}
         </div>
       </footer>
     </div>

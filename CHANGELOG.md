@@ -4,6 +4,20 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-27 — v2.0.10
+
+### Fixed
+- **connectmwp-agent — secure body hash for multipart uploads.** Enabled body hash header verification (`X-ConnectMWP-Body-Hash`) on `multipart/form-data` uploads (e.g. image uploads) to prevent file intercept/tampering.
+- **connectmwp-agent — enrollment rate limiting & SSL enforcement.** Restructured public endpoint `enroll_client_handler` to enforce HTTPS (except localhost) and apply transient-based IP rate limits.
+- **connectmwp-agent — correct delete cap.** Gated AJAX fallback deletion on actual `delete_post` user capability instead of generic `edit_post` capability.
+- **connectmwp-agent & connectmwp-mcp — paginated list endpoints.** Added support for `limit`, `offset`, and `search` query parameters in tags/categories listing routes to prevent unbounded memory/context issues, and `offset` in post retrieval.
+- **connectmwp-mcp — SSRF redirect bypass block.** Disabled automatic redirect following (`redirect: 'manual'`) during image URL downloading, preventing local host port/metadata scans.
+- **connectmwp-mcp — arbitrary file disclosure prevention.** Added image buffer magic number validation during uploads to block arbitrary file disclosures via tricky filenames/extensions.
+- **connectmwp-server — Tailwind CSS refactor.** Converted custom CSS layout classes inside `ClientPage.tsx` to utility Tailwind CSS layout classes, and cleaned up `globals.css`.
+
+### Chore
+- Bumped versions of all components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) to `2.0.10`.
+
 ## 2026-05-27 — v2.0.9
 
 ### Added

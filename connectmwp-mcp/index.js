@@ -20,6 +20,24 @@ function normalizeSiteUrl(url) {
   if (!/^https?:\/\//i.test(clean)) {
     clean = 'https://' + clean;
   }
+  
+  if (/^http:\/\//i.test(clean)) {
+    try {
+      const hostname = new URL(clean).hostname;
+      const isLocal = hostname === 'localhost' || 
+                      hostname === '127.0.0.1' || 
+                      hostname === '::1' || 
+                      hostname.endsWith('.local') || 
+                      hostname.endsWith('.test');
+      if (!isLocal) {
+        throw new Error('Plaintext HTTP connections are only allowed for local targets (localhost, .local, .test). HTTPS is required for remote sites.');
+      }
+    } catch (e) {
+      if (e.message && e.message.includes('Plaintext HTTP')) {
+        throw e;
+      }
+    }
+  }
   return clean;
 }
 
@@ -147,6 +165,50 @@ async function validateImageUrl(imageUrl) {
       throw new Error(`Access to private IP range is blocked: ${ip}`);
     }
   }
+}
+
+/**
+ * Validate image magic numbers to prevent arbitrary file read (I-2 Fix)
+ */
+function validateImageMagicNumbers(buffer) {
+  if (buffer.length < 4) {
+    throw new Error('File buffer is too small to be a valid image.');
+  }
+  
+  // PNG
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
+    return 'png';
+  }
+  // JPEG
+  if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
+    return 'jpeg';
+  }
+  // GIF
+  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38) {
+    return 'gif';
+  }
+  // BMP
+  if (buffer[0] === 0x42 && buffer[1] === 0x4D) {
+    return 'bmp';
+  }
+  // WebP (RIFF....WEBP)
+  if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46) {
+    if (buffer.length >= 12 && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
+      return 'webp';
+    }
+  }
+  // TIFF
+  if ((buffer[0] === 0x49 && buffer[1] === 0x49 && buffer[2] === 0x2A && buffer[3] === 0x00) ||
+      (buffer[0] === 0x4D && buffer[1] === 0x4D && buffer[2] === 0x00 && buffer[3] === 0x2A)) {
+    return 'tiff';
+  }
+  // SVG / XML (check if starts with <?xml or <svg, case insensitive or containing <svg)
+  const head = buffer.slice(0, Math.min(buffer.length, 512)).toString('utf-8').trim();
+  if (/^<svg/i.test(head) || /^<\?xml/i.test(head) && head.includes('<svg')) {
+    return 'svg';
+  }
+  
+  throw new Error('File magic number verification failed. Only valid image files (PNG, JPEG, GIF, WebP, SVG, BMP, TIFF) are allowed.');
 }
 
 // ============================================================================
@@ -362,7 +424,7 @@ if (command === 'set-default') {
 /**
  * Make a secure call to the WordPress Plugin REST API
  */
-async function callWordPress(siteUrl, keyId, privateKeyPath, endpoint, method = 'GET', data = null, isUpload = false) {
+async function callWordPress(siteUrl, keyId, privateKeyPath, endpoint, method = 'GET', data = null, isUpload = false, fileHash = null) {
   const timestamp = Math.floor(Date.now() / 1000).toString();
   const [endpointPath, endpointQuery] = endpoint.split('?');
 
@@ -398,7 +460,7 @@ async function callWordPress(siteUrl, keyId, privateKeyPath, endpoint, method = 
       rawBody = JSON.stringify(data);
     }
   }
-  const bodyHash = crypto.createHash('sha256').update(rawBody).digest('hex');
+  const bodyHash = isUpload && fileHash ? fileHash : crypto.createHash('sha256').update(rawBody).digest('hex');
 
   // Rebuild canonical string
   const canonical = [
@@ -427,6 +489,9 @@ async function callWordPress(siteUrl, keyId, privateKeyPath, endpoint, method = 
     'X-ConnectMWP-Timestamp': timestamp,
     'X-ConnectMWP-Signature': signature
   };
+  if (isUpload && fileHash) {
+    headers['X-ConnectMWP-Body-Hash'] = fileHash;
+  }
 
   let body = null;
   if (data && method !== 'GET' && method !== 'HEAD') {
@@ -443,21 +508,21 @@ async function callWordPress(siteUrl, keyId, privateKeyPath, endpoint, method = 
 
     // If REST API is not found or fails with auth/security block, try Admin-AJAX fallback
     if (response.status === 401 || response.status === 404 || response.status === 403) {
-      return await callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, method, data, isUpload);
+      return await callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, method, data, isUpload, fileHash);
     }
 
     const resData = await response.json();
     return resData;
   } catch (error) {
     console.error(`connectMWP: REST call failed (${error.message}). Attempting Admin-AJAX fallback...`);
-    return await callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, method, data, isUpload);
+    return await callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, method, data, isUpload, fileHash);
   }
 }
 
 /**
  * Fallback handler: Routes requests through admin-ajax.php
  */
-async function callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, method, data, isUpload) {
+async function callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, method, data, isUpload, fileHash = null) {
   const ajaxUrl = `${siteUrl}/wp-admin/admin-ajax.php`;
 
   // Endpoint may carry a query string (e.g. "posts?limit=50&fields=..."); split
@@ -528,7 +593,7 @@ async function callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, metho
   // Body hash
   let bodyHash = '';
   if (isUpload) {
-    bodyHash = crypto.createHash('sha256').update('').digest('hex');
+    bodyHash = fileHash || crypto.createHash('sha256').update('').digest('hex');
   } else {
     bodyHash = crypto.createHash('sha256').update(body).digest('hex');
   }
@@ -554,6 +619,9 @@ async function callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, metho
   headers['X-ConnectMWP-Key'] = keyId;
   headers['X-ConnectMWP-Timestamp'] = timestamp;
   headers['X-ConnectMWP-Signature'] = signature;
+  if (isUpload && fileHash) {
+    headers['X-ConnectMWP-Body-Hash'] = fileHash;
+  }
 
   if (!isUpload) {
     headers['Content-Type'] = 'application/x-www-form-urlencoded';
@@ -610,6 +678,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             limit: {
               type: 'integer',
               description: 'Maximum number of posts to retrieve (default 50)',
+            },
+            offset: {
+              type: 'integer',
+              description: 'Number of posts to offset (for pagination, default 0)',
             },
             fields: {
               type: 'string',
@@ -734,6 +806,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             site: {
               type: 'string',
               description: 'Optional domain or site URL of the target WordPress site (e.g. "2morrow.ai"). Uses the default site if omitted.'
+            },
+            limit: {
+              type: 'integer',
+              description: 'Maximum number of tags to retrieve (default 50, max 200)',
+            },
+            offset: {
+              type: 'integer',
+              description: 'Number of tags to offset (default 0)',
+            },
+            search: {
+              type: 'string',
+              description: 'Optional search term to filter tags by name',
             }
           },
         },
@@ -747,6 +831,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             site: {
               type: 'string',
               description: 'Optional domain or site URL of the target WordPress site (e.g. "2morrow.ai"). Uses the default site if omitted.'
+            },
+            limit: {
+              type: 'integer',
+              description: 'Maximum number of categories to retrieve (default 50, max 200)',
+            },
+            offset: {
+              type: 'integer',
+              description: 'Number of categories to offset (default 0)',
+            },
+            search: {
+              type: 'string',
+              description: 'Optional search term to filter categories by name',
             }
           },
         },
@@ -854,12 +950,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case 'connectmwp_get_posts': {
-        const { site, limit = 50, fields } = args;
+        const { site, limit = 50, offset = 0, fields } = args;
         const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
 
         // GET params travel in the query string only — never as a request body.
         const queryParams = new URLSearchParams();
         queryParams.append('limit', limit.toString());
+        queryParams.append('offset', offset.toString());
         if (fields) {
           queryParams.append('fields', fields);
         }
@@ -903,8 +1000,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           // SSRF Validation (I-2 Fix)
           await validateImageUrl(image_url);
 
-          // Fetch image from URL
-          const imgRes = await fetch(image_url);
+          // Fetch image from URL, manually handling redirects to prevent SSRF bypass
+          const imgRes = await fetch(image_url, { redirect: 'manual' });
+          if (imgRes.status >= 300 && imgRes.status < 400) {
+            throw new Error(`SSRF Block: Redirects are not allowed during image download (${imgRes.status}).`);
+          }
           if (!imgRes.ok) throw new Error(`Failed to download image from URL: ${image_url}`);
 
           // Size limit check on Content-Length header if present
@@ -919,6 +1019,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (fileBuffer.byteLength > 10 * 1024 * 1024) {
             throw new Error('Image size exceeds the maximum limit of 10MB.');
           }
+
+          // Verify magic numbers
+          validateImageMagicNumbers(fileBuffer);
 
           if (!filename) {
             const urlPath = new URL(image_url).pathname;
@@ -941,29 +1044,47 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             throw new Error('File size exceeds the maximum limit of 10MB.');
           }
 
+          // Verify magic numbers
+          validateImageMagicNumbers(fileBuffer);
+
           if (!filename) nameToUse = path.basename(file_path);
         }
+
+        // Calculate SHA-256 hash of the buffer for signature verification
+        const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
 
         // Build FormData payload compatible with native fetch
         const formData = new FormData();
         const blob = new Blob([fileBuffer]);
         formData.append('file', blob, nameToUse);
 
-        const res = await callWordPress(siteUrl, keyId, privateKeyPath, 'media', 'POST', formData, true);
+        const res = await callWordPress(siteUrl, keyId, privateKeyPath, 'media', 'POST', formData, true, fileHash);
         return { content: [{ type: 'text', text: JSON.stringify(res) }] };
       }
 
       case 'connectmwp_list_tags': {
-        const { site } = args;
+        const { site, limit = 50, offset = 0, search } = args;
         const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
-        const res = await callWordPress(siteUrl, keyId, privateKeyPath, 'tags', 'GET');
+        const queryParams = new URLSearchParams();
+        queryParams.append('limit', limit.toString());
+        queryParams.append('offset', offset.toString());
+        if (search) {
+          queryParams.append('search', search);
+        }
+        const res = await callWordPress(siteUrl, keyId, privateKeyPath, `tags?${queryParams.toString()}`, 'GET');
         return { content: [{ type: 'text', text: JSON.stringify(res) }] };
       }
 
       case 'connectmwp_list_categories': {
-        const { site } = args;
+        const { site, limit = 50, offset = 0, search } = args;
         const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
-        const res = await callWordPress(siteUrl, keyId, privateKeyPath, 'categories', 'GET');
+        const queryParams = new URLSearchParams();
+        queryParams.append('limit', limit.toString());
+        queryParams.append('offset', offset.toString());
+        if (search) {
+          queryParams.append('search', search);
+        }
+        const res = await callWordPress(siteUrl, keyId, privateKeyPath, `categories?${queryParams.toString()}`, 'GET');
         return { content: [{ type: 'text', text: JSON.stringify(res) }] };
       }
 

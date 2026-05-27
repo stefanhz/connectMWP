@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.9
+ * Version: 2.0.10
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -13,7 +13,7 @@ defined('ABSPATH') || exit;
 
 class ConnectMWP_Agent {
 
-    const VERSION = '2.0.9';
+    const VERSION = '2.0.10';
     const OPTION_TOKENS = 'connectmwp_agent_tokens';
     const OPTION_NONCES = 'connectmwp_agent_nonces';
     const API_NAMESPACE = 'connectmwp/v1';
@@ -36,6 +36,9 @@ class ConnectMWP_Agent {
     private function __construct() {
         // Register REST endpoints
         add_action('rest_api_init', [$this, 'register_rest_routes']);
+
+        // Central REST signature validation filter
+        add_filter('rest_pre_dispatch', [$this, 'central_rest_auth'], 10, 3);
 
         // Admin-AJAX routes (Fallback endpoints)
         add_action('wp_ajax_connectmwp_api', [$this, 'handle_ajax_request']);
@@ -85,7 +88,7 @@ class ConnectMWP_Agent {
             [
                 'methods'             => 'DELETE',
                 'callback'            => [$this, 'delete_post_handler'],
-                'permission_callback' => [$this, 'check_edit_post_permission'],
+                'permission_callback' => [$this, 'check_delete_post_permission'],
             ]
         ]);
 
@@ -122,6 +125,26 @@ class ConnectMWP_Agent {
                 'permission_callback' => [$this, 'check_taxonomy_permission'],
             ]
         ]);
+    }
+
+    public function central_rest_auth($result, $server, $request) {
+        $route = $request->get_route();
+        
+        if (strpos($route, '/' . self::API_NAMESPACE . '/') === 0) {
+            if ($route === '/' . self::API_NAMESPACE . '/enroll') {
+                return $result;
+            }
+            
+            if (!$this->verify_request_signature($request)) {
+                return new WP_Error(
+                    'connectmwp_unauthorized',
+                    'Unauthorized request signature verification failed.',
+                    ['status' => 401]
+                );
+            }
+        }
+        
+        return $result;
     }
 
     private $signature_verified = null;
@@ -223,13 +246,15 @@ class ConnectMWP_Agent {
         $sorted_query = http_build_query($query_params, '', '&', PHP_QUERY_RFC3986);
         $query_hash = hash('sha256', $sorted_query);
 
-        // Body hash (skip hashing multipart/form-data body to avoid boundary mismatches)
-        $raw_body = '';
+        // Body hash (skip hashing multipart/form-data body to avoid boundary mismatches, read from header instead)
+        $body_hash = '';
         $content_type = $_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '';
-        if (stripos($content_type, 'multipart/form-data') === false) {
+        if (stripos($content_type, 'multipart/form-data') !== false) {
+            $body_hash = $_SERVER['HTTP_X_CONNECTMWP_BODY_HASH'] ?? $_SERVER['X_CONNECTMWP_BODY_HASH'] ?? '';
+        } else {
             $raw_body = file_get_contents('php://input');
+            $body_hash = hash('sha256', $raw_body ?? '');
         }
-        $body_hash = hash('sha256', $raw_body ?? '');
 
         $canonical = implode("\n", [
             $timestamp,
@@ -277,39 +302,34 @@ class ConnectMWP_Agent {
     }
 
     private function is_replay_signature($sig_hash) {
-        $claimed = get_option('connectmwp_claimed_signatures', []);
-        if (!is_array($claimed)) {
-            $claimed = [];
-        }
-
+        $option_name = 'cmwp_sig_' . $sig_hash;
         $now = time();
+        $expiry = $now + 360;
 
-        // Prune expired signatures
-        $changed = false;
-        foreach ($claimed as $hash => $expiry) {
-            if ($now > $expiry) {
-                unset($claimed[$hash]);
-                $changed = true;
-            }
-        }
-
-        if (isset($claimed[$sig_hash])) {
-            if ($changed) {
-                update_option('connectmwp_claimed_signatures', $claimed, 'no');
-            }
+        // add_option is atomic in WordPress
+        $added = add_option($option_name, $expiry, '', 'no');
+        if (!$added) {
             return true;
         }
 
-        // Enforce max size limit (500 entries)
-        if (count($claimed) >= 500) {
-            asort($claimed);
-            array_shift($claimed);
+        // Clean up expired signatures with a 1% probability
+        if (wp_rand(1, 100) === 42) {
+            $this->prune_expired_signatures();
         }
 
-        $claimed[$sig_hash] = $now + 360;
-        update_option('connectmwp_claimed_signatures', $claimed, 'no');
-
         return false;
+    }
+
+    private function prune_expired_signatures() {
+        global $wpdb;
+        $now = time();
+        $wpdb->query(
+            $wpdb->prepare(
+                "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s AND CAST(option_value AS UNSIGNED) < %d",
+                'cmwp_sig_%',
+                $now
+            )
+        );
     }
 
     private function find_key_by_id($key_id) {
@@ -323,9 +343,13 @@ class ConnectMWP_Agent {
     private function update_key_last_used($user_id, $key_id) {
         $keys = get_option('connectmwp_keys', []);
         if (is_array($keys) && isset($keys[$key_id])) {
-            $keys[$key_id]['last_used'] = current_time('mysql');
-            $keys[$key_id]['last_ip'] = $this->get_client_ip();
-            update_option('connectmwp_keys', $keys, 'no');
+            $last_used_str = $keys[$key_id]['last_used'] ?? '';
+            $last_used_time = !empty($last_used_str) && $last_used_str !== 'Never' ? strtotime($last_used_str) : 0;
+            if (time() - $last_used_time > 60) {
+                $keys[$key_id]['last_used'] = current_time('mysql');
+                $keys[$key_id]['last_ip'] = $this->get_client_ip();
+                update_option('connectmwp_keys', $keys, 'no');
+            }
         }
     }
 
@@ -359,6 +383,14 @@ class ConnectMWP_Agent {
         return user_can($this->bound_user_id, 'edit_post', $post_id);
     }
 
+    public function check_delete_post_permission($request) {
+        if (!$this->verify_request_signature($request)) {
+            return false;
+        }
+        $post_id = intval($request['id']);
+        return user_can($this->bound_user_id, 'delete_post', $post_id);
+    }
+
     public function check_upload_permission($request = null) {
         if (!$this->verify_request_signature($request)) {
             return false;
@@ -377,6 +409,20 @@ class ConnectMWP_Agent {
      * Handle Public Key Enrollment
      */
     public function enroll_client_handler(WP_REST_Request $request) {
+        // Enforce SSL unless it is localhost
+        $client_ip = $this->get_client_ip();
+        $is_localhost = in_array($client_ip, ['127.0.0.1', '::1', 'localhost'], true) || (isset($_SERVER['HTTP_HOST']) && preg_match('/localhost|\.local|\.test/i', $_SERVER['HTTP_HOST']));
+        if (!is_ssl() && !$is_localhost) {
+            return new WP_REST_Response(['success' => false, 'error' => 'HTTPS is required for enrollment.'], 403);
+        }
+
+        // Transient-based IP rate limiting
+        $ip_key = 'cmwp_enroll_limit_' . md5($client_ip);
+        $attempts = intval(get_transient($ip_key));
+        if ($attempts >= 5) {
+            return new WP_REST_Response(['success' => false, 'error' => 'Too many enrollment attempts. Please try again later.'], 429);
+        }
+
         $custom_code = '';
         if (function_exists('getallheaders')) {
             $headers = getallheaders();
@@ -406,6 +452,7 @@ class ConnectMWP_Agent {
         // Validate single-use enrollment code
         $stored = get_option('connectmwp_enrollment_code');
         if (!is_array($stored) || empty($stored['code']) || !hash_equals($stored['code'], $custom_code)) {
+            set_transient($ip_key, $attempts + 1, 600); // Lock for 10 mins
             return new WP_REST_Response(['success' => false, 'error' => 'Invalid enrollment code'], 401);
         }
 
@@ -450,8 +497,9 @@ class ConnectMWP_Agent {
 
         update_option('connectmwp_keys', $keys, 'no');
 
-        // Delete pairing code immediately (single-use constraint)
+        // Delete pairing code and rate-limit transient immediately on success
         delete_option('connectmwp_enrollment_code');
+        delete_transient($ip_key);
 
         return new WP_REST_Response([
             'success' => true,
@@ -477,6 +525,8 @@ class ConnectMWP_Agent {
     public function get_posts_handler(WP_REST_Request $request) {
         $limit = $request->get_param('limit') ? intval($request->get_param('limit')) : 50;
         $limit = min(100, max(1, $limit));
+        $offset = $request->get_param('offset') ? intval($request->get_param('offset')) : 0;
+        $offset = max(0, $offset);
         
         $fields_param = $request->get_param('fields');
         if ($fields_param) {
@@ -489,6 +539,7 @@ class ConnectMWP_Agent {
             'post_type'      => 'post',
             'post_status'    => ['publish', 'draft'],
             'posts_per_page' => $limit,
+            'offset'         => $offset,
         ];
 
         // Scope drafts to own user if user lacks edit_others_posts
@@ -497,6 +548,8 @@ class ConnectMWP_Agent {
         }
 
         $posts_query = new WP_Query($query_args);
+        $total = intval($posts_query->found_posts);
+        $has_more = ($offset + count($posts_query->posts)) < $total;
 
         $posts = [];
         foreach ($posts_query->posts as $post) {
@@ -523,7 +576,12 @@ class ConnectMWP_Agent {
             $posts[] = $post_item;
         }
 
-        return new WP_REST_Response(['success' => true, 'posts' => $posts], 200);
+        return new WP_REST_Response([
+            'success'  => true,
+            'posts'    => $posts,
+            'total'    => $total,
+            'has_more' => $has_more
+        ], 200);
     }
 
     public function get_post_handler(WP_REST_Request $request) {
@@ -724,6 +782,25 @@ class ConnectMWP_Agent {
             return new WP_REST_Response(['success' => false, 'error' => 'File size exceeds maximum limit of 10MB.'], 400);
         }
 
+        // Validate multipart file signature body hash
+        $file_hash = hash_file('sha256', $_FILES['file']['tmp_name']);
+        $expected_hash = $_SERVER['HTTP_X_CONNECTMWP_BODY_HASH'] ?? $_SERVER['X_CONNECTMWP_BODY_HASH'] ?? '';
+        if (empty($expected_hash)) {
+            if (function_exists('getallheaders')) {
+                $headers = getallheaders();
+                foreach ($headers as $name => $value) {
+                    if (strcasecmp($name, 'X-ConnectMWP-Body-Hash') === 0) {
+                        $expected_hash = $value;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (empty($expected_hash) || !hash_equals($expected_hash, $file_hash)) {
+            return new WP_REST_Response(['success' => false, 'error' => 'Upload signature body hash verification failed.'], 401);
+        }
+
         $attachment_id = media_handle_upload('file', 0);
 
         if (is_wp_error($attachment_id)) {
@@ -743,28 +820,72 @@ class ConnectMWP_Agent {
         ], 200);
     }
 
-    public function get_tags_handler() {
-        $tags = get_tags(['hide_empty' => false]);
+    public function get_tags_handler(WP_REST_Request $request = null) {
+        $limit = 50;
+        $offset = 0;
+        $search = '';
+        if ($request instanceof WP_REST_Request) {
+            $limit = $request->get_param('limit') ? intval($request->get_param('limit')) : 50;
+            $offset = $request->get_param('offset') ? intval($request->get_param('offset')) : 0;
+            $search = $request->get_param('search') ? sanitize_text_field($request->get_param('search')) : '';
+        }
+        $limit = min(200, max(1, $limit));
+        $offset = max(0, $offset);
+
+        $args = [
+            'hide_empty' => false,
+            'number'     => $limit,
+            'offset'     => $offset,
+        ];
+        if (!empty($search)) {
+            $args['search'] = $search;
+        }
+
+        $tags = get_tags($args);
         $result = [];
-        foreach ($tags as $tag) {
-            $result[] = [
-                'id'   => $tag->term_id,
-                'name' => $tag->name,
-                'slug' => $tag->slug,
-            ];
+        if (is_array($tags)) {
+            foreach ($tags as $tag) {
+                $result[] = [
+                    'id'   => $tag->term_id,
+                    'name' => $tag->name,
+                    'slug' => $tag->slug,
+                ];
+            }
         }
         return new WP_REST_Response(['success' => true, 'tags' => $result], 200);
     }
 
-    public function get_categories_handler() {
-        $categories = get_categories(['hide_empty' => false]);
+    public function get_categories_handler(WP_REST_Request $request = null) {
+        $limit = 50;
+        $offset = 0;
+        $search = '';
+        if ($request instanceof WP_REST_Request) {
+            $limit = $request->get_param('limit') ? intval($request->get_param('limit')) : 50;
+            $offset = $request->get_param('offset') ? intval($request->get_param('offset')) : 0;
+            $search = $request->get_param('search') ? sanitize_text_field($request->get_param('search')) : '';
+        }
+        $limit = min(200, max(1, $limit));
+        $offset = max(0, $offset);
+
+        $args = [
+            'hide_empty' => false,
+            'number'     => $limit,
+            'offset'     => $offset,
+        ];
+        if (!empty($search)) {
+            $args['search'] = $search;
+        }
+
+        $categories = get_categories($args);
         $result = [];
-        foreach ($categories as $category) {
-            $result[] = [
-                'id'   => $category->term_id,
-                'name' => $category->name,
-                'slug' => $category->slug,
-            ];
+        if (is_array($categories)) {
+            foreach ($categories as $category) {
+                $result[] = [
+                    'id'   => $category->term_id,
+                    'name' => $category->name,
+                    'slug' => $category->slug,
+                ];
+            }
         }
         return new WP_REST_Response(['success' => true, 'categories' => $result], 200);
     }
@@ -875,7 +996,7 @@ class ConnectMWP_Agent {
                 break;
             case 'delete_post':
                 $request->set_param('id', isset($_REQUEST['post_id']) ? intval($_REQUEST['post_id']) : 0);
-                if (!$this->check_edit_post_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
+                if (!$this->check_delete_post_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
                 $res = $this->delete_post_handler($request);
                 break;
             case 'upload_media':
@@ -884,11 +1005,11 @@ class ConnectMWP_Agent {
                 break;
             case 'get_tags':
                 if (!$this->check_read_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
-                $res = $this->get_tags_handler();
+                $res = $this->get_tags_handler($request);
                 break;
             case 'get_categories':
                 if (!$this->check_read_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
-                $res = $this->get_categories_handler();
+                $res = $this->get_categories_handler($request);
                 break;
             case 'create_category':
                 if (!$this->check_taxonomy_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
@@ -960,6 +1081,63 @@ class ConnectMWP_Agent {
         }
 
         ?>
+        <style>
+            .cmwp-wrap { max-width: 900px; margin: 20px auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen-Sans, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif; }
+            .cmwp-hero { background: linear-gradient(135deg, #2c3e50, #3498db); padding: 30px; border-radius: 12px; color: #fff; box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1); margin-bottom: 25px; position: relative; overflow: hidden; }
+            .cmwp-hero-circle-1 { position: absolute; right: -50px; top: -50px; width: 200px; height: 200px; border-radius: 50%; background: rgba(255,255,255,0.05); }
+            .cmwp-hero-circle-2 { position: absolute; right: 50px; bottom: -80px; width: 150px; height: 150px; border-radius: 50%; background: rgba(255,255,255,0.03); }
+            .cmwp-hero-title { color: #fff; margin: 0 0 8px 0; font-size: 28px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+            .cmwp-version-badge { font-size: 13px; font-weight: 400; opacity: 0.8; background: rgba(255,255,255,0.15); padding: 3px 10px; border-radius: 20px; vertical-align: middle; }
+            .cmwp-hero-desc { margin: 0; font-size: 16px; opacity: 0.9; line-height: 1.4; }
+            
+            .cmwp-pairing-card { background: #fff; border: 1px solid #e1e8ed; border-left: 6px solid #e74c3c; border-radius: 12px; padding: 25px; margin-bottom: 25px; box-shadow: 0 10px 30px rgba(231, 76, 60, 0.12); position: relative; animation: cmwpFadeIn 0.4s ease-out; }
+            .cmwp-pairing-header { position: absolute; top: 15px; right: 15px; display: flex; align-items: center; gap: 10px; }
+            .cmwp-countdown-badge { background: #fff3cd; border: 1px solid #ffeeba; color: #d35400; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; display: inline-flex; align-items: center; gap: 4px; }
+            .cmwp-countdown-timer { font-family: monospace; font-size: 12px; }
+            .cmwp-type-badge { background: rgba(231, 76, 60, 0.1); color: #e74c3c; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; }
+            .cmwp-pairing-title { color: #c0392b; margin: 0 0 15px 0; font-size: 18px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+            
+            .cmwp-instructions { background: #fdfefe; border: 1px solid #eaeded; border-left: 3px solid #3498db; border-radius: 6px; padding: 15px; margin-bottom: 20px; font-size: 13.5px; color: #34495e; line-height: 1.6; }
+            .cmwp-instructions-title { color: #2c3e50; font-size: 14px; display: block; margin-bottom: 8px; }
+            .cmwp-instructions-list { margin: 0; padding-left: 20px; list-style-type: decimal; }
+            
+            .cmwp-section-card { background: #fff; border: 1px solid #e1e8ed; border-radius: 12px; padding: 25px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.02); margin-bottom: 25px; }
+            .cmwp-section-title { margin-top: 0; margin-bottom: 15px; font-size: 18px; font-weight: 600; color: #2c3e50; border-bottom: 1px solid #f0f3f4; padding-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+            .cmwp-section-desc { font-size: 14px; color: #7f8c8d; line-height: 1.5; margin-bottom: 20px; }
+            
+            .cmwp-field-label { font-size: 12px; font-weight: 600; text-transform: uppercase; color: #7f8c8d; margin-bottom: 5px; }
+            .cmwp-input-row { display: flex; align-items: center; gap: 10px; }
+            .cmwp-code-box { font-family: monospace; font-size: 14px; background: #eef1f6; padding: 6px 12px; border-radius: 4px; color: #2c3e50; font-weight: 600; word-break: break-all; width: 100%; border: 1px solid #d5dbdb; }
+            .cmwp-cmd-row { display: flex; gap: 10px; align-items: stretch; }
+            .cmwp-cmd-textarea { font-family: monospace; font-size: 12px; background: #2c3e50; color: #ecf0f1; padding: 12px; border-radius: 6px; border: none; width: 100%; height: 60px; resize: none; line-height: 1.4; box-shadow: inset 0 2px 5px rgba(0,0,0,0.2); }
+            
+            .cmwp-table { border: none; box-shadow: none; margin-top: 10px; width: 100%; border-collapse: collapse; }
+            .cmwp-table th { font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; text-align: left; }
+            .cmwp-table td { padding: 12px 10px; vertical-align: middle; border-bottom: 1px solid #eaeded; }
+            .cmwp-table tr:nth-child(even) { background-color: #f8f9fa; }
+            .cmwp-table-label { font-weight: bold; }
+            .cmwp-table-code { font-family: monospace; font-size: 12px; }
+            .cmwp-table-meta { color: #7f8c8d; font-size: 12px; }
+            
+            .cmwp-config-item { margin-bottom: 25px; }
+            .cmwp-config-title { font-size: 13px; font-weight: 600; color: #2c3e50; margin-bottom: 8px; }
+            .cmwp-config-tip { font-size: 12px; color: #7f8c8d; margin-bottom: 12px; line-height: 1.4; }
+            .cmwp-config-pre { background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; color: #2c3e50; overflow-x: auto; line-height: 1.4; margin: 0; }
+            .cmwp-pre-dim { color: #abb2b9; }
+            .cmwp-pre-highlight { font-weight: 700; color: #1f618d; background-color: #ebf5fb; padding: 4px; display: inline-block; border-radius: 4px; border-left: 3px solid #2980b9; }
+            
+            .cmwp-button-revoke { color: #d63638; border-color: #ccd0d4; padding: 2px 8px; font-size: 11px; line-height: 1.4; min-height: 24px; height: auto; border-radius: 4px; background: #fff; cursor: pointer; border: 1px solid; }
+            .cmwp-button-revoke:hover { background: #fcf0f1; border-color: #d63638; }
+            
+            .cmwp-button-primary-custom { background: #3498db; border-color: #2980b9; box-shadow: 0 2px 4px rgba(52, 152, 219, 0.2); font-weight: 600; font-size: 14px; padding: 4px 20px; height: auto; min-height: 38px; border-radius: 6px; color: #fff; border: 1px solid; cursor: pointer; }
+            .cmwp-button-primary-custom:hover { background: #2980b9; border-color: #1f618d; }
+            
+            @keyframes cmwpFadeIn {
+                from { opacity: 0; transform: translateY(10px); }
+                to { opacity: 1; transform: translateY(0); }
+            }
+        </style>
+
         <script>
         function showConnectMWPToast(button, message) {
             let toast = document.getElementById('connectmwp-global-toast');
@@ -1011,16 +1189,16 @@ class ConnectMWP_Agent {
             }, 10000);
         }
         </script>
-        <div class="wrap" style="max-width: 900px; margin: 20px auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen-Sans, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;">
+        <div class="wrap cmwp-wrap">
             
-            <div style="background: linear-gradient(135deg, #2c3e50, #3498db); padding: 30px; border-radius: 12px; color: #fff; box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1); margin-bottom: 25px; position: relative; overflow: hidden;">
-                <div style="position: absolute; right: -50px; top: -50px; width: 200px; height: 200px; border-radius: 50%; background: rgba(255,255,255,0.05);"></div>
-                <div style="position: absolute; right: 50px; bottom: -80px; width: 150px; height: 150px; border-radius: 50%; background: rgba(255,255,255,0.03);"></div>
+            <div class="cmwp-hero">
+                <div class="cmwp-hero-circle-1"></div>
+                <div class="cmwp-hero-circle-2"></div>
                 
-                <h1 style="color: #fff; margin: 0 0 8px 0; font-size: 28px; font-weight: 700; display: flex; align-items: center; gap: 10px;">
-                    <span style="font-size: 32px;">🔌</span> connectMWP Agent <span style="font-size: 13px; font-weight: 400; opacity: 0.8; background: rgba(255,255,255,0.15); padding: 3px 10px; border-radius: 20px; vertical-align: middle;">v<?php echo esc_html(self::VERSION); ?></span>
+                <h1 class="cmwp-hero-title">
+                    <span style="font-size: 32px;">🔌</span> connectMWP Agent <span class="cmwp-version-badge">v<?php echo esc_html(self::VERSION); ?></span>
                 </h1>
-                <p style="margin: 0; font-size: 16px; opacity: 0.9; line-height: 1.4;">
+                <p class="cmwp-hero-desc">
                     Secure, signature-based direct connector between local AI clients (Claude Desktop, Cursor, etc.) and this WordPress site.
                 </p>
             </div>
@@ -1032,21 +1210,21 @@ class ConnectMWP_Agent {
                 $remaining = is_array($stored) && isset($stored['expires']) ? intval($stored['expires']) - time() : 600;
                 $remaining = max(0, $remaining);
                 ?>
-                <div style="background: #fff; border: 1px solid #e1e8ed; border-left: 6px solid #e74c3c; border-radius: 12px; padding: 25px; margin-bottom: 25px; box-shadow: 0 10px 30px rgba(231, 76, 60, 0.12); position: relative; animation: fadeIn 0.4s ease-out;">
-                    <div style="position: absolute; top: 15px; right: 15px; display: flex; align-items: center; gap: 10px;">
-                        <span style="background: #fff3cd; border: 1px solid #ffeeba; color: #d35400; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; display: inline-flex; align-items: center; gap: 4px;">
-                            ⏳ Expiring: <span id="connectmwp-countdown" style="font-family: monospace; font-size: 12px;">--:--</span>
+                <div class="cmwp-pairing-card">
+                    <div class="cmwp-pairing-header">
+                        <span class="cmwp-countdown-badge">
+                            ⏳ Expiring: <span id="connectmwp-countdown" class="cmwp-countdown-timer">--:--</span>
                         </span>
-                        <span style="background: rgba(231, 76, 60, 0.1); color: #e74c3c; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;">One-Time Pairing Code</span>
+                        <span class="cmwp-type-badge">One-Time Pairing Code</span>
                     </div>
                     
-                    <h3 style="color: #c0392b; margin: 0 0 15px 0; font-size: 18px; font-weight: 700; display: flex; align-items: center; gap: 8px;">
+                    <h3 class="cmwp-pairing-title">
                         ⚠️ Action Required: Go Pair Your Local Environment Now
                     </h3>
 
-                    <div style="background: #fdfefe; border: 1px solid #eaeded; border-left: 3px solid #3498db; border-radius: 6px; padding: 15px; margin-bottom: 20px; font-size: 13.5px; color: #34495e; line-height: 1.6;">
-                        <strong style="color: #2c3e50; font-size: 14px; display: block; margin-bottom: 8px;">👉 How to Pair:</strong>
-                        <ol style="margin: 0; padding-left: 20px; list-style-type: decimal;">
+                    <div class="cmwp-instructions">
+                        <strong class="cmwp-instructions-title">👉 How to Pair:</strong>
+                        <ol class="cmwp-instructions-list">
                             <li>Open a <strong>Terminal</strong> window on your local computer.</li>
                             <li>Ensure you have <strong>Node.js (v18+)</strong> installed (verify by running <code>node -v</code> in the terminal).</li>
                             <li>Copy and run the <strong>Terminal Pairing Command</strong> below.</li>
@@ -1055,9 +1233,9 @@ class ConnectMWP_Agent {
                     </div>
                     
                     <div style="background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
-                        <div style="font-size: 12px; font-weight: 600; text-transform: uppercase; color: #7f8c8d; margin-bottom: 5px;">Pairing Enrollment String</div>
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <code style="font-family: monospace; font-size: 14px; background: #eef1f6; padding: 6px 12px; border-radius: 4px; color: #2c3e50; font-weight: 600; word-break: break-all; width: 100%; border: 1px solid #d5dbdb;"><?php echo esc_html($enrollment_string); ?></code>
+                        <div class="cmwp-field-label">Pairing Enrollment String</div>
+                        <div class="cmwp-input-row">
+                            <code class="cmwp-code-box"><?php echo esc_html($enrollment_string); ?></code>
                             <button type="button" class="button" onclick="navigator.clipboard.writeText('<?php echo esc_js($enrollment_string); ?>').then(() => showConnectMWPToast(this, 'Enrollment string copied!'))" style="white-space: nowrap; height: 35px;">Copy String</button>
                         </div>
                     </div>
@@ -1066,8 +1244,8 @@ class ConnectMWP_Agent {
                         <div style="font-size: 13px; font-weight: 600; color: #2c3e50; margin-bottom: 8px;">
                             💻 Terminal Pairing Command (npx)
                         </div>
-                        <div style="display: flex; gap: 10px; align-items: stretch;">
-                            <textarea readonly style="font-family: monospace; font-size: 12px; background: #2c3e50; color: #ecf0f1; padding: 12px; border-radius: 6px; border: none; width: 100%; height: 60px; resize: none; line-height: 1.4; box-shadow: inset 0 2px 5px rgba(0,0,0,0.2);" id="claude-enroll-cmd"><?php echo esc_textarea($npx_cmd); ?></textarea>
+                        <div class="cmwp-cmd-row">
+                            <textarea readonly class="cmwp-cmd-textarea" id="claude-enroll-cmd"><?php echo esc_textarea($npx_cmd); ?></textarea>
                             <button type="button" class="button button-primary" onclick="navigator.clipboard.writeText(document.getElementById('claude-enroll-cmd').value).then(() => showConnectMWPToast(this, 'Command copied!'))" style="height: 60px; background: #34495e; border-color: #2c3e50; border-radius: 6px;">Copy Command</button>
                         </div>
                     </div>
@@ -1100,54 +1278,54 @@ class ConnectMWP_Agent {
 
             <div style="display: grid; grid-template-columns: 1fr; gap: 25px;">
                 
-                <div style="background: #fff; border: 1px solid #e1e8ed; border-radius: 12px; padding: 25px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.02);">
-                    <h2 style="margin-top: 0; margin-bottom: 15px; font-size: 18px; font-weight: 600; color: #2c3e50; border-bottom: 1px solid #f0f3f4; padding-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                <div class="cmwp-section-card">
+                    <h2 class="cmwp-section-title">
                         <span>🔑</span> Pair Local Client
                     </h2>
-                    <p style="font-size: 14px; color: #7f8c8d; line-height: 1.5; margin-bottom: 20px;">
+                    <p class="cmwp-section-desc">
                         Generate a single-use pairing code to connect your local MCP server to this site. During pairing, your local client will generate an Ed25519 cryptographic keypair and upload its public key.
                     </p>
                     
                     <form method="post" action="">
                         <?php wp_nonce_field('connectmwp_generate_pairing'); ?>
                         <input type="hidden" name="connectmwp_action" value="generate_pairing" />
-                        <button type="submit" class="button button-primary" style="background: #3498db; border-color: #2980b9; box-shadow: 0 2px 4px rgba(52, 152, 219, 0.2); font-weight: 600; font-size: 14px; padding: 4px 20px; height: auto; min-height: 38px; border-radius: 6px;">Generate Pairing Code</button>
+                        <button type="submit" class="cmwp-button-primary-custom">Generate Pairing Code</button>
                     </form>
                 </div>
 
-                <div style="background: #fff; border: 1px solid #e1e8ed; border-radius: 12px; padding: 25px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.02);">
-                    <h2 style="margin-top: 0; margin-bottom: 15px; font-size: 18px; font-weight: 600; color: #2c3e50; border-bottom: 1px solid #f0f3f4; padding-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                <div class="cmwp-section-card">
+                    <h2 class="cmwp-section-title">
                         <span>🛡️</span> Paired Clients
                     </h2>
                     
                     <?php if (empty($all_keys_with_users)): ?>
-                        <p style="font-size: 14px; color: #7f8c8d; line-height: 1.5; margin: 10px 0;">No paired clients found.</p>
+                        <p class="cmwp-section-desc" style="margin: 10px 0;">No paired clients found.</p>
                     <?php else: ?>
-                        <table class="wp-list-table widefat fixed striped" style="border: none; box-shadow: none; margin-top: 10px;">
+                        <table class="wp-list-table widefat fixed striped cmwp-table">
                             <thead>
                                 <tr>
-                                    <th style="font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; width: 20%;">Client Label</th>
-                                    <th style="font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; width: 25%;">Key ID</th>
-                                    <th style="font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; width: 13%;">WP User</th>
-                                    <th style="font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; width: 14%;">Created</th>
-                                    <th style="font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; width: 14%;">Last Used</th>
-                                    <th style="font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; width: 14%; text-align: right;">Action</th>
+                                    <th style="width: 20%;">Client Label</th>
+                                    <th style="width: 25%;">Key ID</th>
+                                    <th style="width: 13%;">WP User</th>
+                                    <th style="width: 14%;">Created</th>
+                                    <th style="width: 14%;">Last Used</th>
+                                    <th style="width: 14%; text-align: right;">Action</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <?php foreach ($all_keys_with_users as $key_data): ?>
                                     <tr>
-                                        <td style="padding: 12px 10px; vertical-align: middle;"><strong><?php echo esc_html($key_data['label']); ?></strong></td>
-                                        <td style="padding: 12px 10px; vertical-align: middle; font-family: monospace; font-size: 12px;"><?php echo esc_html($key_data['key_id']); ?></td>
-                                        <td style="padding: 12px 10px; vertical-align: middle;"><?php echo esc_html($key_data['user_login']); ?></td>
-                                        <td style="padding: 12px 10px; vertical-align: middle; color: #7f8c8d; font-size: 12px;"><?php echo esc_html($key_data['created']); ?></td>
-                                        <td style="padding: 12px 10px; vertical-align: middle; color: #7f8c8d; font-size: 12px;"><?php echo esc_html(!empty($key_data['last_used']) ? $key_data['last_used'] : 'Never'); ?></td>
-                                        <td style="padding: 12px 10px; vertical-align: middle; text-align: right;">
+                                        <td><strong class="cmwp-table-label"><?php echo esc_html($key_data['label']); ?></strong></td>
+                                        <td class="cmwp-table-code"><?php echo esc_html($key_data['key_id']); ?></td>
+                                        <td><?php echo esc_html($key_data['user_login']); ?></td>
+                                        <td class="cmwp-table-meta"><?php echo esc_html($key_data['created']); ?></td>
+                                        <td class="cmwp-table-meta"><?php echo esc_html(!empty($key_data['last_used']) ? $key_data['last_used'] : 'Never'); ?></td>
+                                        <td style="text-align: right;">
                                             <form method="post" style="display:inline;">
                                                 <?php wp_nonce_field('connectmwp_revoke_key'); ?>
                                                 <input type="hidden" name="connectmwp_action" value="revoke_key" />
                                                 <input type="hidden" name="key_id" value="<?php echo esc_attr($key_data['key_id']); ?>" />
-                                                <button type="submit" class="button button-link-delete" onclick="return confirm('Are you sure you want to revoke this client\'s access?');" style="color: #d63638; border-color: #ccd0d4; padding: 2px 8px; font-size: 11px; line-height: 1.4; min-height: 24px; height: auto; border-radius: 4px;">Revoke Access</button>
+                                                <button type="submit" class="cmwp-button-revoke" onclick="return confirm('Are you sure you want to revoke this client\'s access?');">Revoke Access</button>
                                             </form>
                                         </td>
                                     </tr>
@@ -1158,62 +1336,45 @@ class ConnectMWP_Agent {
                 </div>
 
                 <!-- Card: IDE Configuration -->
-                <div style="background: #fff; border: 1px solid #e1e8ed; border-radius: 12px; padding: 25px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.02); margin-top: 25px;">
-                    <h2 style="margin-top: 0; margin-bottom: 15px; font-size: 18px; font-weight: 600; color: #2c3e50; border-bottom: 1px solid #f0f3f4; padding-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                <div class="cmwp-section-card" style="margin-top: 25px;">
+                    <h2 class="cmwp-section-title">
                         <span>⚙️</span> IDE & Client Configuration (Cursor, Claude Desktop, etc.)
                     </h2>
-                    <p style="font-size: 14px; color: #7f8c8d; line-height: 1.5; margin-bottom: 20px;">
+                    <p class="cmwp-section-desc">
                         Once you pair this machine via the terminal pairing command above, the connection is established globally for your user profile. To register the MCP server in your IDE, add the following configuration block to your settings file.
                     </p>
                     
-                    <div style="margin-bottom: 20px;">
-                        <div style="font-size: 13px; font-weight: 600; color: #2c3e50; margin-bottom: 8px;">
-                            📋 Cursor IDE Configuration (Settings -> Features -> MCP)
-                        </div>
-                        <div style="font-size: 12px; color: #7f8c8d; margin-bottom: 12px; line-height: 1.4;">
-                            💡 <strong>Integration Tip:</strong> If you already have other MCP servers configured, copy and merge only the <strong style="color: #2980b9;">highlighted block</strong> inside your existing <code>"mcpServers"</code> object (remember to add a comma between servers).
-                        </div>
-                        <pre style="background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; color: #2c3e50; overflow-x: auto; line-height: 1.4; margin: 0;"><span style="color: #abb2b9;">{
+                    <?php
+                    $configs = [
+                        [
+                            'title' => '📋 Cursor IDE Configuration (Settings -> Features -> MCP)',
+                            'tip' => '💡 <strong>Integration Tip:</strong> If you already have other MCP servers configured, copy and merge only the <strong style="color: #2980b9;">highlighted block</strong> inside your existing <code>"mcpServers"</code> object (remember to add a comma between servers).'
+                        ],
+                        [
+                            'title' => '📋 Claude Desktop Configuration (claude_desktop_config.json)',
+                            'tip' => '💡 <strong>Integration Tip:</strong> If you already have other MCP servers configured, copy and merge only the <strong style="color: #2980b9;">highlighted block</strong> inside your existing <code>"mcpServers"</code> object (remember to add a comma between servers).'
+                        ]
+                    ];
+                    foreach ($configs as $cfg):
+                    ?>
+                        <div class="cmwp-config-item">
+                            <div class="cmwp-config-title"><?php echo esc_html($cfg['title']); ?></div>
+                            <div class="cmwp-config-tip"><?php echo $cfg['tip']; ?></div>
+                            <pre class="cmwp-config-pre"><span class="cmwp-pre-dim">{
   "mcpServers": {</span>
-<span style="font-weight: 700; color: #1f618d;">    "connectmwp": {
+<span class="cmwp-pre-highlight">    "connectmwp": {
       "command": "npx",
       "args": [
         "-y",
         "connectmwp-mcp"
       ]
     }</span>
-<span style="color: #abb2b9;">  }
+<span class="cmwp-pre-dim">  }
 }</span></pre>
-                    </div>
-
-                    <div>
-                        <div style="font-size: 13px; font-weight: 600; color: #2c3e50; margin-bottom: 8px;">
-                            📋 Claude Desktop Configuration (claude_desktop_config.json)
                         </div>
-                        <div style="font-size: 12px; color: #7f8c8d; margin-bottom: 12px; line-height: 1.4;">
-                            💡 <strong>Integration Tip:</strong> If you already have other MCP servers configured, copy and merge only the <strong style="color: #2980b9;">highlighted block</strong> inside your existing <code>"mcpServers"</code> object (remember to add a comma between servers).
-                        </div>
-                        <pre style="background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; color: #2c3e50; overflow-x: auto; line-height: 1.4; margin: 0;"><span style="color: #abb2b9;">{
-  "mcpServers": {</span>
-<span style="font-weight: 700; color: #1f618d;">    "connectmwp": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "connectmwp-mcp"
-      ]
-    }</span>
-<span style="color: #abb2b9;">  }
-}</span></pre>
-                    </div>
+                    <?php endforeach; ?>
                 </div>
             </div>
-            
-            <style>
-                @keyframes fadeIn {
-                    from { opacity: 0; transform: translateY(10px); }
-                    to { opacity: 1; transform: translateY(0); }
-                }
-            </style>
         </div>
         <?php
     }
@@ -1221,3 +1382,4 @@ class ConnectMWP_Agent {
 
 // Instantiate
 ConnectMWP_Agent::instance();
+
