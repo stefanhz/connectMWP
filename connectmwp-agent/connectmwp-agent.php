@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.15
+ * Version: 2.0.16
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -13,7 +13,7 @@ defined('ABSPATH') || exit;
 
 class ConnectMWP_Agent {
 
-    const VERSION = '2.0.15';
+    const VERSION = '2.0.16';
     const OPTION_TOKENS = 'connectmwp_agent_tokens';
     const OPTION_NONCES = 'connectmwp_agent_nonces';
     const API_NAMESPACE = 'connectmwp/v1';
@@ -43,6 +43,11 @@ class ConnectMWP_Agent {
         // Admin-AJAX routes (Fallback endpoints)
         add_action('wp_ajax_connectmwp_api', [$this, 'handle_ajax_request']);
         add_action('wp_ajax_nopriv_connectmwp_api', [$this, 'handle_ajax_request']);
+
+        // Admin-only AJAX action used by the settings page to poll for pairing
+        // completion (so the page can self-update without manual refresh).
+        // No nopriv variant — only logged-in admins call this.
+        add_action('wp_ajax_connectmwp_pairing_status', [$this, 'pairing_status_handler']);
 
         // Admin settings page hook
         add_action('admin_menu', [$this, 'add_settings_page']);
@@ -507,6 +512,65 @@ class ConnectMWP_Agent {
             $this->build_identity_payload($key_id, $this->bound_user_id, $label),
             200
         );
+    }
+
+    /**
+     * Admin-AJAX endpoint: report the current pairing state so the settings
+     * page can poll for completion and self-update without a manual refresh.
+     * Admin-only (relies on WP's cookie auth + a fresh nonce). Returns:
+     *   {
+     *     code_active:    bool,    // is a non-expired pairing code currently issued?
+     *     expires_in:     int,     // seconds until that code expires (0 if none)
+     *     total_keys:     int,     // total currently-paired clients
+     *     latest_key_id:  str|null,
+     *     latest_created: str|null,// MySQL datetime
+     *     latest_label:   str|null
+     *   }
+     * The JS on the page compares total_keys / latest_key_id against the values
+     * captured at page-load time and triggers a success-flash + reload when they change.
+     */
+    public function pairing_status_handler() {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['error' => 'forbidden'], 403);
+        }
+        check_ajax_referer('connectmwp_pairing_status');
+
+        $stored = get_option('connectmwp_enrollment_code');
+        $code_active = false;
+        $expires_in = 0;
+        if (is_array($stored) && !empty($stored['code']) && intval($stored['expires']) > time()) {
+            $code_active = true;
+            $expires_in = max(0, intval($stored['expires']) - time());
+        }
+
+        $keys = get_option('connectmwp_keys', []);
+        if (!is_array($keys)) {
+            $keys = [];
+        }
+        $total_keys = count($keys);
+
+        $latest_key_id  = null;
+        $latest_created = null;
+        $latest_label   = null;
+        if ($total_keys > 0) {
+            $sorted = $keys;
+            uasort($sorted, function($a, $b) {
+                return strcmp($b['created'] ?? '', $a['created'] ?? '');
+            });
+            $first_id = array_key_first($sorted);
+            $latest_key_id  = $first_id;
+            $latest_created = $sorted[$first_id]['created'] ?? null;
+            $latest_label   = $sorted[$first_id]['label']   ?? null;
+        }
+
+        wp_send_json([
+            'code_active'    => $code_active,
+            'expires_in'     => $expires_in,
+            'total_keys'     => $total_keys,
+            'latest_key_id'  => $latest_key_id,
+            'latest_created' => $latest_created,
+            'latest_label'   => $latest_label,
+        ]);
     }
 
     /**
@@ -1463,7 +1527,7 @@ class ConnectMWP_Agent {
                         let secondsLeft = <?php echo intval($remaining); ?>;
                         const display = document.getElementById('connectmwp-countdown');
                         if (!display) return;
-                        
+
                         function updateTimer() {
                             if (secondsLeft <= 0) {
                                 display.textContent = "Expired";
@@ -1479,6 +1543,101 @@ class ConnectMWP_Agent {
                             setTimeout(updateTimer, 1000);
                         }
                         updateTimer();
+                    })();
+                    </script>
+
+                    <script>
+                    // Live pairing-completion poll: while the pairing code is shown, ask the
+                    // server every 3 seconds whether someone has claimed it. On a fresh new
+                    // key (total_keys grew or latest_key_id changed), flip the card to a
+                    // success state and reload so the user sees the full new layout —
+                    // Connection Status banner, "What now?" panel, highlighted row — without
+                    // having to manually refresh. Also polls immediately when the tab gains
+                    // focus (user came back from terminal).
+                    (function() {
+                        const ajaxUrl = '<?php echo esc_js(admin_url('admin-ajax.php')); ?>';
+                        const nonce = '<?php echo esc_js(wp_create_nonce('connectmwp_pairing_status')); ?>';
+                        const initialTotal = <?php echo intval(count($all_keys_with_users)); ?>;
+                        const initialLatest = <?php echo $most_recent ? "'" . esc_js($most_recent['key_id']) . "'" : 'null'; ?>;
+
+                        let stopped = false;
+                        let timer = null;
+
+                        // Build the success state with DOM APIs (createElement + textContent)
+                        // so any dynamic content (the label, which comes from the server) lands
+                        // as text, not HTML — structurally immune to XSS regardless of how the
+                        // server-side label is sanitized.
+                        function flipCardToSuccess(label) {
+                            const card = document.querySelector('.cmwp-pairing-card');
+                            if (!card) return;
+                            card.style.transition = 'border-color 0.4s ease, box-shadow 0.4s ease';
+                            card.style.borderLeftColor = '#16a085';
+                            card.style.boxShadow = '0 10px 30px rgba(22, 160, 133, 0.20)';
+
+                            while (card.firstChild) card.removeChild(card.firstChild);
+
+                            const wrap = document.createElement('div');
+                            wrap.style.cssText = 'text-align: center; padding: 30px;';
+
+                            const emoji = document.createElement('div');
+                            emoji.style.cssText = 'font-size: 48px; line-height: 1;';
+                            emoji.textContent = '🎉';
+
+                            const title = document.createElement('h3');
+                            title.style.cssText = 'color: #16a085; margin: 14px 0 6px 0; font-size: 22px;';
+                            title.textContent = 'Pairing successful!';
+
+                            const msg = document.createElement('p');
+                            msg.style.cssText = 'color: #34495e; font-size: 14px; margin: 0;';
+                            msg.textContent = label
+                                ? 'Connected: ' + label + ' — refreshing in a moment…'
+                                : 'Refreshing in a moment…';
+
+                            wrap.append(emoji, title, msg);
+                            card.append(wrap);
+                        }
+
+                        async function poll() {
+                            if (stopped) return;
+                            try {
+                                const params = new URLSearchParams({
+                                    action: 'connectmwp_pairing_status',
+                                    _wpnonce: nonce
+                                });
+                                const res = await fetch(ajaxUrl + '?' + params.toString(), {
+                                    credentials: 'same-origin',
+                                    cache: 'no-store'
+                                });
+                                if (!res.ok) return;
+                                const data = await res.json();
+                                const claimed = (data.total_keys > initialTotal) ||
+                                                (data.latest_key_id && data.latest_key_id !== initialLatest);
+                                if (claimed) {
+                                    stopped = true;
+                                    if (timer) clearInterval(timer);
+                                    flipCardToSuccess(data.latest_label);
+                                    setTimeout(function() { window.location.reload(); }, 1500);
+                                    return;
+                                }
+                                if (!data.code_active) {
+                                    stopped = true;
+                                    if (timer) clearInterval(timer);
+                                }
+                            } catch (e) {
+                                // Transient network failure — keep polling.
+                            }
+                        }
+
+                        // Immediate first check, then every 3s.
+                        poll();
+                        timer = setInterval(poll, 3000);
+
+                        // Tab focus: re-check immediately (user likely just came back from terminal).
+                        document.addEventListener('visibilitychange', function() {
+                            if (document.visibilityState === 'visible' && !stopped) {
+                                poll();
+                            }
+                        });
                     })();
                     </script>
                 </div>

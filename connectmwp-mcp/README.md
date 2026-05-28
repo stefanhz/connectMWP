@@ -1,6 +1,6 @@
 # connectmwp-mcp
 
-> **Verified against:** connectMWP **v2.0.15** (lockstep across plugin, MCP client, central server).
+> **Verified against:** connectMWP **v2.0.16** (lockstep across plugin, MCP client, central server).
 > **Last reviewed:** 2026-05-28.
 > **Re-verify when:** the `add-site` / `remove-site` / `set-default` / `list-sites` flag surface changes, or the security-model summary below diverges from `_internal/ARCHITECTURE.md`.
 

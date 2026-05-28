@@ -4,6 +4,14 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-28 — v2.0.16
+
+### Added
+- **connectmwp-agent — live pairing-status polling on the settings page.** When a pairing code is visible, the page now polls a tiny admin-only AJAX endpoint (`action=connectmwp_pairing_status`, nonced, gated by `current_user_can('manage_options')`) every 3 seconds AND immediately on `visibilitychange` (when the tab regains focus — typical when the user returns from their terminal). On detecting a new key (total grew or latest_key_id changed), the pairing card flips to a green "🎉 Pairing successful!" state and reloads after 1.5s so the full new layout (Connection Status banner, "What now?" panel, highlighted Paired Clients row) appears without the user having to manually refresh. Stops polling on success, code expiry, or hidden tab. The success-card DOM is built with `createElement` + `textContent` (no `innerHTML`) so the server-supplied label is structurally XSS-safe regardless of upstream sanitization. (`connectmwp-agent.php` — `pairing_status_handler`, polling JS in `render_settings_page`)
+
+### Bumped
+- All three components → 2.0.16 (lockstep). Plugin re-packaged in both mirrored locations.
+
 ## 2026-05-28 — v2.0.15
 
 ### Added
