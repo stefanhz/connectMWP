@@ -4,6 +4,69 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-27 — v2.0.13
+
+Remediation pass for the day's security & architecture reviews. All three components bumped in
+lockstep to 2.0.13 (supersedes the interim working labels 2.0.11/2.0.12).
+
+### Fixed (CRITICAL — found in live testing)
+- **connectmwp-agent — unauthenticated draft/content disclosure via edge cache (cache-based auth bypass).**
+  On LiteSpeed (common on managed hosts), signed REST **GET** responses were cached and served to
+  **unauthenticated** callers hitting the same URL, bypassing the central signature check. Proven live: an
+  authenticated `GET /posts` (cache miss, 3 drafts) followed by an unauthenticated request to the same URL
+  returned `200` (`x-litespeed-cache: hit`) with those **draft** titles. Root cause: the session-less model
+  means WordPress doesn't auto-emit `no-cache`. Fixed by forcing no-store/no-cache on every `connectmwp/v1`
+  response (`DONOTCACHEPAGE`, `nocache_headers()`, `Cache-Control: no-store`, `X-LiteSpeed-Cache-Control:
+  no-cache`, and the `litespeed_control_set_nocache` action) in `central_rest_auth`.
+  **Deploy note:** existing cached entries persist (TTL up to 7 days) — purge the LiteSpeed cache after deploying.
+
+### Fixed
+- **connectmwp-mcp — a failed `add-site --enroll` destroyed the existing working key (data-loss).** The enroll
+  flow overwrote the site's key before contacting the server and `unlink`ed it on failure, so a failed re-pair
+  (e.g. an expired/used 10-minute code) left no usable key. Fixed to stage the new key at a temp path and only
+  `rename` it into place after enrollment succeeds; failures remove only the temp key. (`connectmwp-mcp/index.js`)
+- **connectmwp-server — legal pages broken by the v2.0.10 CSS migration (regression).** The Tailwind migration
+  deleted ~596 lines of `globals.css` but not `legal/[slug]/page.tsx`, which still referenced the removed
+  classes — leaving `/legal/privacy|terms|about` unstyled. Rewrote the legal page in Tailwind and replaced a
+  stale hardcoded `v1.2.4` badge with the dynamic package version. (`connectmwp-server/src/app/legal/[slug]/page.tsx`)
+- **connectmwp-agent — PHP 8.4 implicit-nullable deprecations.** `get_tags_handler`/`get_categories_handler`
+  used `WP_REST_Request $request = null` (E_DEPRECATED on 8.4, fatal in PHP 9). Changed to `?WP_REST_Request`.
+  Surfaced by `php -l`. (`connectmwp-agent/connectmwp-agent.php`)
+
+### Verified (no change needed)
+- The dev's v2.0.10 remediation was reviewed and confirmed correct: central `rest_pre_dispatch` auth is
+  namespace-scoped (won't break the site's wider REST API); the replay claim is atomic (`add_option`) with a
+  per-request memo preventing double-claim; the multipart body hash is verified against `hash_file()` of the
+  actual upload. Live sweep passed term/post pagination, write-replay rejection, and create/delete.
+- Backlog (deferred to avoid churn in a security release): magic-number constants, MCP empty-catch logging.
+
+## 2026-05-27 — connectmwp-mcp 2.0.11
+
+### Fixed (data-loss bug)
+- **connectmwp-mcp — a failed `add-site --enroll` destroyed the existing working key.** The enroll flow
+  wrote the new private key directly over the site's existing key *before* contacting the server, and the
+  failure path then `unlink`ed it — so any failed re-pair (e.g. an expired/already-used 10-minute pairing
+  code) left the site with **no** usable key (worse than before the attempt). This bit a live session:
+  re-running the enroll command with a stale code wiped the working pairing. Fixed to write the new key to
+  a temp path and only `rename` it into place **after** enrollment succeeds; the failure path removes only
+  the temp key and never touches an existing working key. (`connectmwp-mcp/index.js`)
+
+## 2026-05-27 — connectmwp-agent 2.0.12
+
+### Fixed (CRITICAL — found in live testing)
+- **connectmwp-agent — unauthenticated draft/content disclosure via edge cache (cache-based auth bypass).**
+  Live testing on 2morrow.ai (LiteSpeed) showed that signed REST **GET** responses were being cached by
+  LiteSpeed and then served to **unauthenticated** callers hitting the same URL — bypassing the central
+  signature check entirely. Proven: an authenticated `GET /posts` (cache miss) returned 3 drafts; an
+  immediate unauthenticated request to the same URL returned `200` (`x-litespeed-cache: hit`) with those
+  same **draft** titles. Root cause is a side effect of the session-less model — WordPress only auto-emits
+  `no-cache` for *logged-in* REST requests, so session-less signed responses were cacheable. Fixed by
+  forcing no-store/no-cache on every `connectmwp/v1` response (`DONOTCACHEPAGE`, `nocache_headers()`,
+  explicit `Cache-Control: no-store`, `X-LiteSpeed-Cache-Control: no-cache`, and the authoritative
+  `litespeed_control_set_nocache` action) in `central_rest_auth`. (`connectmwp-agent/connectmwp-agent.php`)
+  **Deploy note:** existing cached entries persist (TTL up to 7 days) — the LiteSpeed cache must be
+  **purged** after deploying this build, then re-verified.
+
 ## 2026-05-27 — connectmwp-server 2.0.11, connectmwp-agent 2.0.11
 
 ### Fixed

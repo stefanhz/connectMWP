@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.11
+ * Version: 2.0.13
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -13,7 +13,7 @@ defined('ABSPATH') || exit;
 
 class ConnectMWP_Agent {
 
-    const VERSION = '2.0.11';
+    const VERSION = '2.0.13';
     const OPTION_TOKENS = 'connectmwp_agent_tokens';
     const OPTION_NONCES = 'connectmwp_agent_nonces';
     const API_NAMESPACE = 'connectmwp/v1';
@@ -129,12 +129,19 @@ class ConnectMWP_Agent {
 
     public function central_rest_auth($result, $server, $request) {
         $route = $request->get_route();
-        
+
         if (strpos($route, '/' . self::API_NAMESPACE . '/') === 0) {
+            // Prevent edge/page caches (e.g. LiteSpeed, common on managed hosts)
+            // from storing signed REST responses. Because auth is session-less,
+            // WordPress does not auto-send no-cache for these requests, so a cached
+            // GET would otherwise be served to UNAUTHENTICATED callers — bypassing
+            // signature verification and leaking draft/private content.
+            $this->send_rest_nocache_headers();
+
             if ($route === '/' . self::API_NAMESPACE . '/enroll') {
                 return $result;
             }
-            
+
             if (!$this->verify_request_signature($request)) {
                 return new WP_Error(
                     'connectmwp_unauthorized',
@@ -143,8 +150,27 @@ class ConnectMWP_Agent {
                 );
             }
         }
-        
+
         return $result;
+    }
+
+    /**
+     * Force caches not to store connectMWP REST responses (defense against the
+     * cache-based auth bypass described in central_rest_auth).
+     */
+    private function send_rest_nocache_headers() {
+        if (!defined('DONOTCACHEPAGE')) {
+            define('DONOTCACHEPAGE', true);
+        }
+        if (function_exists('nocache_headers')) {
+            nocache_headers();
+        }
+        if (!headers_sent()) {
+            header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0', true);
+            header('X-LiteSpeed-Cache-Control: no-cache', true);
+        }
+        // Authoritative LiteSpeed control hook.
+        do_action('litespeed_control_set_nocache', 'connectmwp signed api response');
     }
 
     private $signature_verified = null;

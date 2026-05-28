@@ -258,11 +258,15 @@ if (command === 'add-site') {
     const host = new URL(siteUrl).hostname;
     const privateKeyDir = path.join(os.homedir(), '.connectmwp');
     const privateKeyPath = path.join(privateKeyDir, `${host}.ed25519`);
+    // Write the new key to a temp path first; only replace any existing key for
+    // this site AFTER enrollment succeeds. Prevents a failed re-pair (e.g. an
+    // expired pairing code) from destroying a working key.
+    const tmpKeyPath = `${privateKeyPath}.tmp-${process.pid}`;
 
     try {
       await fs.mkdir(privateKeyDir, { recursive: true });
-      await fs.writeFile(privateKeyPath, privateKeyPem, 'utf-8');
-      await fs.chmod(privateKeyPath, 0o600);
+      await fs.writeFile(tmpKeyPath, privateKeyPem, 'utf-8');
+      await fs.chmod(tmpKeyPath, 0o600);
     } catch (err) {
       console.error(`[ERROR] Failed to save private key: ${err.message}`);
       process.exit(1);
@@ -304,6 +308,10 @@ if (command === 'add-site') {
         throw new Error('Plugin enrollment response did not return a key ID.');
       }
 
+      // Enrollment confirmed — only now move the new key into place, replacing
+      // any prior key for this site.
+      await fs.rename(tmpKeyPath, privateKeyPath);
+
       const config = await readConfig();
       config.sites = config.sites || {};
       config.sites[siteUrl] = {
@@ -325,9 +333,9 @@ if (command === 'add-site') {
       process.exit(0);
     } catch (error) {
       console.error(`[ERROR] Pairing failed: ${error.message}`);
-      // Clean up local private key on failure
+      // Clean up only the NEW temp key; never delete an existing working key.
       try {
-        await fs.unlink(privateKeyPath);
+        await fs.unlink(tmpKeyPath);
       } catch {}
       process.exit(1);
     }
