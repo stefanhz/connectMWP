@@ -4,6 +4,27 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-27 — v2.0.14
+
+### Fixed
+- **connectmwp-agent — Terminal Pairing Command textarea rendered white-on-white (invisible).** The
+  `.cmwp-cmd-textarea` rule was outranked by WordPress admin's `.wrap textarea` selector (same class
+  specificity, loaded later globally), so the textarea fell back to WP's default light styling and the
+  dark-blue background never applied — making the npx command unreadable even though it was present
+  in the DOM (confirmed: selecting the textarea revealed the text). Bumped the selector specificity to
+  `.cmwp-wrap textarea.cmwp-cmd-textarea` and added `!important` on `background`/`color` as
+  belt-and-suspenders. (`connectmwp-agent/connectmwp-agent.php`)
+
+### Verified (live)
+- **v2.0.12 cache-bypass fix confirmed effective on 2morrow.ai.** Authenticated GET emits
+  `Cache-Control: no-store, no-cache, must-revalidate, max-age=0, no-store, private` +
+  `X-LiteSpeed-Cache-Control: no-cache`; LiteSpeed no longer caches the response
+  (`x-litespeed-cache` empty); an immediate unauthenticated request to the same fresh URL returns
+  `401 connectmwp_unauthorized` with no leaked data.
+
+### Bumped
+- All three components → 2.0.14 (lockstep). Plugin re-packaged.
+
 ## 2026-05-27 — v2.0.13
 
 Remediation pass for the day's security & architecture reviews. All three components bumped in

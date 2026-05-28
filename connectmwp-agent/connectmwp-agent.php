@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.13
+ * Version: 2.0.14
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -13,7 +13,7 @@ defined('ABSPATH') || exit;
 
 class ConnectMWP_Agent {
 
-    const VERSION = '2.0.13';
+    const VERSION = '2.0.14';
     const OPTION_TOKENS = 'connectmwp_agent_tokens';
     const OPTION_NONCES = 'connectmwp_agent_nonces';
     const API_NAMESPACE = 'connectmwp/v1';
@@ -1135,7 +1135,10 @@ class ConnectMWP_Agent {
             .cmwp-input-row { display: flex; align-items: center; gap: 10px; }
             .cmwp-code-box { font-family: monospace; font-size: 14px; background: #eef1f6; padding: 6px 12px; border-radius: 4px; color: #2c3e50; font-weight: 600; word-break: break-all; width: 100%; border: 1px solid #d5dbdb; }
             .cmwp-cmd-row { display: flex; gap: 10px; align-items: stretch; }
-            .cmwp-cmd-textarea { font-family: monospace; font-size: 12px; background: #2c3e50; color: #ecf0f1; padding: 12px; border-radius: 6px; border: none; width: 100%; height: 60px; resize: none; line-height: 1.4; box-shadow: inset 0 2px 5px rgba(0,0,0,0.2); }
+            /* Higher specificity + !important so WP admin's .wrap textarea rule
+               cannot override the dark contrast — without this the npx command
+               renders white-on-white inside the wp-admin .wrap container. */
+            .cmwp-wrap textarea.cmwp-cmd-textarea { font-family: monospace; font-size: 12px; background: #2c3e50 !important; color: #ecf0f1 !important; padding: 12px; border-radius: 6px; border: none; width: 100%; height: 60px; resize: none; line-height: 1.4; box-shadow: inset 0 2px 5px rgba(0,0,0,0.2); }
             
             .cmwp-table { border: none; box-shadow: none; margin-top: 10px; width: 100%; border-collapse: collapse; }
             .cmwp-table th { font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; text-align: left; }
