@@ -1,6 +1,6 @@
 # connectMWP Support Training & Troubleshooting Manual
 
-> **Verified against:** connectMWP **v2.0.16** (all three components, lockstep).
+> **Verified against:** connectMWP **v2.0.17** (all three components, lockstep).
 > **Last reviewed:** 2026-05-28.
 > **Re-verify when:** the pairing flow, signature headers, capability scoping, REST/AJAX fallback behavior, or any user-visible error message changes.
 >
@@ -138,7 +138,7 @@ The MCP server has **no inherent privileges** — each paired key is bound to a 
 | **"Claude cannot find tools" / MCP server not loading** | The MCP server registration failed or the IDE needs a restart. | 1. Confirm registration was run: `claude mcp add connectmwp -- npx -y connectmwp-mcp` (the `--` is important). <br>2. Verify the registration: `claude mcp list` should show `connectmwp` with status `connected`. <br>3. Fully quit Claude Desktop (⌘Q on macOS — not just close window) and relaunch. <br>4. If still failing, check Claude Desktop's MCP log file for `npm error 404` (the npm package failed to resolve) or `Server disconnected` — share the log lines with the dev team. |
 | **"Permission Denied" or capability errors** | The WordPress user account whose admin paired connectMWP doesn't have sufficient capabilities for the requested operation. | connectMWP acts with the **exact capabilities of the WordPress user who initiated the pairing**. Confirm that user has role **Administrator** or **Editor**, with the right caps for the operation. Re-pair from an account with appropriate privileges if needed. |
 | **"Upload failed" — file too large or wrong type** | The customer is trying to upload a file >10 MB or a non-image extension. | The 10 MB cap and image-only extensions are deliberate safety limits. For larger media, the customer must upload directly via WP Admin → Media. |
-| **"Cached response showing stale data"** (very rare; was a CRITICAL bug fix in v2.0.12) | Their managed host's edge cache (LiteSpeed common on SiteGround / NameHero) is caching signed responses. | They need to update to v2.0.12 or newer (current is v2.0.16). After updating, they should also **purge the LiteSpeed cache** in WP Admin → LiteSpeed Cache → Toolbox → Purge All; cached entries can persist up to 7 days otherwise. |
+| **"Cached response showing stale data"** (very rare; was a CRITICAL bug fix in v2.0.12) | Their managed host's edge cache (LiteSpeed common on SiteGround / NameHero) is caching signed responses. | They need to update to v2.0.12 or newer (current is v2.0.17). After updating, they should also **purge the LiteSpeed cache** in WP Admin → LiteSpeed Cache → Toolbox → Purge All; cached entries can persist up to 7 days otherwise. |
 
 ---
 

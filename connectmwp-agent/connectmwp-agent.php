@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.16
+ * Version: 2.0.17
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -13,7 +13,7 @@ defined('ABSPATH') || exit;
 
 class ConnectMWP_Agent {
 
-    const VERSION = '2.0.16';
+    const VERSION = '2.0.17';
     const OPTION_TOKENS = 'connectmwp_agent_tokens';
     const OPTION_NONCES = 'connectmwp_agent_nonces';
     const API_NAMESPACE = 'connectmwp/v1';
@@ -1261,11 +1261,34 @@ class ConnectMWP_Agent {
         });
 
         // Compute most-recent context for the Connection Status + What now? panels.
+        // `created` is stored via `current_time('mysql')` which is the WP-configured
+        // timezone with NO timezone marker on the string. Parsing with bare
+        // strtotime() interprets it as the PHP-server timezone (usually UTC), so
+        // age math comes out off by the WP-vs-server timezone offset (e.g. a
+        // freshly-paired key on a Central-Time WP site shows "6 hours ago"
+        // because the UTC-CT delta is 6h). Parse explicitly with wp_timezone()
+        // so the resulting Unix timestamp is correct regardless of the WP/server
+        // timezone configuration.
         $most_recent = !empty($all_keys_with_users) ? $all_keys_with_users[0] : null;
         $most_recent_age_seconds = null;
         $most_recent_age_human = '';
         if ($most_recent && !empty($most_recent['created'])) {
-            $created_ts = strtotime($most_recent['created']);
+            $created_ts = false;
+            if (function_exists('wp_timezone')) {
+                $created_dt = DateTimeImmutable::createFromFormat(
+                    'Y-m-d H:i:s',
+                    $most_recent['created'],
+                    wp_timezone()
+                );
+                if ($created_dt instanceof DateTimeImmutable) {
+                    $created_ts = $created_dt->getTimestamp();
+                }
+            }
+            if ($created_ts === false) {
+                // Fallback for pre-WP-5.3 installs — same TZ caveat as before, but
+                // better than nothing.
+                $created_ts = strtotime($most_recent['created']);
+            }
             if ($created_ts) {
                 $most_recent_age_seconds = max(0, time() - $created_ts);
                 $most_recent_age_human = human_time_diff($created_ts, time()) . ' ago';

@@ -4,6 +4,14 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-28 — v2.0.17
+
+### Fixed
+- **connectmwp-agent — "paired X ago" relative-time label in the Connection Status banner was offset by the WP-vs-server timezone delta.** `current_time('mysql')` stores the key's `created` field in the WP-configured timezone with NO timezone marker on the string. The render code then parsed it with bare `strtotime()`, which silently interprets it as the PHP-server timezone (usually UTC). On a Central-Time WP site sitting on a UTC server, a freshly-paired key displayed "paired 6 hours ago" instead of "just now" — exactly the UTC-CT offset. Reproduced live on 2morrow.ai immediately after the v2.0.16 deploy. Fixed by parsing `created` explicitly with `wp_timezone()` via `DateTimeImmutable::createFromFormat` so the resulting Unix timestamp is correct regardless of how WP and the hosting server's timezones relate. Falls back to the old `strtotime()` path on pre-WP-5.3 installs (where `wp_timezone()` doesn't exist). (`connectmwp-agent/connectmwp-agent.php` — `render_settings_page`)
+
+### Bumped
+- All three components → 2.0.17 (lockstep). Plugin re-packaged in both mirrored locations.
+
 ## 2026-05-28 — v2.0.16
 
 ### Added
