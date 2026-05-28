@@ -1,12 +1,37 @@
 {
   "name": "connectmwp-mcp",
-  "version": "2.0.14",
-  "description": "Local Model Context Protocol (MCP) server for connectmwp.com to connect AI clients directly to self-hosted WordPress sites.",
+  "version": "2.0.15",
+  "description": "Local MCP client for connectMWP — connects AI clients (Claude Desktop, Claude Code, Cursor) directly to self-hosted WordPress sites using session-less Ed25519 signature auth.",
   "main": "index.js",
   "type": "module",
   "bin": {
     "connectmwp-mcp": "./index.js"
   },
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "wordpress",
+    "claude",
+    "claude-desktop",
+    "cursor",
+    "ai",
+    "ed25519",
+    "connectmwp"
+  ],
+  "homepage": "https://connectmwp.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stefanhz/connectMWP.git",
+    "directory": "connectmwp-mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/stefanhz/connectMWP/issues"
+  },
+  "author": "Stefan Heinz",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"
   },

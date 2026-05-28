@@ -1,6 +1,7 @@
 # connectMWP
 
-**Current Release Version: v2.0.9**
+**Current Release Version: v2.0.15**
+*(Doc verified against v2.0.15 on 2026-05-28.)*
 
 connectMWP is a secure, decentralized Model Context Protocol (MCP) server that connects local AI clients (such as Claude Desktop, Cursor, and Claude Code) directly to self-hosted WordPress websites to draft content, upload media, and manage posts directly from your workspace.
 
@@ -15,9 +16,11 @@ While there are other WordPress integration solutions and MCP servers available 
 
 ---
 
-## 1. Quick Start (Local Development Setup)
+## 1. Quick Start
 
-Because the npm package `connectmwp-mcp` is not yet published to the public registry, you must point your configurations to your local files. 
+**Most users:** follow **Section 4 (Public Release Setup)** below — `connectmwp-mcp` is now on the public npm registry, so the AI client can be installed with `npx -y connectmwp-mcp`.
+
+The remainder of this section documents the **source-checkout flow** used when developing against a local clone of the repo. 
 
 ### Step 1: Install & Activate the WordPress Plugin
 1. Download the latest WordPress plugin zip from `connectmwp-agent.zip` (found in the root of this repo, or downloaded from the settings page of an active installation).

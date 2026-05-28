@@ -116,6 +116,56 @@ async function getCredentials(requestedSite) {
 }
 
 /**
+ * Render a friendly summary after a successful pairing. Uses the /whoami round-trip
+ * response when available (proves end-to-end signing works), else falls back to the
+ * /enroll response. Either way the shape is the same per the plugin's build_identity_payload.
+ */
+function printPairingSummary(identity, ctx) {
+  const site = identity && identity.site ? identity.site : { title: ctx.siteUrl, url: ctx.siteUrl };
+  const user = identity && identity.user ? identity.user : {};
+  const caps = identity && identity.capabilities ? identity.capabilities : {};
+  const label = (identity && identity.label) || ctx.labelUsed;
+
+  // Friendly capability list (only the verbs the user actually has).
+  const capLabels = [];
+  if (caps.edit_posts) capLabels.push('read & draft posts');
+  if (caps.publish_posts) capLabels.push('publish posts');
+  if (caps.edit_others_posts) capLabels.push('edit other authors\' posts');
+  if (caps.delete_posts) capLabels.push('delete posts');
+  if (caps.upload_files) capLabels.push('upload media');
+  if (caps.manage_categories) capLabels.push('manage categories & tags');
+
+  const userDisplay = user.display_name || user.login || 'unknown';
+  const userLogin = user.login ? ` (${user.login})` : '';
+  const roles = Array.isArray(user.roles) && user.roles.length ? user.roles.join(', ') : 'no role';
+
+  console.log('');
+  console.log(`✓ Connected to "${site.title}" (${site.url})`);
+  console.log(`✓ Acting as: ${userDisplay}${userLogin} — ${roles}`);
+  if (capLabels.length) {
+    console.log(`✓ Can: ${capLabels.join(', ')}`);
+  } else {
+    console.log(`✓ Can: (no content capabilities — pair from an Administrator or Editor account to enable tools)`);
+  }
+  console.log(`✓ Key ID: ${ctx.keyId}`);
+  console.log(`✓ Label: ${label}`);
+  if (ctx.isDefaultSite) {
+    console.log(`✓ Set as default site.`);
+  }
+  if (!ctx.roundTripOk) {
+    console.log('');
+    console.log('⚠ Round-trip /whoami check did not return success. The key was stored on the site,');
+    console.log('  but signing did not validate end-to-end. If subsequent tools fail, re-pair.');
+  }
+  console.log('');
+  console.log('Test it in your AI client (Claude / ChatGPT / Cursor / Antigravity):');
+  console.log(`  "List the tags on ${new URL(ctx.siteUrl).hostname} using connectMWP"`);
+  console.log('');
+  console.log('Adding another AI client on this Mac? Register the same MCP server: `npx -y connectmwp-mcp`.');
+  console.log('All AI clients on this user account share this pairing — no extra code needed.');
+}
+
+/**
  * Helper to check if an IP address is in a private, loopback, or link-local range (I-2)
  */
 function isPrivateIp(ip) {
@@ -326,10 +376,33 @@ if (command === 'add-site') {
       }
 
       await writeConfig(config);
-      console.log(`[SUCCESS] Client paired and enrolled successfully! Key ID: ${resData.key_id}`);
-      if (config.defaultSite === siteUrl) {
-        console.log(`[INFO] Set ${siteUrl} as default target site.`);
+
+      // Round-trip test using the newly-stored key — proves end-to-end signing
+      // works against the site (not just that enrollment stored the key).
+      let identity = resData;
+      let roundTripOk = true;
+      process.stdout.write('[INFO] Verifying signed round-trip… ');
+      try {
+        const whoami = await callWordPress(siteUrl, resData.key_id, privateKeyPath, 'whoami', 'GET');
+        if (whoami && whoami.success) {
+          identity = whoami;
+          process.stdout.write('ok\n');
+        } else {
+          roundTripOk = false;
+          process.stdout.write('warn — using enroll response\n');
+        }
+      } catch (err) {
+        roundTripOk = false;
+        process.stdout.write(`warn (${err.message}) — using enroll response\n`);
       }
+
+      printPairingSummary(identity, {
+        keyId: resData.key_id,
+        siteUrl,
+        labelUsed: label || host,
+        isDefaultSite: config.defaultSite === siteUrl,
+        roundTripOk
+      });
       process.exit(0);
     } catch (error) {
       console.error(`[ERROR] Pairing failed: ${error.message}`);
@@ -555,6 +628,8 @@ async function callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, metho
     action = 'get_tags';
   } else if (endpointPath === 'categories') {
     action = 'get_categories';
+  } else if (endpointPath === 'whoami') {
+    action = 'whoami';
   }
 
   let body;

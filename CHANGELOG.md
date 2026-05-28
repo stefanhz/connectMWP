@@ -4,6 +4,20 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-28 — v2.0.15
+
+### Added
+- **connectmwp-agent — `Connection Status` banner at the top of the plugin settings page.** Bluetooth-style "you are connected" feedback. Green when 1+ clients are paired, with a count and the most-recent label/time. Neutral gray when no clients are paired. Visible on every page load, not just immediately after pairing. (`connectmwp-agent/connectmwp-agent.php` — `render_settings_page`)
+- **connectmwp-agent — `"What now?"` panel** shown for ~1 hour after the most-recent pairing. Confirms identity ("You can now read/write `<site>` as `<display name>` (`<login>`, role: `<roles>`)"), gives a test-it prompt (`"list the tags on this site using connectMWP"`), warns about the AI-client restart-to-reconnect case, and explains how to register the same MCP server in other AI clients (Claude Desktop / Cursor / ChatGPT Desktop / Antigravity) sharing the same pairing.
+- **connectmwp-agent — most-recent row highlighted** in the Paired Clients table (green left-border + "✓ new" badge) while the What now? panel is visible. Table is also now sorted newest-first by `created`.
+- **connectmwp-agent — `/connectmwp/v1/whoami` REST endpoint** (and `connectmwp_action=whoami` AJAX equivalent). Signature-authenticated, no capability check required. Returns the same identity payload as `/enroll`: `{ site: {title,url}, user: {login,display_name,roles}, capabilities: {edit_posts,publish_posts,…} }`. Used by the MCP client to verify end-to-end signing works post-pairing and by support/diagnostics to confirm what user/capabilities a key resolves to. (`build_identity_payload`, `whoami_handler`, `check_signature_only`)
+- **connectmwp-agent — `/enroll` response enriched** with the same identity payload, so the pairing CLI can show a friendly confirmation without an additional round-trip if the round-trip itself fails.
+- **connectmwp-mcp — post-pairing /whoami round-trip + enriched CLI summary.** After a successful enrollment, the client now signs a `GET /whoami` request with the brand-new key, prints `✓ Connected to "<Site Title>" (<site_url>) / ✓ Acting as: <Display Name> (<login>) — <roles> / ✓ Can: <friendly capability list> / ✓ Key ID / ✓ Label / ✓ Set as default site` and a test-it prompt. Falls back to the enroll-response payload (with a warning) if the round-trip fails. (`printPairingSummary` helper, `index.js`)
+- **connectmwp-mcp — AJAX action mapping** for the new `whoami` endpoint, so the round-trip works on hosts where REST is blocked but admin-ajax isn't.
+
+### Bumped
+- All three components → 2.0.15 (lockstep). Plugin re-packaged in both mirrored locations.
+
 ## 2026-05-27 — v2.0.14
 
 ### Fixed

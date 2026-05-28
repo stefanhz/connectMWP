@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.14
+ * Version: 2.0.15
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -13,7 +13,7 @@ defined('ABSPATH') || exit;
 
 class ConnectMWP_Agent {
 
-    const VERSION = '2.0.14';
+    const VERSION = '2.0.15';
     const OPTION_TOKENS = 'connectmwp_agent_tokens';
     const OPTION_NONCES = 'connectmwp_agent_nonces';
     const API_NAMESPACE = 'connectmwp/v1';
@@ -58,6 +58,17 @@ class ConnectMWP_Agent {
                 'methods'             => 'POST',
                 'callback'            => [$this, 'enroll_client_handler'],
                 'permission_callback' => '__return_true',
+            ]
+        ]);
+
+        // Identity / connection-verification route — signature-authenticated, no capability
+        // required. Lets a freshly-paired client confirm end-to-end signing works and
+        // discover what user it acts as + what capabilities it has on this site.
+        register_rest_route(self::API_NAMESPACE, '/whoami', [
+            [
+                'methods'             => 'GET',
+                'callback'            => [$this, 'whoami_handler'],
+                'permission_callback' => [$this, 'check_signature_only'],
             ]
         ]);
 
@@ -431,6 +442,73 @@ class ConnectMWP_Agent {
         return user_can($this->bound_user_id, 'manage_categories');
     }
 
+    // Signature-only gate — used by /whoami. Any valid signature passes; the
+    // returned payload only echoes what this caller can already discover by
+    // signing requests + observing 403s, so it's safe at this scope.
+    public function check_signature_only($request = null) {
+        return $this->verify_request_signature($request);
+    }
+
+    /**
+     * Build the identity payload returned by /enroll and /whoami so the two
+     * stay in sync. Includes site + bound-user + capability map. Capability
+     * keys mirror what each tool's permission_callback actually checks.
+     */
+    private function build_identity_payload($key_id, $bound_user_id, $label = null) {
+        $user = get_userdata(intval($bound_user_id));
+        $user_payload = [
+            'login'        => $user ? $user->user_login : null,
+            'display_name' => $user ? ($user->display_name ?: $user->user_login) : null,
+            'roles'        => $user && is_array($user->roles) ? array_values($user->roles) : [],
+        ];
+
+        // Mirror the capability checks each tool's permission_callback runs.
+        $caps = [
+            'edit_posts'        => $user ? user_can($bound_user_id, 'edit_posts') : false,
+            'publish_posts'     => $user ? user_can($bound_user_id, 'publish_posts') : false,
+            'edit_others_posts' => $user ? user_can($bound_user_id, 'edit_others_posts') : false,
+            'upload_files'      => $user ? user_can($bound_user_id, 'upload_files') : false,
+            'manage_categories' => $user ? user_can($bound_user_id, 'manage_categories') : false,
+            'delete_posts'      => $user ? user_can($bound_user_id, 'delete_posts') : false,
+        ];
+
+        $payload = [
+            'success' => true,
+            'key_id'  => $key_id,
+            'site'    => [
+                'title' => html_entity_decode(get_bloginfo('name'), ENT_QUOTES, 'UTF-8'),
+                'url'   => home_url(),
+            ],
+            'user'         => $user_payload,
+            'capabilities' => $caps,
+        ];
+
+        if ($label !== null) {
+            $payload['label'] = $label;
+        }
+
+        return $payload;
+    }
+
+    /**
+     * /whoami handler — returns the identity payload for the currently-authenticated
+     * signer. Looks up the current key in stored options to also surface its label.
+     */
+    public function whoami_handler(?WP_REST_Request $request = null) {
+        $key_id = $this->matched_key_id;
+        $label = null;
+        if (!empty($key_id)) {
+            $keys = get_option('connectmwp_keys', []);
+            if (is_array($keys) && isset($keys[$key_id]) && !empty($keys[$key_id]['label'])) {
+                $label = $keys[$key_id]['label'];
+            }
+        }
+        return new WP_REST_Response(
+            $this->build_identity_payload($key_id, $this->bound_user_id, $label),
+            200
+        );
+    }
+
     /**
      * Handle Public Key Enrollment
      */
@@ -527,10 +605,10 @@ class ConnectMWP_Agent {
         delete_option('connectmwp_enrollment_code');
         delete_transient($ip_key);
 
-        return new WP_REST_Response([
-            'success' => true,
-            'key_id'  => $key_id
-        ], 200);
+        return new WP_REST_Response(
+            $this->build_identity_payload($key_id, intval($stored['user_id']), $label),
+            200
+        );
     }
 
     private function generate_enrollment_code() {
@@ -1045,6 +1123,10 @@ class ConnectMWP_Agent {
                 if (!$this->check_taxonomy_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
                 $res = $this->create_tag_handler($request);
                 break;
+            case 'whoami':
+                // Signature already verified above; no further capability required.
+                $res = $this->whoami_handler($request);
+                break;
             default:
                 wp_send_json_error(['error' => 'Invalid action'], 400);
         }
@@ -1101,10 +1183,31 @@ class ConnectMWP_Agent {
             foreach ($all_keys as $key_id => $key_data) {
                 $user_info = get_userdata($key_data['bound_user_id']);
                 $key_data['user_login'] = $user_info ? $user_info->user_login : 'Unknown User';
+                $key_data['user_display'] = $user_info ? ($user_info->display_name ?: $user_info->user_login) : 'Unknown User';
+                $key_data['user_roles'] = $user_info && is_array($user_info->roles) ? array_values($user_info->roles) : [];
                 $key_data['key_id'] = $key_id;
                 $all_keys_with_users[] = $key_data;
             }
         }
+
+        // Newest first — so the most recent pairing is immediately visible and
+        // can be flagged in the table.
+        usort($all_keys_with_users, function($a, $b) {
+            return strcmp($b['created'] ?? '', $a['created'] ?? '');
+        });
+
+        // Compute most-recent context for the Connection Status + What now? panels.
+        $most_recent = !empty($all_keys_with_users) ? $all_keys_with_users[0] : null;
+        $most_recent_age_seconds = null;
+        $most_recent_age_human = '';
+        if ($most_recent && !empty($most_recent['created'])) {
+            $created_ts = strtotime($most_recent['created']);
+            if ($created_ts) {
+                $most_recent_age_seconds = max(0, time() - $created_ts);
+                $most_recent_age_human = human_time_diff($created_ts, time()) . ' ago';
+            }
+        }
+        $show_what_now = $most_recent_age_seconds !== null && $most_recent_age_seconds < 3600;
 
         ?>
         <style>
@@ -1160,7 +1263,27 @@ class ConnectMWP_Agent {
             
             .cmwp-button-primary-custom { background: #3498db; border-color: #2980b9; box-shadow: 0 2px 4px rgba(52, 152, 219, 0.2); font-weight: 600; font-size: 14px; padding: 4px 20px; height: auto; min-height: 38px; border-radius: 6px; color: #fff; border: 1px solid; cursor: pointer; }
             .cmwp-button-primary-custom:hover { background: #2980b9; border-color: #1f618d; }
-            
+
+            /* Connection Status banner — Bluetooth-style "you're paired" feedback. */
+            .cmwp-status-card { background: linear-gradient(135deg, #16a085, #1abc9c); color: #fff; padding: 18px 22px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 4px 12px rgba(22, 160, 133, 0.18); display: flex; align-items: center; gap: 16px; }
+            .cmwp-status-icon { font-size: 28px; line-height: 1; display: inline-block; }
+            .cmwp-status-title { margin: 0; font-size: 17px; font-weight: 700; color: #fff; }
+            .cmwp-status-sub { margin: 3px 0 0 0; font-size: 13px; opacity: 0.92; color: #fff; }
+            .cmwp-status-empty { background: #ecf0f1; color: #7f8c8d; box-shadow: none; }
+            .cmwp-status-empty .cmwp-status-title { color: #34495e; }
+            .cmwp-status-empty .cmwp-status-sub { color: #7f8c8d; }
+
+            /* "What now?" panel — only shown for ~1h after the most-recent pairing. */
+            .cmwp-whatnow-card { background: #fffaf0; border: 1px solid #fde7c8; border-left: 5px solid #f39c12; border-radius: 10px; padding: 18px 22px; margin-bottom: 25px; }
+            .cmwp-whatnow-title { margin: 0 0 10px 0; font-size: 15px; font-weight: 700; color: #b9770e; display: flex; align-items: center; gap: 8px; }
+            .cmwp-whatnow-list { margin: 0; padding-left: 20px; font-size: 13.5px; color: #5d4e34; line-height: 1.65; }
+            .cmwp-whatnow-list li { margin-bottom: 6px; }
+            .cmwp-whatnow-list code { background: rgba(0,0,0,0.06); padding: 1px 6px; border-radius: 3px; font-size: 12.5px; }
+
+            /* Highlight the freshest row in Paired Clients. */
+            .cmwp-row-recent { background: #eafaf1 !important; box-shadow: inset 3px 0 0 #1abc9c; }
+            .cmwp-row-recent .cmwp-table-label::after { content: " ✓ new"; color: #16a085; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; margin-left: 6px; vertical-align: middle; }
+
             @keyframes cmwpFadeIn {
                 from { opacity: 0; transform: translateY(10px); }
                 to { opacity: 1; transform: translateY(0); }
@@ -1231,6 +1354,62 @@ class ConnectMWP_Agent {
                     Secure, signature-based direct connector between local AI clients (Claude Desktop, Cursor, etc.) and this WordPress site.
                 </p>
             </div>
+
+            <?php
+            $client_count = count($all_keys_with_users);
+            if ($client_count > 0):
+                $status_icon = '🟢';
+                $status_title = sprintf(
+                    '%d AI client%s connected',
+                    $client_count,
+                    $client_count === 1 ? '' : 's'
+                );
+                $status_sub = sprintf(
+                    'Most recent: %s — paired %s.',
+                    esc_html($most_recent['label']),
+                    esc_html($most_recent_age_human ?: $most_recent['created'])
+                );
+            else:
+                $status_icon = '⚪';
+                $status_title = 'No AI clients connected yet';
+                $status_sub = 'Generate a pairing code below to connect your first client.';
+            endif;
+            ?>
+            <div class="cmwp-status-card<?php echo $client_count === 0 ? ' cmwp-status-empty' : ''; ?>">
+                <span class="cmwp-status-icon"><?php echo $status_icon; ?></span>
+                <div>
+                    <p class="cmwp-status-title"><?php echo esc_html($status_title); ?></p>
+                    <p class="cmwp-status-sub"><?php echo $status_sub; ?></p>
+                </div>
+            </div>
+
+            <?php if ($show_what_now && $most_recent):
+                $recent_user = esc_html($most_recent['user_display'] ?? $most_recent['user_login']);
+                $recent_login = esc_html($most_recent['user_login']);
+                $recent_roles = !empty($most_recent['user_roles']) ? esc_html(implode(', ', $most_recent['user_roles'])) : 'no roles';
+                $site_title_safe = esc_html(html_entity_decode(get_bloginfo('name'), ENT_QUOTES, 'UTF-8'));
+                ?>
+                <div class="cmwp-whatnow-card">
+                    <h3 class="cmwp-whatnow-title">🎉 You just paired <?php echo esc_html($most_recent['label']); ?> — what now?</h3>
+                    <ol class="cmwp-whatnow-list">
+                        <li>
+                            Your AI client can now read and write <strong><?php echo $site_title_safe; ?></strong> as <strong><?php echo $recent_user; ?></strong>
+                            (<code><?php echo $recent_login; ?></code>, role: <?php echo $recent_roles; ?>).
+                        </li>
+                        <li>
+                            <strong>Test the connection:</strong> ask your AI <em>"list the tags on this site using connectMWP"</em>.
+                            The first time it uses each connectMWP tool, your AI client may ask for one-time permission — that's normal.
+                        </li>
+                        <li>
+                            <strong>If your AI doesn't see the connection</strong>, fully quit and relaunch the AI client (⌘Q on macOS, not just close the window).
+                        </li>
+                        <li>
+                            <strong>Want to use this site from another AI client on the same Mac?</strong> (Claude Desktop, Cursor, ChatGPT Desktop, Antigravity, etc.)
+                            Just register the same MCP server in each — <code>npx -y connectmwp-mcp</code>. They share this pairing; no new pairing code needed.
+                        </li>
+                    </ol>
+                </div>
+            <?php endif; ?>
 
             <?php if ($enrollment_string): ?>
                 <?php
@@ -1342,8 +1521,10 @@ class ConnectMWP_Agent {
                                 </tr>
                             </thead>
                             <tbody>
-                                <?php foreach ($all_keys_with_users as $key_data): ?>
-                                    <tr>
+                                <?php foreach ($all_keys_with_users as $idx => $key_data):
+                                    $is_recent = ($idx === 0 && $show_what_now);
+                                ?>
+                                    <tr class="<?php echo $is_recent ? 'cmwp-row-recent' : ''; ?>">
                                         <td><strong class="cmwp-table-label"><?php echo esc_html($key_data['label']); ?></strong></td>
                                         <td class="cmwp-table-code"><?php echo esc_html($key_data['key_id']); ?></td>
                                         <td><?php echo esc_html($key_data['user_login']); ?></td>
