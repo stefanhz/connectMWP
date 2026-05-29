@@ -4,6 +4,24 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-28 — v2.0.18
+
+### Changed
+- **connectmwp-agent — complete redesign of the WP Admin Settings page** following the "calm device-management" point of view (GitHub SSH Keys / Apple Family Sharing aesthetic, not WP-admin-table-busy). Approved design + decision log archived at `_internal/design_pairing_page_v2_2026-05-28/`. Specifically:
+  - **State-aware layout** — the page now branches on `$page_state` ∈ {`zero`, `mid-pair`, `paired`}. Zero-state shows a full-card Get Started panel; mid-pair leads with the pairing card; paired leads with the AI clients list.
+  - **Status-first information flow** (inverted from old "configure → status" order): the paired-clients list is the centerpiece; the "+ Pair another" button lives in its header; the IDE config sits below as a tinted reference surface.
+  - **Per-row status dots** replace the standalone green "Connection Status" banner. Green dot for healthy, grey for stale (no use in 30 days OR never-used + > 7d old). Status is communicated at the row level so it scales to 1, 5, or 50 clients without layout change.
+  - **Two-row client cards** in a bordered list with subtle alternating-row backgrounds (`#fff` / `#fbfcfd`) + hairline separators + hover lighten. Row 1: dot + label + optional JUST PAIRED badge + right-aligned Revoke. Row 2 (meta): "paired DATE TIME as USER · last used DATE TIME" + a smaller muted line with the `cmwp_key_…` chip.
+  - **Exact timestamps** in `YYYY-MM-DD HH:MM` format, parsed via `wp_timezone()` + `DateTimeImmutable::createFromFormat` (the v2.0.17 fix). Bolded so they read above the muted meta text. Relative phrasings ("X ago") removed from data display — kept only in the transient "What now?" copy. Timezone disclaimer added below the list.
+  - **Click-to-copy on key_id chips** with toast confirmation (reuses the existing `showConnectMWPToast` helper).
+  - **Tabbed Configure card** (Claude Desktop / Cursor / Other) on a subtle blue-tinted surface (`#f6f9fc`). Replaces the previous side-by-side Cursor + Claude Desktop JSON stack — ~60% less vertical footprint, adds room for ChatGPT Desktop / Cline / Continue without growing the page.
+  - **Hero preserved** (deliberate, called "decent" in feedback) with version badge and copy refined to mention more AI clients (ChatGPT Desktop, Antigravity).
+  - **Auto-refresh pairing-status polling** from v2.0.16 carried forward unchanged in the mid-pair state's pairing card.
+  - **Responsive collapse** at ≤600px: client rows stack to a single column (label / meta / action), pairing-card command-button stacks vertically.
+
+### Bumped
+- All three components → 2.0.18 (lockstep). Plugin re-packaged in both mirrored locations.
+
 ## 2026-05-28 — v2.0.17
 
 ### Fixed

@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.17
+ * Version: 2.0.18
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -13,7 +13,7 @@ defined('ABSPATH') || exit;
 
 class ConnectMWP_Agent {
 
-    const VERSION = '2.0.17';
+    const VERSION = '2.0.18';
     const OPTION_TOKENS = 'connectmwp_agent_tokens';
     const OPTION_NONCES = 'connectmwp_agent_nonces';
     const API_NAMESPACE = 'connectmwp/v1';
@@ -1260,120 +1260,169 @@ class ConnectMWP_Agent {
             return strcmp($b['created'] ?? '', $a['created'] ?? '');
         });
 
-        // Compute most-recent context for the Connection Status + What now? panels.
-        // `created` is stored via `current_time('mysql')` which is the WP-configured
-        // timezone with NO timezone marker on the string. Parsing with bare
-        // strtotime() interprets it as the PHP-server timezone (usually UTC), so
-        // age math comes out off by the WP-vs-server timezone offset (e.g. a
-        // freshly-paired key on a Central-Time WP site shows "6 hours ago"
-        // because the UTC-CT delta is 6h). Parse explicitly with wp_timezone()
-        // so the resulting Unix timestamp is correct regardless of the WP/server
-        // timezone configuration.
-        $most_recent = !empty($all_keys_with_users) ? $all_keys_with_users[0] : null;
-        $most_recent_age_seconds = null;
-        $most_recent_age_human = '';
-        if ($most_recent && !empty($most_recent['created'])) {
-            $created_ts = false;
+        // Per-key enrichment: parse `created` and `last_used` (which come from
+        // `current_time('mysql')` and carry NO timezone marker) with wp_timezone()
+        // so the resulting Unix timestamps are correct regardless of how the
+        // WP-configured timezone relates to the PHP-server timezone. Then derive
+        // formatted display strings, a "just paired" flag (< 1 hour old, drives
+        // the JUST PAIRED badge + the What now? panel), and a "stale" flag
+        // (never used + > 7d old, OR last used > 30d ago — drives the grey dot).
+        $now = time();
+        $stale_unused_threshold  = 7  * 86400;  // 7 days
+        $stale_last_used_threshold = 30 * 86400; // 30 days
+        $just_paired_threshold     = 3600;        // 1 hour
+        foreach ($all_keys_with_users as &$k) {
+            $k['display_created']    = $k['created']   ?? '';
+            $k['display_last_used']  = !empty($k['last_used']) ? $k['last_used'] : 'never';
+            $k['created_ts']         = false;
+            $k['last_used_ts']       = false;
             if (function_exists('wp_timezone')) {
-                $created_dt = DateTimeImmutable::createFromFormat(
-                    'Y-m-d H:i:s',
-                    $most_recent['created'],
-                    wp_timezone()
-                );
-                if ($created_dt instanceof DateTimeImmutable) {
-                    $created_ts = $created_dt->getTimestamp();
+                $tz = wp_timezone();
+                if (!empty($k['created'])) {
+                    $dt = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $k['created'], $tz);
+                    if ($dt instanceof DateTimeImmutable) {
+                        $k['created_ts']      = $dt->getTimestamp();
+                        $k['display_created'] = $dt->format('Y-m-d H:i');
+                    }
+                }
+                if (!empty($k['last_used'])) {
+                    $dt = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $k['last_used'], $tz);
+                    if ($dt instanceof DateTimeImmutable) {
+                        $k['last_used_ts']      = $dt->getTimestamp();
+                        $k['display_last_used'] = $dt->format('Y-m-d H:i');
+                    }
                 }
             }
-            if ($created_ts === false) {
-                // Fallback for pre-WP-5.3 installs — same TZ caveat as before, but
-                // better than nothing.
-                $created_ts = strtotime($most_recent['created']);
-            }
-            if ($created_ts) {
-                $most_recent_age_seconds = max(0, time() - $created_ts);
-                $most_recent_age_human = human_time_diff($created_ts, time()) . ' ago';
-            }
+            $age_created   = $k['created_ts']   ? ($now - $k['created_ts'])   : 0;
+            $age_last_used = $k['last_used_ts'] ? ($now - $k['last_used_ts']) : null;
+            $k['is_just_paired'] = $k['created_ts'] && $age_created < $just_paired_threshold;
+            $never_used = empty($k['last_used']);
+            $k['is_stale'] = ($never_used && $age_created > $stale_unused_threshold) ||
+                             ($age_last_used !== null && $age_last_used > $stale_last_used_threshold);
         }
-        $show_what_now = $most_recent_age_seconds !== null && $most_recent_age_seconds < 3600;
+        unset($k);
+
+        $most_recent   = !empty($all_keys_with_users) ? $all_keys_with_users[0] : null;
+        $show_what_now = $most_recent && !empty($most_recent['is_just_paired']);
+
+        // Three render states drive layout choice. mid-pair takes precedence
+        // because the pairing card needs to lead during the 10-min window.
+        if ($enrollment_string) {
+            $page_state = 'mid-pair';
+        } elseif (empty($all_keys_with_users)) {
+            $page_state = 'zero';
+        } else {
+            $page_state = 'paired';
+        }
 
         ?>
         <style>
-            .cmwp-wrap { max-width: 900px; margin: 20px auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen-Sans, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif; }
-            .cmwp-hero { background: linear-gradient(135deg, #2c3e50, #3498db); padding: 30px; border-radius: 12px; color: #fff; box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1); margin-bottom: 25px; position: relative; overflow: hidden; }
-            .cmwp-hero-circle-1 { position: absolute; right: -50px; top: -50px; width: 200px; height: 200px; border-radius: 50%; background: rgba(255,255,255,0.05); }
-            .cmwp-hero-circle-2 { position: absolute; right: 50px; bottom: -80px; width: 150px; height: 150px; border-radius: 50%; background: rgba(255,255,255,0.03); }
-            .cmwp-hero-title { color: #fff; margin: 0 0 8px 0; font-size: 28px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
-            .cmwp-version-badge { font-size: 13px; font-weight: 400; opacity: 0.8; background: rgba(255,255,255,0.15); padding: 3px 10px; border-radius: 20px; vertical-align: middle; }
-            .cmwp-hero-desc { margin: 0; font-size: 16px; opacity: 0.9; line-height: 1.4; }
-            
-            .cmwp-pairing-card { background: #fff; border: 1px solid #e1e8ed; border-left: 6px solid #e74c3c; border-radius: 12px; padding: 25px; margin-bottom: 25px; box-shadow: 0 10px 30px rgba(231, 76, 60, 0.12); position: relative; animation: cmwpFadeIn 0.4s ease-out; }
-            .cmwp-pairing-header { position: absolute; top: 15px; right: 15px; display: flex; align-items: center; gap: 10px; }
-            .cmwp-countdown-badge { background: #fff3cd; border: 1px solid #ffeeba; color: #d35400; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; display: inline-flex; align-items: center; gap: 4px; }
-            .cmwp-countdown-timer { font-family: monospace; font-size: 12px; }
-            .cmwp-type-badge { background: rgba(231, 76, 60, 0.1); color: #e74c3c; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; }
-            .cmwp-pairing-title { color: #c0392b; margin: 0 0 15px 0; font-size: 18px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
-            
-            .cmwp-instructions { background: #fdfefe; border: 1px solid #eaeded; border-left: 3px solid #3498db; border-radius: 6px; padding: 15px; margin-bottom: 20px; font-size: 13.5px; color: #34495e; line-height: 1.6; }
-            .cmwp-instructions-title { color: #2c3e50; font-size: 14px; display: block; margin-bottom: 8px; }
-            .cmwp-instructions-list { margin: 0; padding-left: 20px; list-style-type: decimal; }
-            
-            .cmwp-section-card { background: #fff; border: 1px solid #e1e8ed; border-radius: 12px; padding: 25px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.02); margin-bottom: 25px; }
-            .cmwp-section-title { margin-top: 0; margin-bottom: 15px; font-size: 18px; font-weight: 600; color: #2c3e50; border-bottom: 1px solid #f0f3f4; padding-bottom: 12px; display: flex; align-items: center; gap: 8px; }
-            .cmwp-section-desc { font-size: 14px; color: #7f8c8d; line-height: 1.5; margin-bottom: 20px; }
-            
-            .cmwp-field-label { font-size: 12px; font-weight: 600; text-transform: uppercase; color: #7f8c8d; margin-bottom: 5px; }
-            .cmwp-input-row { display: flex; align-items: center; gap: 10px; }
-            .cmwp-code-box { font-family: monospace; font-size: 14px; background: #eef1f6; padding: 6px 12px; border-radius: 4px; color: #2c3e50; font-weight: 600; word-break: break-all; width: 100%; border: 1px solid #d5dbdb; }
-            .cmwp-cmd-row { display: flex; gap: 10px; align-items: stretch; }
-            /* Higher specificity + !important so WP admin's .wrap textarea rule
-               cannot override the dark contrast — without this the npx command
-               renders white-on-white inside the wp-admin .wrap container. */
-            .cmwp-wrap textarea.cmwp-cmd-textarea { font-family: monospace; font-size: 12px; background: #2c3e50 !important; color: #ecf0f1 !important; padding: 12px; border-radius: 6px; border: none; width: 100%; height: 60px; resize: none; line-height: 1.4; box-shadow: inset 0 2px 5px rgba(0,0,0,0.2); }
-            
-            .cmwp-table { border: none; box-shadow: none; margin-top: 10px; width: 100%; border-collapse: collapse; }
-            .cmwp-table th { font-weight: 600; padding: 12px 10px; border-bottom: 2px solid #eaeded; color: #2c3e50; text-align: left; }
-            .cmwp-table td { padding: 12px 10px; vertical-align: middle; border-bottom: 1px solid #eaeded; }
-            .cmwp-table tr:nth-child(even) { background-color: #f8f9fa; }
-            .cmwp-table-label { font-weight: bold; }
-            .cmwp-table-code { font-family: monospace; font-size: 12px; }
-            .cmwp-table-meta { color: #7f8c8d; font-size: 12px; }
-            
-            .cmwp-config-item { margin-bottom: 25px; }
-            .cmwp-config-title { font-size: 13px; font-weight: 600; color: #2c3e50; margin-bottom: 8px; }
-            .cmwp-config-tip { font-size: 12px; color: #7f8c8d; margin-bottom: 12px; line-height: 1.4; }
-            .cmwp-config-pre { background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; color: #2c3e50; overflow-x: auto; line-height: 1.4; margin: 0; }
-            .cmwp-pre-dim { color: #abb2b9; }
-            .cmwp-pre-highlight { font-weight: 700; color: #1f618d; background-color: #ebf5fb; padding: 4px; display: inline-block; border-radius: 4px; border-left: 3px solid #2980b9; }
-            
-            .cmwp-button-revoke { color: #d63638; border-color: #ccd0d4; padding: 2px 8px; font-size: 11px; line-height: 1.4; min-height: 24px; height: auto; border-radius: 4px; background: #fff; cursor: pointer; border: 1px solid; }
-            .cmwp-button-revoke:hover { background: #fcf0f1; border-color: #d63638; }
-            
-            .cmwp-button-primary-custom { background: #3498db; border-color: #2980b9; box-shadow: 0 2px 4px rgba(52, 152, 219, 0.2); font-weight: 600; font-size: 14px; padding: 4px 20px; height: auto; min-height: 38px; border-radius: 6px; color: #fff; border: 1px solid; cursor: pointer; }
-            .cmwp-button-primary-custom:hover { background: #2980b9; border-color: #1f618d; }
+            /* connectMWP plugin settings page — v2.0.18 redesign.
+               Calm, status-first device-management aesthetic. All classes prefixed
+               with cmwp- so the WP admin global CSS can't reach in. */
+            .cmwp-wrap { max-width: 900px; margin: 20px auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen-Sans, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif; color: #2c3e50; }
 
-            /* Connection Status banner — Bluetooth-style "you're paired" feedback. */
-            .cmwp-status-card { background: linear-gradient(135deg, #16a085, #1abc9c); color: #fff; padding: 18px 22px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 4px 12px rgba(22, 160, 133, 0.18); display: flex; align-items: center; gap: 16px; }
-            .cmwp-status-icon { font-size: 28px; line-height: 1; display: inline-block; }
-            .cmwp-status-title { margin: 0; font-size: 17px; font-weight: 700; color: #fff; }
-            .cmwp-status-sub { margin: 3px 0 0 0; font-size: 13px; opacity: 0.92; color: #fff; }
-            .cmwp-status-empty { background: #ecf0f1; color: #7f8c8d; box-shadow: none; }
-            .cmwp-status-empty .cmwp-status-title { color: #34495e; }
-            .cmwp-status-empty .cmwp-status-sub { color: #7f8c8d; }
+            /* Hero */
+            .cmwp-hero { background: linear-gradient(135deg, #2c3e50, #3498db); padding: 28px 32px; border-radius: 14px; color: #fff; box-shadow: 0 4px 14px rgba(44, 62, 80, 0.10); position: relative; overflow: hidden; margin-bottom: 24px; }
+            .cmwp-hero::after { content: ''; position: absolute; right: -40px; top: -40px; width: 180px; height: 180px; border-radius: 50%; background: rgba(255,255,255,0.04); }
+            .cmwp-hero h1 { margin: 0 0 8px 0; font-size: 26px; font-weight: 700; letter-spacing: -0.2px; display: flex; align-items: center; gap: 12px; color: #fff; }
+            .cmwp-ver { font-size: 12px; font-weight: 500; opacity: 0.85; background: rgba(255,255,255,0.18); padding: 3px 10px; border-radius: 999px; letter-spacing: 0.3px; }
+            .cmwp-hero p { margin: 0; font-size: 14px; opacity: 0.85; max-width: 560px; line-height: 1.5; }
 
-            /* "What now?" panel — only shown for ~1h after the most-recent pairing. */
-            .cmwp-whatnow-card { background: #fffaf0; border: 1px solid #fde7c8; border-left: 5px solid #f39c12; border-radius: 10px; padding: 18px 22px; margin-bottom: 25px; }
-            .cmwp-whatnow-title { margin: 0 0 10px 0; font-size: 15px; font-weight: 700; color: #b9770e; display: flex; align-items: center; gap: 8px; }
-            .cmwp-whatnow-list { margin: 0; padding-left: 20px; font-size: 13.5px; color: #5d4e34; line-height: 1.65; }
-            .cmwp-whatnow-list li { margin-bottom: 6px; }
-            .cmwp-whatnow-list code { background: rgba(0,0,0,0.06); padding: 1px 6px; border-radius: 3px; font-size: 12.5px; }
+            /* Card primitive */
+            .cmwp-card { background: #fff; border: 1px solid #e5eaed; border-radius: 12px; padding: 22px 24px; margin-bottom: 18px; box-shadow: 0 1px 2px rgba(44, 62, 80, 0.03); }
+            .cmwp-card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+            .cmwp-card-title { margin: 0; font-size: 16px; font-weight: 700; color: #2c3e50; letter-spacing: -0.1px; }
+            .cmwp-card-sub { margin: 4px 0 0 0; font-size: 13px; color: #7f8c8d; line-height: 1.5; }
 
-            /* Highlight the freshest row in Paired Clients. */
-            .cmwp-row-recent { background: #eafaf1 !important; box-shadow: inset 3px 0 0 #1abc9c; }
-            .cmwp-row-recent .cmwp-table-label::after { content: " ✓ new"; color: #16a085; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; margin-left: 6px; vertical-align: middle; }
+            /* Client list — the centerpiece. */
+            .cmwp-client-list { display: grid; gap: 0; margin-top: 4px; border-radius: 8px; overflow: hidden; border: 1px solid #eef2f4; }
+            .cmwp-client-row { display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto;
+                /* Explicit areas so the action button can't auto-place into the wide
+                   left column (CSS Grid gotcha: row-pinned + auto-column items
+                   fill row L→R, which would push the label rightward). */
+                grid-template-areas: "label action" "meta action";
+                align-items: center; column-gap: 14px; row-gap: 4px; padding: 14px 16px; background: #fff; transition: background 0.15s ease; }
+            .cmwp-client-row + .cmwp-client-row { border-top: 1px solid #eef2f4; }
+            .cmwp-client-row:nth-child(even) { background: #fbfcfd; }
+            .cmwp-client-row:hover { background: #f5f9fc; }
+            .cmwp-client-label { grid-area: label; font-size: 14.5px; font-weight: 700; color: #2c3e50; line-height: 1.3; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+            .cmwp-client-dot { width: 10px; height: 10px; border-radius: 50%; background: #16a085; box-shadow: 0 0 0 3px #d8f1ea; flex-shrink: 0; }
+            .cmwp-client-dot.stale { background: #abb2b9; box-shadow: 0 0 0 3px #ecf0f1; }
+            .cmwp-badge-new { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: 0.6px; color: #16a085; background: #d8f1ea; padding: 2px 7px; border-radius: 999px; }
+            .cmwp-client-meta { grid-area: meta; color: #7f8c8d; padding-left: 20px; }
+            .cmwp-meta-times { display: block; font-size: 12.5px; line-height: 1.55; }
+            .cmwp-meta-key { display: block; margin-top: 3px; font-size: 11.5px; line-height: 1.4; }
+            .cmwp-client-meta b { white-space: nowrap; color: #34495e; }
+            .cmwp-meta-key code { font-family: SF Mono, Menlo, Consolas, monospace; font-size: 11.5px; color: #abb2b9; background: rgba(0,0,0,0.04); padding: 1px 6px; border-radius: 4px; white-space: nowrap; cursor: pointer; transition: background 0.15s ease, color 0.15s ease; }
+            .cmwp-meta-key code:hover { background: rgba(52, 152, 219, 0.12); color: #2980b9; }
+            .cmwp-meta-sep { color: #abb2b9; margin: 0 6px; }
+            .cmwp-client-action { grid-area: action; align-self: center; justify-self: end; }
+            .cmwp-tz-note { margin-top: 12px; font-size: 12px; color: #7f8c8d; }
 
-            @keyframes cmwpFadeIn {
-                from { opacity: 0; transform: translateY(10px); }
-                to { opacity: 1; transform: translateY(0); }
+            /* Buttons */
+            .cmwp-btn-revoke { color: #c0392b; background: #fff; border: 1px solid #e5eaed; padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease; }
+            .cmwp-btn-revoke:hover { background: #fcebe9; border-color: #c0392b; }
+            .cmwp-btn-pair-another { background: #3498db; border: none; color: #fff; padding: 7px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 2px 4px rgba(52, 152, 219, 0.2); }
+            .cmwp-btn-pair-another:hover { background: #2980b9; }
+            .cmwp-btn-primary-large { background: #3498db; border: none; color: #fff; padding: 12px 28px; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 10px rgba(52, 152, 219, 0.25); }
+            .cmwp-btn-primary-large:hover { background: #2980b9; }
+            .cmwp-btn-copy { background: #34495e; color: #fff; border: none; border-radius: 6px; padding: 0 14px; font-size: 12px; font-weight: 600; cursor: pointer; }
+            .cmwp-btn-copy:hover { background: #2c3e50; }
+
+            /* Get Started — zero-state */
+            .cmwp-getstarted { background: linear-gradient(180deg, #fff, #fbfcfd); border: 1px solid #e5eaed; border-radius: 14px; padding: 36px 32px 32px; text-align: center; margin-bottom: 18px; }
+            .cmwp-step-tag { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 1px; color: #3498db; background: #ebf5fb; padding: 4px 12px; border-radius: 999px; text-transform: uppercase; }
+            .cmwp-getstarted h2 { margin: 14px 0 8px 0; font-size: 22px; font-weight: 700; color: #2c3e50; letter-spacing: -0.3px; }
+            .cmwp-getstarted p { margin: 0 auto 22px; max-width: 460px; font-size: 14px; color: #7f8c8d; line-height: 1.55; }
+
+            /* Pairing-code card (mid-pair state) */
+            .cmwp-pairing-card { background: #fff; border: 1px solid #e5eaed; border-left: 5px solid #f39c12; border-radius: 12px; padding: 22px 24px; margin-bottom: 18px; box-shadow: 0 4px 14px rgba(243, 156, 18, 0.10); }
+            .cmwp-pc-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+            .cmwp-pc-head h2 { margin: 0; font-size: 16px; font-weight: 700; color: #b9770e; }
+            .cmwp-pc-badges { display: flex; gap: 8px; }
+            .cmwp-pc-badge { font-size: 11px; font-weight: 700; letter-spacing: 0.6px; padding: 3px 9px; border-radius: 999px; text-transform: uppercase; }
+            .cmwp-pc-badge.timer { background: #fef3e0; color: #b9770e; }
+            .cmwp-pc-badge.type { background: #fdebe1; color: #c0392b; }
+            .cmwp-pc-instructions { background: #fafbfc; border: 1px solid #eef2f4; border-left: 3px solid #3498db; border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; font-size: 13px; color: #34495e; line-height: 1.6; }
+            .cmwp-pc-instructions ol { margin: 4px 0 0 0; padding-left: 20px; }
+            .cmwp-pc-cmd { display: flex; gap: 8px; align-items: stretch; margin-bottom: 4px; }
+            /* WP admin's `.wrap textarea` rule otherwise outranks ours and the npx command
+               renders white-on-white. Boost specificity + !important. */
+            .cmwp-wrap textarea.cmwp-pc-textarea { flex: 1; background: #1f2d3d !important; color: #ecf0f1 !important; border: none; border-radius: 6px; padding: 12px 14px; font-family: SF Mono, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; resize: none; height: 56px; }
+
+            /* What now? panel */
+            .cmwp-whatnow { background: #fefcf2; border: 1px solid #faedc5; border-left: 4px solid #f39c12; border-radius: 12px; padding: 18px 22px; margin-bottom: 18px; }
+            .cmwp-whatnow h3 { margin: 0 0 8px 0; font-size: 14px; font-weight: 700; color: #b9770e; display: flex; align-items: center; gap: 8px; }
+            .cmwp-whatnow ol { margin: 0; padding-left: 20px; font-size: 13px; color: #5d4e34; line-height: 1.65; }
+            .cmwp-whatnow ol li { margin-bottom: 4px; }
+            .cmwp-whatnow code { background: rgba(0,0,0,0.06); padding: 1px 6px; border-radius: 3px; font-size: 12px; }
+
+            /* Configure card — tinted reference surface */
+            .cmwp-config-card { background: #f6f9fc; border: 1px solid #e1ecf4; border-radius: 12px; padding: 22px 24px; }
+            .cmwp-config-card .cmwp-card-title { font-size: 15px; }
+            .cmwp-config-card .cmwp-card-sub { font-size: 12.5px; }
+            .cmwp-tabs { display: flex; gap: 4px; border-bottom: 1px solid #d8e3ec; margin: 14px 0 16px; flex-wrap: wrap; }
+            .cmwp-tab { padding: 8px 14px; font-size: 13px; font-weight: 600; color: #7f8c8d; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color 0.15s ease, border-color 0.15s ease; user-select: none; }
+            .cmwp-tab.active { color: #3498db; border-bottom-color: #3498db; }
+            .cmwp-tab:hover:not(.active) { color: #34495e; }
+            .cmwp-tab-tip { font-size: 12px; color: #7f8c8d; line-height: 1.55; margin-bottom: 10px; }
+            .cmwp-tab-tip b { color: #3498db; }
+            .cmwp-config-json { background: #fff; border: 1px solid #dbe5ed; border-radius: 8px; padding: 12px 16px; font-family: SF Mono, Menlo, Consolas, monospace; font-size: 12px; color: #2c3e50; line-height: 1.55; overflow-x: auto; margin: 0; }
+            .cmwp-config-json .cmwp-dim { color: #abb2b9; }
+            .cmwp-config-json .cmwp-hi { background: #eaf3fb; border-left: 3px solid #3498db; padding: 2px 6px; display: inline-block; border-radius: 3px; font-weight: 700; color: #1f618d; }
+
+            /* Responsive */
+            @media (max-width: 600px) {
+                .cmwp-wrap { padding: 0 12px; margin: 16px auto; }
+                .cmwp-hero { padding: 22px 22px; }
+                .cmwp-hero h1 { font-size: 22px; flex-wrap: wrap; }
+                .cmwp-card { padding: 18px 18px; }
+                .cmwp-client-row { grid-template-columns: 1fr; grid-template-areas: "label" "meta" "action"; row-gap: 8px; }
+                .cmwp-client-action { justify-self: start; }
+                .cmwp-pc-cmd { flex-direction: column; }
+                .cmwp-wrap textarea.cmwp-pc-textarea { height: 70px; }
+                .cmwp-btn-copy { height: 38px; padding: 0 16px; }
             }
         </style>
 
@@ -1429,120 +1478,36 @@ class ConnectMWP_Agent {
         }
         </script>
         <div class="wrap cmwp-wrap">
-            
-            <div class="cmwp-hero">
-                <div class="cmwp-hero-circle-1"></div>
-                <div class="cmwp-hero-circle-2"></div>
-                
-                <h1 class="cmwp-hero-title">
-                    <span style="font-size: 32px;">🔌</span> connectMWP Agent <span class="cmwp-version-badge">v<?php echo esc_html(self::VERSION); ?></span>
-                </h1>
-                <p class="cmwp-hero-desc">
-                    Secure, signature-based direct connector between local AI clients (Claude Desktop, Cursor, etc.) and this WordPress site.
-                </p>
-            </div>
 
-            <?php
-            $client_count = count($all_keys_with_users);
-            if ($client_count > 0):
-                $status_icon = '🟢';
-                $status_title = sprintf(
-                    '%d AI client%s connected',
-                    $client_count,
-                    $client_count === 1 ? '' : 's'
-                );
-                $status_sub = sprintf(
-                    'Most recent: %s — paired %s.',
-                    esc_html($most_recent['label']),
-                    esc_html($most_recent_age_human ?: $most_recent['created'])
-                );
-            else:
-                $status_icon = '⚪';
-                $status_title = 'No AI clients connected yet';
-                $status_sub = 'Generate a pairing code below to connect your first client.';
-            endif;
-            ?>
-            <div class="cmwp-status-card<?php echo $client_count === 0 ? ' cmwp-status-empty' : ''; ?>">
-                <span class="cmwp-status-icon"><?php echo $status_icon; ?></span>
-                <div>
-                    <p class="cmwp-status-title"><?php echo esc_html($status_title); ?></p>
-                    <p class="cmwp-status-sub"><?php echo $status_sub; ?></p>
-                </div>
-            </div>
+            <header class="cmwp-hero">
+                <h1>🔌 connectMWP Agent <span class="cmwp-ver">v<?php echo esc_html(self::VERSION); ?></span></h1>
+                <p>Secure, signature-based direct connector between local AI clients (Claude Desktop, Cursor, ChatGPT Desktop, Antigravity, etc.) and this WordPress site.</p>
+            </header>
 
-            <?php if ($show_what_now && $most_recent):
-                $recent_user = esc_html($most_recent['user_display'] ?? $most_recent['user_login']);
-                $recent_login = esc_html($most_recent['user_login']);
-                $recent_roles = !empty($most_recent['user_roles']) ? esc_html(implode(', ', $most_recent['user_roles'])) : 'no roles';
-                $site_title_safe = esc_html(html_entity_decode(get_bloginfo('name'), ENT_QUOTES, 'UTF-8'));
-                ?>
-                <div class="cmwp-whatnow-card">
-                    <h3 class="cmwp-whatnow-title">🎉 You just paired <?php echo esc_html($most_recent['label']); ?> — what now?</h3>
-                    <ol class="cmwp-whatnow-list">
-                        <li>
-                            Your AI client can now read and write <strong><?php echo $site_title_safe; ?></strong> as <strong><?php echo $recent_user; ?></strong>
-                            (<code><?php echo $recent_login; ?></code>, role: <?php echo $recent_roles; ?>).
-                        </li>
-                        <li>
-                            <strong>Test the connection:</strong> ask your AI <em>"list the tags on this site using connectMWP"</em>.
-                            The first time it uses each connectMWP tool, your AI client may ask for one-time permission — that's normal.
-                        </li>
-                        <li>
-                            <strong>If your AI doesn't see the connection</strong>, fully quit and relaunch the AI client (⌘Q on macOS, not just close the window).
-                        </li>
-                        <li>
-                            <strong>Want to use this site from another AI client on the same Mac?</strong> (Claude Desktop, Cursor, ChatGPT Desktop, Antigravity, etc.)
-                            Just register the same MCP server in each — <code>npx -y connectmwp-mcp</code>. They share this pairing; no new pairing code needed.
-                        </li>
-                    </ol>
-                </div>
-            <?php endif; ?>
-
-            <?php if ($enrollment_string): ?>
-                <?php
+            <?php if ($page_state === 'mid-pair'):
                 $npx_cmd = 'npx -y connectmwp-mcp add-site --enroll "' . $enrollment_string . '"';
-                $stored = get_option('connectmwp_enrollment_code');
+                $stored  = get_option('connectmwp_enrollment_code');
                 $remaining = is_array($stored) && isset($stored['expires']) ? intval($stored['expires']) - time() : 600;
                 $remaining = max(0, $remaining);
                 ?>
-                <div class="cmwp-pairing-card">
-                    <div class="cmwp-pairing-header">
-                        <span class="cmwp-countdown-badge">
-                            ⏳ Expiring: <span id="connectmwp-countdown" class="cmwp-countdown-timer">--:--</span>
-                        </span>
-                        <span class="cmwp-type-badge">One-Time Pairing Code</span>
+                <section class="cmwp-pairing-card">
+                    <div class="cmwp-pc-head">
+                        <h2>⚠️ Action Required — pair your local environment</h2>
+                        <div class="cmwp-pc-badges">
+                            <span class="cmwp-pc-badge timer">⏳ <span id="connectmwp-countdown">--:--</span></span>
+                            <span class="cmwp-pc-badge type">One-Time Code</span>
+                        </div>
                     </div>
-                    
-                    <h3 class="cmwp-pairing-title">
-                        ⚠️ Action Required: Go Pair Your Local Environment Now
-                    </h3>
-
-                    <div class="cmwp-instructions">
-                        <strong class="cmwp-instructions-title">👉 How to Pair:</strong>
-                        <ol class="cmwp-instructions-list">
-                            <li>Open a <strong>Terminal</strong> window on your local computer.</li>
-                            <li>Ensure you have <strong>Node.js (v18+)</strong> installed (verify by running <code>node -v</code> in the terminal).</li>
-                            <li>Copy and run the <strong>Terminal Pairing Command</strong> below.</li>
-                            <li>Once the terminal reports success (<code>[SUCCESS] Client paired and enrolled successfully!</code>), **refresh this page** to see your client registered in the <strong>Paired Clients</strong> list below.</li>
+                    <div class="cmwp-pc-instructions">
+                        <strong>👉 How to Pair:</strong>
+                        <ol>
+                            <li>Open a Terminal window on your local computer (Node.js 18+ required).</li>
+                            <li>Paste and run the command below — this page will auto-update on success.</li>
                         </ol>
                     </div>
-                    
-                    <div style="background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
-                        <div class="cmwp-field-label">Pairing Enrollment String</div>
-                        <div class="cmwp-input-row">
-                            <code class="cmwp-code-box"><?php echo esc_html($enrollment_string); ?></code>
-                            <button type="button" class="button" onclick="navigator.clipboard.writeText('<?php echo esc_js($enrollment_string); ?>').then(() => showConnectMWPToast(this, 'Enrollment string copied!'))" style="white-space: nowrap; height: 35px;">Copy String</button>
-                        </div>
-                    </div>
-
-                    <div style="margin-bottom: 20px;">
-                        <div style="font-size: 13px; font-weight: 600; color: #2c3e50; margin-bottom: 8px;">
-                            💻 Terminal Pairing Command (npx)
-                        </div>
-                        <div class="cmwp-cmd-row">
-                            <textarea readonly class="cmwp-cmd-textarea" id="claude-enroll-cmd"><?php echo esc_textarea($npx_cmd); ?></textarea>
-                            <button type="button" class="button button-primary" onclick="navigator.clipboard.writeText(document.getElementById('claude-enroll-cmd').value).then(() => showConnectMWPToast(this, 'Command copied!'))" style="height: 60px; background: #34495e; border-color: #2c3e50; border-radius: 6px;">Copy Command</button>
-                        </div>
+                    <div class="cmwp-pc-cmd">
+                        <textarea readonly class="cmwp-pc-textarea" id="cmwp-enroll-cmd"><?php echo esc_textarea($npx_cmd); ?></textarea>
+                        <button type="button" class="cmwp-btn-copy" onclick="navigator.clipboard.writeText(document.getElementById('cmwp-enroll-cmd').value).then(() => showConnectMWPToast(this, 'Command copied!'))">Copy</button>
                     </div>
 
                     <script>
@@ -1550,7 +1515,6 @@ class ConnectMWP_Agent {
                         let secondsLeft = <?php echo intval($remaining); ?>;
                         const display = document.getElementById('connectmwp-countdown');
                         if (!display) return;
-
                         function updateTimer() {
                             if (secondsLeft <= 0) {
                                 display.textContent = "Expired";
@@ -1570,33 +1534,26 @@ class ConnectMWP_Agent {
                     </script>
 
                     <script>
-                    // Live pairing-completion poll: while the pairing code is shown, ask the
-                    // server every 3 seconds whether someone has claimed it. On a fresh new
-                    // key (total_keys grew or latest_key_id changed), flip the card to a
-                    // success state and reload so the user sees the full new layout —
-                    // Connection Status banner, "What now?" panel, highlighted row — without
-                    // having to manually refresh. Also polls immediately when the tab gains
-                    // focus (user came back from terminal).
+                    // Live pairing-completion poll (v2.0.16+): admin-ajax-backed, nonced,
+                    // capability-gated. On a new key landing, flip the card to a success
+                    // state and reload so the user sees the full new layout without manual
+                    // refresh. Polls every 3s AND on visibilitychange (terminal handoff).
                     (function() {
                         const ajaxUrl = '<?php echo esc_js(admin_url('admin-ajax.php')); ?>';
                         const nonce = '<?php echo esc_js(wp_create_nonce('connectmwp_pairing_status')); ?>';
                         const initialTotal = <?php echo intval(count($all_keys_with_users)); ?>;
                         const initialLatest = <?php echo $most_recent ? "'" . esc_js($most_recent['key_id']) . "'" : 'null'; ?>;
-
                         let stopped = false;
                         let timer = null;
 
-                        // Build the success state with DOM APIs (createElement + textContent)
-                        // so any dynamic content (the label, which comes from the server) lands
-                        // as text, not HTML — structurally immune to XSS regardless of how the
-                        // server-side label is sanitized.
+                        // DOM-only success state build — no innerHTML, so the server-supplied
+                        // label is structurally XSS-safe.
                         function flipCardToSuccess(label) {
                             const card = document.querySelector('.cmwp-pairing-card');
                             if (!card) return;
                             card.style.transition = 'border-color 0.4s ease, box-shadow 0.4s ease';
                             card.style.borderLeftColor = '#16a085';
                             card.style.boxShadow = '0 10px 30px rgba(22, 160, 133, 0.20)';
-
                             while (card.firstChild) card.removeChild(card.firstChild);
 
                             const wrap = document.createElement('div');
@@ -1623,18 +1580,11 @@ class ConnectMWP_Agent {
                         async function poll() {
                             if (stopped) return;
                             try {
-                                const params = new URLSearchParams({
-                                    action: 'connectmwp_pairing_status',
-                                    _wpnonce: nonce
-                                });
-                                const res = await fetch(ajaxUrl + '?' + params.toString(), {
-                                    credentials: 'same-origin',
-                                    cache: 'no-store'
-                                });
+                                const params = new URLSearchParams({ action: 'connectmwp_pairing_status', _wpnonce: nonce });
+                                const res = await fetch(ajaxUrl + '?' + params.toString(), { credentials: 'same-origin', cache: 'no-store' });
                                 if (!res.ok) return;
                                 const data = await res.json();
-                                const claimed = (data.total_keys > initialTotal) ||
-                                                (data.latest_key_id && data.latest_key_id !== initialLatest);
+                                const claimed = (data.total_keys > initialTotal) || (data.latest_key_id && data.latest_key_id !== initialLatest);
                                 if (claimed) {
                                     stopped = true;
                                     if (timer) clearInterval(timer);
@@ -1646,127 +1596,168 @@ class ConnectMWP_Agent {
                                     stopped = true;
                                     if (timer) clearInterval(timer);
                                 }
-                            } catch (e) {
-                                // Transient network failure — keep polling.
-                            }
+                            } catch (e) {}
                         }
 
-                        // Immediate first check, then every 3s.
                         poll();
                         timer = setInterval(poll, 3000);
-
-                        // Tab focus: re-check immediately (user likely just came back from terminal).
                         document.addEventListener('visibilitychange', function() {
-                            if (document.visibilityState === 'visible' && !stopped) {
-                                poll();
-                            }
+                            if (document.visibilityState === 'visible' && !stopped) poll();
                         });
                     })();
                     </script>
-                </div>
+                </section>
             <?php endif; ?>
 
-            <div style="display: grid; grid-template-columns: 1fr; gap: 25px;">
-                
-                <div class="cmwp-section-card">
-                    <h2 class="cmwp-section-title">
-                        <span>🔑</span> Pair Local Client
-                    </h2>
-                    <p class="cmwp-section-desc">
-                        Generate a single-use pairing code to connect your local MCP server to this site. During pairing, your local client will generate an Ed25519 cryptographic keypair and upload its public key.
-                    </p>
-                    
-                    <form method="post" action="">
+            <?php if ($show_what_now && $most_recent):
+                $recent_user    = esc_html($most_recent['user_display'] ?? $most_recent['user_login']);
+                $recent_login   = esc_html($most_recent['user_login']);
+                $recent_roles   = !empty($most_recent['user_roles']) ? esc_html(implode(', ', $most_recent['user_roles'])) : 'no roles';
+                $site_title_safe = esc_html(html_entity_decode(get_bloginfo('name'), ENT_QUOTES, 'UTF-8'));
+                ?>
+                <section class="cmwp-whatnow">
+                    <h3>🎉 You just paired <?php echo esc_html($most_recent['label']); ?> — what now?</h3>
+                    <ol>
+                        <li>Your AI client can now read &amp; write <strong><?php echo $site_title_safe; ?></strong> as <strong><?php echo $recent_user; ?></strong> (<code><?php echo $recent_login; ?></code>, role: <?php echo $recent_roles; ?>).</li>
+                        <li><strong>Test the connection:</strong> ask your AI <em>"list the tags on this site using connectMWP"</em>. The first time it uses each tool, your AI may ask for one-time permission — that's normal.</li>
+                        <li><strong>If your AI doesn't see the connection</strong>, fully quit and relaunch the AI client (⌘Q on macOS, not just close the window).</li>
+                        <li><strong>Want to use this site from another AI client on the same Mac?</strong> (Claude Desktop, Cursor, ChatGPT Desktop, Antigravity, etc.) Register the same MCP server in each — <code>npx -y connectmwp-mcp</code>. They share this pairing; no new code needed.</li>
+                    </ol>
+                </section>
+            <?php endif; ?>
+
+            <?php if ($page_state === 'zero'): ?>
+                <section class="cmwp-getstarted">
+                    <div class="cmwp-step-tag">Step 1</div>
+                    <h2>Pair your first AI client</h2>
+                    <p>Generate a single-use pairing code, then run it in your terminal. Your local AI client will create an Ed25519 keypair and upload only its public key here. The private key never leaves your machine.</p>
+                    <form method="post" action="" style="display: inline-block;">
                         <?php wp_nonce_field('connectmwp_generate_pairing'); ?>
                         <input type="hidden" name="connectmwp_action" value="generate_pairing" />
-                        <button type="submit" class="cmwp-button-primary-custom">Generate Pairing Code</button>
+                        <button type="submit" class="cmwp-btn-primary-large">Generate Pairing Code</button>
                     </form>
-                </div>
-
-                <div class="cmwp-section-card">
-                    <h2 class="cmwp-section-title">
-                        <span>🛡️</span> Paired Clients
-                    </h2>
-                    
-                    <?php if (empty($all_keys_with_users)): ?>
-                        <p class="cmwp-section-desc" style="margin: 10px 0;">No paired clients found.</p>
-                    <?php else: ?>
-                        <table class="wp-list-table widefat fixed striped cmwp-table">
-                            <thead>
-                                <tr>
-                                    <th style="width: 20%;">Client Label</th>
-                                    <th style="width: 25%;">Key ID</th>
-                                    <th style="width: 13%;">WP User</th>
-                                    <th style="width: 14%;">Created</th>
-                                    <th style="width: 14%;">Last Used</th>
-                                    <th style="width: 14%; text-align: right;">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($all_keys_with_users as $idx => $key_data):
-                                    $is_recent = ($idx === 0 && $show_what_now);
-                                ?>
-                                    <tr class="<?php echo $is_recent ? 'cmwp-row-recent' : ''; ?>">
-                                        <td><strong class="cmwp-table-label"><?php echo esc_html($key_data['label']); ?></strong></td>
-                                        <td class="cmwp-table-code"><?php echo esc_html($key_data['key_id']); ?></td>
-                                        <td><?php echo esc_html($key_data['user_login']); ?></td>
-                                        <td class="cmwp-table-meta"><?php echo esc_html($key_data['created']); ?></td>
-                                        <td class="cmwp-table-meta"><?php echo esc_html(!empty($key_data['last_used']) ? $key_data['last_used'] : 'Never'); ?></td>
-                                        <td style="text-align: right;">
-                                            <form method="post" style="display:inline;">
-                                                <?php wp_nonce_field('connectmwp_revoke_key'); ?>
-                                                <input type="hidden" name="connectmwp_action" value="revoke_key" />
-                                                <input type="hidden" name="key_id" value="<?php echo esc_attr($key_data['key_id']); ?>" />
-                                                <button type="submit" class="cmwp-button-revoke" onclick="return confirm('Are you sure you want to revoke this client\'s access?');">Revoke Access</button>
-                                            </form>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    <?php endif; ?>
-                </div>
-
-                <!-- Card: IDE Configuration -->
-                <div class="cmwp-section-card" style="margin-top: 25px;">
-                    <h2 class="cmwp-section-title">
-                        <span>⚙️</span> IDE & Client Configuration (Cursor, Claude Desktop, etc.)
-                    </h2>
-                    <p class="cmwp-section-desc">
-                        Once you pair this machine via the terminal pairing command above, the connection is established globally for your user profile. To register the MCP server in your IDE, add the following configuration block to your settings file.
-                    </p>
-                    
-                    <?php
-                    $configs = [
-                        [
-                            'title' => '📋 Cursor IDE Configuration (Settings -> Features -> MCP)',
-                            'tip' => '💡 <strong>Integration Tip:</strong> If you already have other MCP servers configured, copy and merge only the <strong style="color: #2980b9;">highlighted block</strong> inside your existing <code>"mcpServers"</code> object (remember to add a comma between servers).'
-                        ],
-                        [
-                            'title' => '📋 Claude Desktop Configuration (claude_desktop_config.json)',
-                            'tip' => '💡 <strong>Integration Tip:</strong> If you already have other MCP servers configured, copy and merge only the <strong style="color: #2980b9;">highlighted block</strong> inside your existing <code>"mcpServers"</code> object (remember to add a comma between servers).'
-                        ]
-                    ];
-                    foreach ($configs as $cfg):
-                    ?>
-                        <div class="cmwp-config-item">
-                            <div class="cmwp-config-title"><?php echo esc_html($cfg['title']); ?></div>
-                            <div class="cmwp-config-tip"><?php echo $cfg['tip']; ?></div>
-                            <pre class="cmwp-config-pre"><span class="cmwp-pre-dim">{
-  "mcpServers": {</span>
-<span class="cmwp-pre-highlight">    "connectmwp": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "connectmwp-mcp"
-      ]
-    }</span>
-<span class="cmwp-pre-dim">  }
-}</span></pre>
+                </section>
+            <?php else: ?>
+                <?php $client_count = count($all_keys_with_users); ?>
+                <section class="cmwp-card">
+                    <div class="cmwp-card-header">
+                        <div>
+                            <h2 class="cmwp-card-title">Your AI clients</h2>
+                            <p class="cmwp-card-sub"><?php echo intval($client_count); ?> connected · all signing successfully</p>
                         </div>
-                    <?php endforeach; ?>
+                        <?php if ($page_state !== 'mid-pair'): ?>
+                            <form method="post" action="" style="margin: 0;">
+                                <?php wp_nonce_field('connectmwp_generate_pairing'); ?>
+                                <input type="hidden" name="connectmwp_action" value="generate_pairing" />
+                                <button type="submit" class="cmwp-btn-pair-another">+ Pair another</button>
+                            </form>
+                        <?php endif; ?>
+                    </div>
+
+                    <div class="cmwp-client-list">
+                        <?php foreach ($all_keys_with_users as $k): ?>
+                            <div class="cmwp-client-row">
+                                <div class="cmwp-client-label">
+                                    <span class="cmwp-client-dot<?php echo !empty($k['is_stale']) ? ' stale' : ''; ?>" aria-label="<?php echo !empty($k['is_stale']) ? 'stale' : 'connected'; ?>"></span>
+                                    <?php echo esc_html($k['label']); ?>
+                                    <?php if (!empty($k['is_just_paired'])): ?>
+                                        <span class="cmwp-badge-new">JUST PAIRED</span>
+                                    <?php endif; ?>
+                                </div>
+                                <div class="cmwp-client-action">
+                                    <form method="post" style="margin: 0;">
+                                        <?php wp_nonce_field('connectmwp_revoke_key'); ?>
+                                        <input type="hidden" name="connectmwp_action" value="revoke_key" />
+                                        <input type="hidden" name="key_id" value="<?php echo esc_attr($k['key_id']); ?>" />
+                                        <button type="submit" class="cmwp-btn-revoke" onclick="return confirm('Revoke access for &quot;<?php echo esc_js($k['label']); ?>&quot;? This cannot be undone.');">Revoke access</button>
+                                    </form>
+                                </div>
+                                <div class="cmwp-client-meta">
+                                    <span class="cmwp-meta-times">paired <b><?php echo esc_html($k['display_created']); ?></b> as <b><?php echo esc_html($k['user_login']); ?></b><span class="cmwp-meta-sep">·</span>last used <b><?php echo esc_html($k['display_last_used']); ?></b></span>
+                                    <span class="cmwp-meta-key"><code class="cmwp-copy" data-copy="<?php echo esc_attr($k['key_id']); ?>" title="Click to copy"><?php echo esc_html($k['key_id']); ?></code></span>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <p class="cmwp-tz-note">Times shown in the site's configured timezone (Settings → General → Timezone). Click a key ID to copy it.</p>
+                </section>
+            <?php endif; ?>
+
+            <section class="cmwp-config-card">
+                <div class="cmwp-card-header">
+                    <div>
+                        <h2 class="cmwp-card-title">Configure an AI client</h2>
+                        <p class="cmwp-card-sub">Drop this MCP server registration into your AI app's settings. The pairing above gives every AI client on this Mac the same access.</p>
+                    </div>
                 </div>
-            </div>
+
+                <div class="cmwp-tabs" id="cmwp-config-tabs">
+                    <div class="cmwp-tab active" data-target="claude">Claude Desktop</div>
+                    <div class="cmwp-tab" data-target="cursor">Cursor</div>
+                    <div class="cmwp-tab" data-target="other">Other (ChatGPT Desktop, Cline, Continue…)</div>
+                </div>
+
+                <div class="cmwp-tab-tip" data-tip="claude">
+                    Edit <code>claude_desktop_config.json</code>. If you already have other MCP servers, merge only the <b>highlighted block</b> into your existing <code>"mcpServers"</code> object.
+                </div>
+<pre class="cmwp-config-json" data-pane="claude"><span class="cmwp-dim">{
+  "mcpServers": {</span>
+<span class="cmwp-hi">    "connectmwp": {
+      "command": "npx",
+      "args": ["-y", "connectmwp-mcp"]
+    }</span>
+<span class="cmwp-dim">  }
+}</span></pre>
+
+                <div class="cmwp-tab-tip" data-tip="cursor" style="display:none">
+                    Cursor: Settings → Features → MCP. Merge only the <b>highlighted block</b> into your existing <code>"mcpServers"</code> object.
+                </div>
+<pre class="cmwp-config-json" data-pane="cursor" style="display:none"><span class="cmwp-dim">{
+  "mcpServers": {</span>
+<span class="cmwp-hi">    "connectmwp": {
+      "command": "npx",
+      "args": ["-y", "connectmwp-mcp"]
+    }</span>
+<span class="cmwp-dim">  }
+}</span></pre>
+
+                <div class="cmwp-tab-tip" data-tip="other" style="display:none">
+                    For ChatGPT Desktop, Cline, Continue, or any other MCP-capable client: register a stdio MCP server named <code>connectmwp</code> with command <code>npx</code> and args <code>["-y", "connectmwp-mcp"]</code>. Exact menu paths vary by app.
+                </div>
+<pre class="cmwp-config-json" data-pane="other" style="display:none"><span class="cmwp-dim">Command:</span>  npx
+<span class="cmwp-dim">Args:</span>     -y connectmwp-mcp
+<span class="cmwp-dim">Name:</span>     connectmwp
+<span class="cmwp-dim">Transport:</span> stdio</pre>
+            </section>
+
+            <script>
+            // Click-to-copy on key_id chips + tab switching for the Configure card.
+            (function() {
+                document.querySelectorAll('.cmwp-copy').forEach(function(el) {
+                    el.addEventListener('click', function() {
+                        const text = el.dataset.copy || el.textContent;
+                        navigator.clipboard.writeText(text).then(function() {
+                            showConnectMWPToast(el, 'Key ID copied');
+                        });
+                    });
+                });
+
+                document.querySelectorAll('#cmwp-config-tabs .cmwp-tab').forEach(function(tab) {
+                    tab.addEventListener('click', function() {
+                        const target = tab.dataset.target;
+                        document.querySelectorAll('#cmwp-config-tabs .cmwp-tab').forEach(function(t) {
+                            t.classList.toggle('active', t === tab);
+                        });
+                        document.querySelectorAll('[data-pane]').forEach(function(p) {
+                            p.style.display = (p.dataset.pane === target ? 'block' : 'none');
+                        });
+                        document.querySelectorAll('[data-tip]').forEach(function(p) {
+                            p.style.display = (p.dataset.tip === target ? 'block' : 'none');
+                        });
+                    });
+                });
+            })();
+            </script>
         </div>
         <?php
     }
