@@ -1,6 +1,6 @@
 # connectMWP Support Training & Troubleshooting Manual
 
-> **Verified against:** connectMWP **v2.0.21** (all three components, lockstep).
+> **Verified against:** connectMWP **v2.0.22** (all three components, lockstep).
 > **Last reviewed:** 2026-05-28.
 > **Re-verify when:** the pairing flow, signature headers, capability scoping, REST/AJAX fallback behavior, or any user-visible error message changes.
 >

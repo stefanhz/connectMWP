@@ -11,6 +11,15 @@ import crypto from 'crypto';
 import http from 'http';
 import https from 'https';
 import { fileURLToPath } from 'url';
+import {
+  projectGetPosts,
+  projectGetPost,
+  projectMutatePost,
+  projectDeletePost,
+  projectUploadMedia,
+  projectListTaxonomy,
+  projectCreateTaxonomy,
+} from './lib/projections.js';
 
 // Configuration file path
 const CONFIG_PATH = path.join(os.homedir(), '.connectmwp.json');
@@ -1281,28 +1290,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         const res = await callWordPress(siteUrl, keyId, privateKeyPath, `posts?${queryParams.toString()}`, 'GET', null);
-        return { content: [{ type: 'text', text: JSON.stringify(res) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(projectGetPosts(res, limit, offset)) }] };
       }
 
       case 'connectmwp_create_post': {
         const { site, ...postParams } = args;
         const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
         const res = await callWordPress(siteUrl, keyId, privateKeyPath, 'posts', 'POST', postParams);
-        return { content: [{ type: 'text', text: JSON.stringify(res) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(projectMutatePost(res)) }] };
       }
 
       case 'connectmwp_update_post': {
         const { site, id, ...postParams } = args;
         const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
         const res = await callWordPress(siteUrl, keyId, privateKeyPath, `posts/${id}`, 'POST', postParams);
-        return { content: [{ type: 'text', text: JSON.stringify(res) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(projectMutatePost(res)) }] };
       }
 
       case 'connectmwp_delete_post': {
         const { site, id, force } = args;
         const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
         const res = await callWordPress(siteUrl, keyId, privateKeyPath, `posts/${id}`, 'DELETE', { force });
-        return { content: [{ type: 'text', text: JSON.stringify(res) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(projectDeletePost(res)) }] };
       }
 
       case 'connectmwp_upload_media': {
@@ -1378,7 +1387,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         formData.append('file', blob, nameToUse);
 
         const res = await callWordPress(siteUrl, keyId, privateKeyPath, 'media', 'POST', formData, true, fileHash);
-        return { content: [{ type: 'text', text: JSON.stringify(res) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(projectUploadMedia(res)) }] };
       }
 
       case 'connectmwp_list_tags': {
@@ -1391,7 +1400,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           queryParams.append('search', search);
         }
         const res = await callWordPress(siteUrl, keyId, privateKeyPath, `tags?${queryParams.toString()}`, 'GET');
-        return { content: [{ type: 'text', text: JSON.stringify(res) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(projectListTaxonomy(res, 'tags', limit, offset)) }] };
       }
 
       case 'connectmwp_list_categories': {
@@ -1404,7 +1413,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           queryParams.append('search', search);
         }
         const res = await callWordPress(siteUrl, keyId, privateKeyPath, `categories?${queryParams.toString()}`, 'GET');
-        return { content: [{ type: 'text', text: JSON.stringify(res) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(projectListTaxonomy(res, 'categories', limit, offset)) }] };
       }
 
       case 'connectmwp_get_post': {
@@ -1418,21 +1427,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const endpoint = fields ? `posts/${id}?${queryParams.toString()}` : `posts/${id}`;
 
         const res = await callWordPress(siteUrl, keyId, privateKeyPath, endpoint, 'GET', null);
-        return { content: [{ type: 'text', text: JSON.stringify(res) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(projectGetPost(res)) }] };
       }
 
       case 'connectmwp_create_category': {
         const { site, ...catParams } = args;
         const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
         const res = await callWordPress(siteUrl, keyId, privateKeyPath, 'categories', 'POST', catParams);
-        return { content: [{ type: 'text', text: JSON.stringify(res) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(projectCreateTaxonomy(res)) }] };
       }
 
       case 'connectmwp_create_tag': {
         const { site, ...tagParams } = args;
         const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
         const res = await callWordPress(siteUrl, keyId, privateKeyPath, 'tags', 'POST', tagParams);
-        return { content: [{ type: 'text', text: JSON.stringify(res) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(projectCreateTaxonomy(res)) }] };
       }
 
       default:

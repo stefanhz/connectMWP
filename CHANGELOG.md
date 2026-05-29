@@ -4,6 +4,44 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-28 — v2.0.22
+
+### Changed — BREAKING (response shape)
+
+- **connectmwp-mcp — tool responses now flow through a projection layer that strips tautological fields and adds explicit pagination metadata (T143 + T148).** Source: ARCH-REVIEW-REPORT_2026-05-28_19-03.md §1 (HIGH — "Blind Proxy" Over-fetching) + §4 LOW (missing pagination safety on get_posts). New `connectmwp-mcp/lib/projections.js` module — pure functions, zero I/O, one projection per tool family — wired into every tool handler between `callWordPress` and `JSON.stringify`. Dropped fields by tool:
+
+  - **All success responses (every tool):** the tautological `success: true` field is removed. The MCP envelope's absence-of-isError already signals success; carrying `success: true` on every response was redundant noise that the LLM had to read on every call.
+  - **`connectmwp_get_post` / `connectmwp_get_posts` (post entities):** the duplicate `link` field is removed when it equals `url` (the plugin always sets both to the same permalink — carrying both wastes tokens linearly with post count).
+  - **`connectmwp_create_post` / `connectmwp_update_post`:** same `link`/`url` dedupe when they match.
+
+  Error responses (`success: false`) pass through unchanged so the `error` field remains the AI's diagnosis signal. Unrecognized shapes pass through unchanged — projection is never lossy (fail-safe).
+
+  **Pagination metadata (T148):** `connectmwp_get_posts`, `connectmwp_list_tags`, `connectmwp_list_categories` now return a structured `pagination` object alongside the items array, replacing the flat `total` + `has_more` fields:
+  ```json
+  {
+    "pagination": { "total": 247, "per_page": 50, "offset": 0, "next_offset": 50, "has_more": true },
+    "posts": [...]
+  }
+  ```
+  `next_offset` is `null` on the last page, so the AI can immediately invoke the next call (`connectmwp_get_posts({ offset: 50 })`) without asking the user "what's the next offset?" Offset-based per Q4.3 Option A (matches the WP REST native pagination shape; no premature cursor abstraction).
+
+  Verified token-cost reduction: a representative 50-post `get_posts` response shrinks from 5214 bytes to 3816 bytes — **26.8% smaller** at the JSON layer alone. Larger savings on richer responses where `link`/`url` dedupe scales linearly. Verified by `bash _internal/verify/p4_test.sh` — 22+ assertions covering each tool, error pass-through, pagination shape on first/last pages.
+
+  **Migration impact (Q4.2 Option C — hard cut + documented enumeration):** Any AI prompt or downstream workflow that explicitly reads `response.success`, `response.posts[].link`, `response.total`, or `response.has_more` needs to be updated. The new field paths are `response.posts`, `response.posts[].url`, `response.pagination.total`, `response.pagination.has_more`. Realistic affected count is near zero — the `_links`-style WP-internal fields the original audit flagged were already stripped by the plugin; this projection is the next layer of polish. No known customer-facing prompt relies on the dropped fields.
+
+### Added — module hygiene
+
+- **`connectmwp-mcp/lib/projections.js`** — first step of P5's modular `lib/` layer (`projectGetPosts`, `projectGetPost`, `projectMutatePost`, `projectDeletePost`, `projectUploadMedia`, `projectListTaxonomy`, `projectCreateTaxonomy`, `buildPagination`).
+- **`package.json` `files` field** now includes `lib/**` so the lib/ tree ships in the npm tarball. Verified: `npm pack --dry-run` lists 4 files (`README.md`, `index.js`, `lib/projections.js`, `package.json`).
+
+### Changed — documentation
+
+- All "Verified against" anchors → v2.0.22.
+
+### Bumped
+
+- All three components → 2.0.22 (lockstep). Plugin re-packaged in both mirrored locations.
+
 ## 2026-05-28 — v2.0.21
 
 ### Security — HIGH

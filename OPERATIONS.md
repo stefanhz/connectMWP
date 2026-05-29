@@ -1,6 +1,6 @@
 # connectMWP — Operations Runbook
 
-> **Verified against:** connectMWP **v2.0.21** (all three components, lockstep).
+> **Verified against:** connectMWP **v2.0.22** (all three components, lockstep).
 > **Last reviewed:** 2026-05-28.
 > **Re-verify when:** the MCP CLI surface changes (`add-site`/`remove-site`/`set-default`/`list-sites` flags), the plugin auth flow changes, the release/publish process changes, or component versions drift out of lockstep.
 
