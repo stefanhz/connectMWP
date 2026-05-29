@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-> **Verified against:** connectMWP **v2.0.18** (all three components, lockstep).
+> **Verified against:** connectMWP **v2.0.19** (all three components, lockstep).
 > **Last reviewed:** 2026-05-28.
 > **Re-verify when:** the request-signing canonical string, the `permission_callback` / `rest_pre_dispatch` filter in the plugin, the on-disk schema of `~/.connectmwp.json` or `~/.connectmwp/<host>.ed25519`, the lockstep versioning rule, or the central-server-out-of-daily-path constraint changes.
 
@@ -61,17 +61,18 @@ There is no automated test suite in any component. The full operational runbook 
 
 **Daily runtime path** (`connectmwp-mcp/index.js` → `connectmwp-agent.php`) — **session-less Ed25519 signatures, no login state ever created on the WP side:**
 
-- Client calls `{site}/wp-json/connectmwp/v1/{posts|media|tags|categories}` with three custom auth headers:
+- Client calls `{site}/wp-json/connectmwp/v1/{posts|media|tags|categories}` with four custom auth headers (as of v2.0.19):
   - `X-ConnectMWP-Key: <key_id>` — identifies which paired client is calling.
   - `X-ConnectMWP-Timestamp: <unix_seconds>` — must be within ±300s of the WP server clock.
+  - `X-ConnectMWP-Nonce: <rfc4122_uuid_v4>` — fresh `crypto.randomUUID()` per request (v2.0.19+). Closes the replay window by making every signature unique by construction. Plugin rejects missing nonce with `connectmwp_missing_nonce` 401 — distinct from generic signature failure so support can recognize "pinned-old-client" instantly.
   - `X-ConnectMWP-Signature: <base64(ed25519_detached_sig)>` — signature over the canonical string.
   - `X-ConnectMWP-Body-Hash: <sha256_hex>` — REQUIRED on multipart uploads (covers the file bytes since the body itself is the multipart payload). Added in v2.0.10. Without this, the upload path is forgeable; never remove.
 - Header names are intentionally custom (NOT `Authorization`) because managed hosts (SiteGround, Kinsta, WP Engine) strip standard `Authorization` headers at the edge proxy before they hit PHP. **Never move auth to a standard header.**
-- The canonical signing string is deterministic across both client and plugin:
+- The canonical signing string is deterministic across both client and plugin (v2.0.19+ — nonce in position 2):
   ```
-  timestamp + "\n" + METHOD + "\n" + path + "\n" + sha256_hex(sorted_query) + "\n" + sha256_hex(raw_body_or_empty)
+  timestamp + "\n" + nonce + "\n" + METHOD + "\n" + path + "\n" + sha256_hex(sorted_query) + "\n" + sha256_hex(raw_body_or_empty)
   ```
-  Byte-identical reconstruction on the PHP side is the #1 source of interop bugs — pin query-string sorting, encoding rules, and `path` (whether to include the `/wp-json` prefix).
+  Byte-identical reconstruction on the PHP side is the #1 source of interop bugs — pin nonce position (after timestamp, before method), query-string sorting, encoding rules, and `path` (whether to include the `/wp-json` prefix). Run `bash _internal/verify/interop_test.sh` after any change to either side.
 
 - **Admin-AJAX fallback:** if REST returns 401/403/404 or the fetch throws, the client retries the same operation through `wp-admin/admin-ajax.php` (`action=connectmwp_api`, sub-action in `connectmwp_action`). The plugin exposes every capability via *both* REST and AJAX because some hosts lock down REST entirely. The same three signature headers authorize both paths (AJAX signs a synthetic path like `/connectmwp/v1/<action>`). **Any new tool must be wired into both paths** — the REST route + handler in the plugin, the AJAX action mapping in `callWordPressAjax()`, and the AJAX dispatch in the plugin's `handle_ajax_request()`.
 

@@ -1,11 +1,13 @@
 # connectMWP
 
-**Current Release Version: v2.0.18**
-*(Doc verified against v2.0.18 on 2026-05-28.)*
+**Current Release Version: v2.0.19**
+*(Doc verified against v2.0.19 on 2026-05-28.)*
 
 connectMWP is a secure, decentralized Model Context Protocol (MCP) server that connects local AI clients (such as Claude Desktop, Cursor, and Claude Code) directly to self-hosted WordPress websites to draft content, upload media, and manage posts directly from your workspace.
 
 The architecture is **100% decentralized and session-less**. AI requests are authenticated on a per-request basis using Ed25519 detached signatures over HTTPS, bypassing any central servers and carrying $0 proxy costs. This makes it completely immune to WAF blocks and WordPress login security/2FA plugin restrictions.
+
+Each signed request carries a per-request UUID nonce as the second field of the Ed25519 canonical (`timestamp · nonce · method · path · sha256(sorted_query) · sha256(body)`), so two functionally-identical requests produce different signatures and a captured request cannot be replayed against the site within the ±300s clock-skew window. The plugin layers an atomic signature-hash cache on top as defense-in-depth.
 
 ## Why connectMWP? (Motivation & Design Choices)
 

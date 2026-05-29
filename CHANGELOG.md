@@ -4,6 +4,35 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-28 — v2.0.19
+
+### Security — CRITICAL
+
+- **connectmwp-agent + connectmwp-mcp — close the request-replay window via per-request nonce in the Ed25519 canonical (T137).** Source: `_internal/SECURITY-REVIEW-REPORT_2026-05-28_18-58.md` §1 — broken authentication via missing nonce; OWASP API 2023 #2 + #6. The MCP client now generates a fresh RFC 4122 UUID per request (`crypto.randomUUID()`), sends it in a new `X-ConnectMWP-Nonce` header, and includes it in the canonical signing string at position 2 (between timestamp and method). The plugin extracts the header, validates the UUID shape, and rebuilds the canonical with the nonce in the same position before verifying the Ed25519 signature. The existing sig-hash replay cache (`is_replay_signature` / `cmwp_sig_*` options) is preserved as defense-in-depth — nonce uniqueness makes every signature unique by construction, so the cache continues to catch any literal-replay attempt naturally. **Breaking — hard cut:** v2.0.19 plugin rejects any request without a nonce header with HTTP 401 + error code `connectmwp_missing_nonce`. Pre-v2.0.19 MCP clients fail loudly with a specific code so support can recognize "pinned-old-client" at a glance. No customer-facing docs instruct version pinning (verified at planning time); the recommended `npx -y connectmwp-mcp` auto-pulls the new client. The README's "replay protection is active" claim is now structurally backed by the canonical's nonce field, not just by the after-the-fact sig-hash cache.
+
+- **connectmwp-mcp — sanitize private-key filesystem path out of signing-failure error messages (T138).** Source: same security report §1 — OWASP API 2023 #10 (Unsafe Consumption of APIs). The two former throw sites in `callWordPress` and `callWordPressAjax` interpolated `privateKeyPath` directly into the error message returned to the AI client, leaking the keystore filesystem location into LLM context, chat transcripts, and any client-side logs. New `sanitizeSigningError(err)` helper returns a stable user-facing message per `err.code` (`ENOENT` / `EACCES` / `EPERM` / parse-failure) with the actionable recovery command (`npx -y connectmwp-mcp add-site --enroll …`). A separate `logDiag(msg)` helper writes the full original message (including the path) to stderr with a `[connectmwp:diag]` prefix — captured by the MCP client as an out-of-band log channel, never parsed as JSON-RPC protocol traffic. Stderr safety verified against `@modelcontextprotocol/sdk` StdioServerTransport source (stdout is JSON-RPC exclusive). Full audit of 21 `throw new Error` sites in `index.js` confirms only these two sites were Class A (leaking internal state); all other sites echo only user-supplied values or constant strings. Audit table in `_internal/PLAN_T138_2026-05-28_21-26-39.md` §4.
+
+### Added — diagnostic surface
+
+- **connectmwp-agent — distinguishable WP_Error codes on every verification-failure path** (`connectmwp_missing_nonce`, `connectmwp_invalid_nonce_format`, `connectmwp_missing_credentials`, `connectmwp_timestamp_skew`, `connectmwp_unknown_key`, `connectmwp_malformed_credentials`, `connectmwp_sodium_missing`, `connectmwp_signature_invalid`, `connectmwp_replay_detected`). New private `describe_verification_error($code)` method maps each code to a safe human-readable message (codes are not secrets — the caller can already see the URL, headers, and timestamp). Surfaced through both `central_rest_auth` (REST path → WP_Error) and `handle_ajax_request` (AJAX fallback → wp_send_json_error with `code` + `message` fields). Eliminates the previous generic "Unauthorized" / 401 that masked which check failed.
+
+### Added — interop verification harness
+
+- **`_internal/verify/interop_test.sh`** — runnable Node↔PHP byte-identical canonical proof. Generates a fresh Ed25519 keypair in Node, signs a sample canonical including the nonce, hands the signature + public key to PHP, has PHP reconstruct the canonical the SAME way and verify via `sodium_crypto_sign_verify_detached`. Also asserts AC1 (two different nonces produce different signatures) and Ed25519 determinism (same input → same signature, which is what the sig-hash replay cache relies on).
+- **`_internal/verify/sanitization_test.sh`** — runnable T138 sanitization proof. Forces three failure modes (ENOENT, EACCES, PEM-parse) and asserts: user-facing message has no filesystem path; recovery command is present; operator stderr preserves the full path + diagnostic prefix; zero throw sites in `index.js` still reference `privateKeyPath` / `/Users/` / `.ed25519`.
+
+### Changed — documentation
+
+- **`_internal/ARCHITECTURE.md` §4.3 (canonical signing string), §4.4 (verification order), §8 (security hardening checklist).** Canonical template now lists `nonce` as the second field. Verified-against anchor bumped to v2.0.19.
+- **`CLAUDE.md` (project) §"Daily runtime path".** Custom-headers list expanded from three to four (`X-ConnectMWP-Key`, `-Timestamp`, `-Nonce`, `-Signature`).
+- **`README.md`** — replay-protection sentence updated from generic to concrete (cites the nonce position in the canonical). Version line bumped.
+- **`SUPPORT_TRAINING.md`** — new troubleshooting row for the `connectmwp_missing_nonce` 401-with-specific-code symptom (recognize pinned-old-client). Verified-against anchor bumped to v2.0.19.
+- **`OPERATIONS.md`** — new section "Replay-blocked verification (T137)" with a copy-paste curl recipe so anyone can confirm the replay window is closed against a paired live site.
+
+### Bumped
+
+- All three components → 2.0.19 (lockstep). Plugin re-packaged in both mirrored locations (root copy gitignored; `connectmwp-server/public/connectmwp-agent.zip` committed; sha-identical to root).
+
 ## 2026-05-28 — v2.0.18
 
 ### Changed

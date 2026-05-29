@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.18
+ * Version: 2.0.19
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -13,7 +13,7 @@ defined('ABSPATH') || exit;
 
 class ConnectMWP_Agent {
 
-    const VERSION = '2.0.18';
+    const VERSION = '2.0.19';
     const OPTION_TOKENS = 'connectmwp_agent_tokens';
     const OPTION_NONCES = 'connectmwp_agent_nonces';
     const API_NAMESPACE = 'connectmwp/v1';
@@ -159,15 +159,46 @@ class ConnectMWP_Agent {
             }
 
             if (!$this->verify_request_signature($request)) {
+                $code = $this->verification_error_code ?: 'connectmwp_unauthorized';
                 return new WP_Error(
-                    'connectmwp_unauthorized',
-                    'Unauthorized request signature verification failed.',
+                    $code,
+                    $this->describe_verification_error($code),
                     ['status' => 401]
                 );
             }
         }
 
         return $result;
+    }
+
+    /**
+     * Map a verification_error_code to a human-readable message that's safe
+     * to expose to the MCP client (no internal state — caller can already see
+     * the URL, the headers they sent, and the timestamp; codes are not secret).
+     */
+    private function describe_verification_error($code) {
+        switch ($code) {
+            case 'connectmwp_missing_nonce':
+                return 'Request missing X-ConnectMWP-Nonce header. Client is older than v2.0.19 — upgrade by re-pairing: npx -y connectmwp-mcp add-site --enroll "<site_url>,<pairing_code>".';
+            case 'connectmwp_invalid_nonce_format':
+                return 'X-ConnectMWP-Nonce header is not a valid UUID.';
+            case 'connectmwp_missing_credentials':
+                return 'Request missing one or more required ConnectMWP auth headers.';
+            case 'connectmwp_timestamp_skew':
+                return 'Request timestamp is outside the ±300s clock-skew window.';
+            case 'connectmwp_unknown_key':
+                return 'X-ConnectMWP-Key does not match any paired client on this site.';
+            case 'connectmwp_malformed_credentials':
+                return 'Public key or signature is the wrong length for Ed25519.';
+            case 'connectmwp_sodium_missing':
+                return 'PHP libsodium extension is not available on this host.';
+            case 'connectmwp_signature_invalid':
+                return 'Signature verification failed.';
+            case 'connectmwp_replay_detected':
+                return 'Signature was already used within the replay window (this request is a replay).';
+            default:
+                return 'Unauthorized request signature verification failed.';
+        }
     }
 
     /**
@@ -193,6 +224,13 @@ class ConnectMWP_Agent {
     private $bound_user_id = 0;
     private $matched_key_id = '';
 
+    // Specific reason the most recent verification failed. Surfaced through
+    // central_rest_auth + handle_ajax_request as the WP_Error code so the MCP
+    // client (and support) can recognize "pinned-old-client" (missing nonce),
+    // "replay detected", or "signature mismatch" at a glance. Empty string
+    // when verification succeeded or has not yet run.
+    private $verification_error_code = '';
+
     /**
      * Verify the detached Ed25519 request signature
      */
@@ -211,6 +249,7 @@ class ConnectMWP_Agent {
         $key_id = '';
         $timestamp = '';
         $signature_b64 = '';
+        $nonce = '';
 
         if (function_exists('getallheaders')) {
             $headers = getallheaders();
@@ -221,6 +260,8 @@ class ConnectMWP_Agent {
                     $timestamp = $value;
                 } elseif (strcasecmp($name, 'X-ConnectMWP-Signature') === 0) {
                     $signature_b64 = $value;
+                } elseif (strcasecmp($name, 'X-ConnectMWP-Nonce') === 0) {
+                    $nonce = $value;
                 }
             }
         }
@@ -234,14 +275,38 @@ class ConnectMWP_Agent {
         if (empty($signature_b64) && isset($_SERVER['HTTP_X_CONNECTMWP_SIGNATURE'])) {
             $signature_b64 = $_SERVER['HTTP_X_CONNECTMWP_SIGNATURE'];
         }
+        if (empty($nonce) && isset($_SERVER['HTTP_X_CONNECTMWP_NONCE'])) {
+            $nonce = $_SERVER['HTTP_X_CONNECTMWP_NONCE'];
+        }
 
         if (empty($key_id) || empty($timestamp) || empty($signature_b64)) {
+            $this->verification_error_code = 'connectmwp_missing_credentials';
+            $this->signature_verified = false;
+            return false;
+        }
+
+        // Hard cut on missing nonce: any client below v2.0.19 fails here with
+        // a distinct code so support can recognize "pinned-old-client" at a
+        // glance (vs a generic signature failure). Re-pairing via
+        // `npx -y connectmwp-mcp add-site --enroll ...` fetches the current
+        // client which sends the nonce.
+        if (empty($nonce)) {
+            $this->verification_error_code = 'connectmwp_missing_nonce';
+            $this->signature_verified = false;
+            return false;
+        }
+
+        // RFC 4122 UUID shape (any version). Rejects junk values before they
+        // reach the canonical rebuild.
+        if (!preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $nonce)) {
+            $this->verification_error_code = 'connectmwp_invalid_nonce_format';
             $this->signature_verified = false;
             return false;
         }
 
         // 3. Verify timestamp skew (within ±300s)
         if (abs(time() - intval($timestamp)) > 300) {
+            $this->verification_error_code = 'connectmwp_timestamp_skew';
             $this->signature_verified = false;
             return false;
         }
@@ -249,6 +314,7 @@ class ConnectMWP_Agent {
         // 4. Look up client key
         $key_config = $this->find_key_by_id($key_id);
         if (!$key_config) {
+            $this->verification_error_code = 'connectmwp_unknown_key';
             $this->signature_verified = false;
             return false;
         }
@@ -298,8 +364,12 @@ class ConnectMWP_Agent {
             $body_hash = hash('sha256', $raw_body ?? '');
         }
 
+        // Canonical field order MUST match the MCP client's reconstruction in
+        // callWordPress / callWordPressAjax (connectmwp-mcp/index.js). The
+        // nonce field sits between timestamp and method as of v2.0.19.
         $canonical = implode("\n", [
             $timestamp,
+            $nonce,
             strtoupper($method),
             $request_path,
             $query_hash,
@@ -311,24 +381,31 @@ class ConnectMWP_Agent {
         $sig_raw = base64_decode($signature_b64);
 
         if (strlen($pub_key_raw) !== 32 || strlen($sig_raw) !== 64) {
+            $this->verification_error_code = 'connectmwp_malformed_credentials';
             $this->signature_verified = false;
             return false;
         }
 
         if (!function_exists('sodium_crypto_sign_verify_detached')) {
+            $this->verification_error_code = 'connectmwp_sodium_missing';
             $this->signature_verified = false;
             return false;
         }
 
         $verified = sodium_crypto_sign_verify_detached($sig_raw, $canonical, $pub_key_raw);
         if (!$verified) {
+            $this->verification_error_code = 'connectmwp_signature_invalid';
             $this->signature_verified = false;
             return false;
         }
 
-        // 7. Replay attack check
+        // 7. Replay attack check. The existing sig-hash cache stays as the
+        // structural replay defense; the new nonce field in the canonical
+        // makes every signature unique by construction so the cache continues
+        // to catch any literal replay attempt naturally.
         $sig_hash = hash('sha256', $signature_b64);
         if ($this->is_replay_signature($sig_hash)) {
+            $this->verification_error_code = 'connectmwp_replay_detected';
             $this->signature_verified = false;
             return false;
         }
@@ -1133,7 +1210,11 @@ class ConnectMWP_Agent {
 
         // Verify request signature
         if (!$this->verify_request_signature(null)) {
-            wp_send_json_error(['error' => 'Unauthorized'], 401);
+            $code = $this->verification_error_code ?: 'connectmwp_unauthorized';
+            wp_send_json_error([
+                'code'    => $code,
+                'message' => $this->describe_verification_error($code),
+            ], 401);
         }
 
         $request = new WP_REST_Request($_SERVER['REQUEST_METHOD']);

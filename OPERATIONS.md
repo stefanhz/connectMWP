@@ -1,6 +1,6 @@
 # connectMWP — Operations Runbook
 
-> **Verified against:** connectMWP **v2.0.18** (all three components, lockstep).
+> **Verified against:** connectMWP **v2.0.19** (all three components, lockstep).
 > **Last reviewed:** 2026-05-28.
 > **Re-verify when:** the MCP CLI surface changes (`add-site`/`remove-site`/`set-default`/`list-sites` flags), the plugin auth flow changes, the release/publish process changes, or component versions drift out of lockstep.
 
@@ -14,6 +14,9 @@ pairing sites, re-pairing after a key revoke, and shipping a new npm release.
 2. [UPDATE an existing connection (after revoking the key)](#2-update-an-existing-connection-after-revoking-the-key)
 3. [Publish a new version of `connectmwp-mcp` to the npm registry](#3-publish-a-new-version-of-connectmwp-mcp-to-the-npm-registry)
 4. [Reference — file locations](#4-reference--file-locations)
+5. [Replay-blocked verification (T137 / v2.0.19+)](#5-replay-blocked-verification-t137--v2019)
+6. [Local Node↔PHP interop verification (signing-canonical proof)](#6-local-nodephp-interop-verification-signing-canonical-proof)
+7. [Local error-sanitization verification (T138)](#7-local-error-sanitization-verification-t138)
 
 ---
 
@@ -231,3 +234,158 @@ Clean order: bump → CHANGELOG → publish → commit → push.
 | Architecture doc | `_internal/ARCHITECTURE.md` |
 | Changelog (immutable, append at top) | `CHANGELOG.md` |
 | Task tracker | `_internal/TASKS.md` |
+
+---
+
+## 5. Replay-blocked verification (T137 / v2.0.19+)
+
+**Goal:** Prove a captured signed request cannot be replayed against a paired
+WordPress site. Run after deploying a v2.0.19+ plugin and a v2.0.19+ MCP
+client to a paired site (e.g. `https://2morrow.ai`).
+
+**Prerequisites:**
+- A site paired with a v2.0.19+ plugin installed and active.
+- A v2.0.19+ MCP client locally with that site's pairing in `~/.connectmwp.json`.
+- `curl`, `jq` available.
+
+### Step 1 — Capture a legitimate request
+
+Add a one-line debug log to `connectmwp-mcp/index.js` right before the
+`fetch(url, ...)` in `callWordPress`:
+
+```js
+console.error('CAPTURE:', JSON.stringify({ url, headers }));
+```
+
+Run one tool invocation from the AI client (e.g. ask Claude to "list categories
+on 2morrow.ai"). Grab the line from the MCP server's stderr (Claude Desktop:
+`~/Library/Logs/Claude/mcp-server-connectmwp.log` or wherever your client
+writes MCP stderr). Remove the debug line afterward.
+
+### Step 2 — Replay the captured headers via curl (REST path)
+
+Within ~5 seconds of capture (well inside the 300s skew window):
+
+```bash
+curl -s -o /dev/null -w "HTTP %{http_code}\n" \
+     -H "X-ConnectMWP-Key: <captured>" \
+     -H "X-ConnectMWP-Timestamp: <captured>" \
+     -H "X-ConnectMWP-Nonce: <captured>" \
+     -H "X-ConnectMWP-Signature: <captured>" \
+     https://2morrow.ai/wp-json/connectmwp/v1/categories
+```
+
+**Expected:** `HTTP 401`. To see the specific WP_Error code:
+
+```bash
+curl -s \
+     -H "X-ConnectMWP-Key: <captured>" \
+     -H "X-ConnectMWP-Timestamp: <captured>" \
+     -H "X-ConnectMWP-Nonce: <captured>" \
+     -H "X-ConnectMWP-Signature: <captured>" \
+     https://2morrow.ai/wp-json/connectmwp/v1/categories | jq .code
+```
+
+**Expected:** `"connectmwp_replay_detected"` (the sig-hash cache catches the
+second use of the same signature) — OR — if you wait > 360s (cache TTL) the
+replay rejection drops; that's an out-of-window case, not the attack.
+
+### Step 3 — Replay against the AJAX fallback path
+
+```bash
+curl -s -o /dev/null -w "HTTP %{http_code}\n" \
+     -X POST \
+     -H "X-ConnectMWP-Key: <captured>" \
+     -H "X-ConnectMWP-Timestamp: <captured>" \
+     -H "X-ConnectMWP-Nonce: <captured>" \
+     -H "X-ConnectMWP-Signature: <captured>" \
+     --data 'action=connectmwp_api&connectmwp_action=get_categories' \
+     https://2morrow.ai/wp-admin/admin-ajax.php
+```
+
+**Expected:** `HTTP 401`.
+
+### Step 4 — Hard-cut probe (proves a pre-v2.0.19 client is rejected)
+
+Send a signature-shaped but nonce-less request:
+
+```bash
+curl -s \
+     -H "X-ConnectMWP-Key: anything" \
+     -H "X-ConnectMWP-Timestamp: $(date +%s)" \
+     -H "X-ConnectMWP-Signature: AA==" \
+     https://2morrow.ai/wp-json/connectmwp/v1/categories | jq .code
+```
+
+**Expected:** `"connectmwp_missing_nonce"` (the distinct code that lets
+support recognize a pinned-old-client at a glance).
+
+### What "pass" looks like
+
+Steps 2, 3, 4 all return 401. The `.code` field clearly distinguishes
+"replay caught" vs "old client". **If any step returns 200 with category
+data, STOP — the replay window is open. Do not declare T137 closed until the
+plugin is investigated.**
+
+---
+
+## 6. Local Node↔PHP interop verification (signing-canonical proof)
+
+Without spinning up a WordPress install, prove the Node signer and the PHP
+verifier construct byte-identical canonical strings (the #1 implementation
+risk per ARCHITECTURE.md §10).
+
+```bash
+bash _internal/verify/interop_test.sh
+```
+
+**Expected output:**
+
+```
+[node] keypair generated
+[node] pub_key_b64=...
+[node] signature=...
+[php]  INTEROP_VERIFIED
+[ac1]  signatures differ across nonces (uniqueness proven)
+[det]  signature is deterministic (replay would be caught by sig-hash cache)
+
+INTEROP VERIFIED — T137 byte-identical across Node/PHP
+```
+
+Exits non-zero on any divergence. Run after every change to the canonical
+shape on EITHER side.
+
+---
+
+## 7. Local error-sanitization verification (T138)
+
+Force three signing-failure modes and assert the user-facing message has no
+filesystem path, while stderr keeps the full operator diagnostic.
+
+```bash
+bash _internal/verify/sanitization_test.sh
+```
+
+**Expected output:**
+
+```
+--- user-facing output ---
+USER:A: Failed to sign request — private key file not found. ...
+USER:B: Failed to sign request — private key file not readable ...
+USER:C: Failed to sign request — private key could not be parsed. ...
+
+--- operator (stderr) output ---
+[connectmwp:diag] ... REST signing failed keyPath=/Users/.../<host>.ed25519 ...
+[connectmwp:diag] ... AJAX signing failed keyPath=/Users/.../<host>.ed25519 ...
+[connectmwp:diag] ... REST signing failed keyPath=/Users/.../<host>.ed25519 ...
+
+=== assertions ===
+  AC1/AC2 PASS — user output has no filesystem path
+  AC3 PASS — user output includes recovery command
+  AC4 PASS — operator diagnostic kept full path + tag
+
+T138 SANITIZATION VERIFIED
+```
+
+Exits non-zero on any leak. Run after any change to throw sites in
+`connectmwp-mcp/index.js`.

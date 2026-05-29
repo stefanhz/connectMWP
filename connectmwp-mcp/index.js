@@ -60,6 +60,41 @@ async function writeConfig(config) {
   await fs.writeFile(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
 }
 
+// ============================================================================
+// ERROR HANDLING — sanitization + diagnostics
+// ============================================================================
+// AUDIT POLICY: any `throw new Error(...)` whose message would include a
+// filesystem path, private-key bytes, or other internal state MUST funnel
+// through sanitizeSigningError() (user-facing) + logDiag() (operator-facing).
+// As of v2.0.19 the only Class-A throw sites are the two signing catches in
+// callWordPress and callWordPressAjax. All other throws were audited and
+// classified safe (Class B: user-supplied values; Class C: constant strings).
+// See _internal/PLAN_T138_2026-05-28_21-26-39.md §4 for the full survey.
+
+function sanitizeSigningError(err) {
+  const code = err?.code;
+  if (code === 'ENOENT') {
+    return 'Failed to sign request — private key file not found. Re-pair the site with: npx -y connectmwp-mcp add-site --enroll "<site_url>,<pairing_code>" (generate the pairing code from WP Admin → Settings → connectMWP → Generate Pairing Code).';
+  }
+  if (code === 'EACCES' || code === 'EPERM') {
+    return 'Failed to sign request — private key file not readable (permission denied). Verify the connectMWP key directory is owned by your user. If unrecoverable, re-pair with: npx -y connectmwp-mcp add-site --enroll "<site_url>,<pairing_code>".';
+  }
+  return 'Failed to sign request — private key could not be parsed. The keystore may be corrupted. Re-pair with: npx -y connectmwp-mcp add-site --enroll "<site_url>,<pairing_code>".';
+}
+
+function logDiag(msg) {
+  // Stderr is structurally separate from MCP stdio's JSON-RPC stdout channel
+  // (verified against @modelcontextprotocol/sdk StdioServerTransport — stdout
+  // is JSON-RPC exclusive; stderr is captured by the client as an out-of-band
+  // log stream, never parsed as protocol traffic). Safe to write here.
+  try {
+    process.stderr.write(`[connectmwp:diag] ${new Date().toISOString()} ${msg}\n`);
+  } catch {
+    // Best-effort; never throws back into the caller's path even if stderr is
+    // unavailable (closed, redirected, EBADF).
+  }
+}
+
 /**
  * Retrieve credentials for the selected target site
  */
@@ -507,6 +542,11 @@ if (command === 'set-default') {
  */
 async function callWordPress(siteUrl, keyId, privateKeyPath, endpoint, method = 'GET', data = null, isUpload = false, fileHash = null) {
   const timestamp = Math.floor(Date.now() / 1000).toString();
+  // Per-request nonce closes the replay window. Even byte-identical requests
+  // (same body, same one-second-window timestamp) produce different signatures
+  // because the nonce participates in the canonical. Plugin-side reconstruction
+  // expects this field at the SAME canonical position (second, after timestamp).
+  const nonce = crypto.randomUUID();
   const [endpointPath, endpointQuery] = endpoint.split('?');
 
   // Build canonical request path for REST
@@ -543,9 +583,12 @@ async function callWordPress(siteUrl, keyId, privateKeyPath, endpoint, method = 
   }
   const bodyHash = isUpload && fileHash ? fileHash : crypto.createHash('sha256').update(rawBody).digest('hex');
 
-  // Rebuild canonical string
+  // Rebuild canonical string. Field order MUST stay aligned with the plugin's
+  // reconstruction in verify_request_signature (connectmwp-agent.php). Drift of
+  // a single byte (whitespace, encoding, field order) breaks every request.
   const canonical = [
     timestamp,
+    nonce,
     method.toUpperCase(),
     requestPath,
     queryHash,
@@ -560,14 +603,16 @@ async function callWordPress(siteUrl, keyId, privateKeyPath, endpoint, method = 
     const sigBuffer = crypto.sign(null, Buffer.from(canonical, 'utf-8'), privateKey);
     signature = sigBuffer.toString('base64');
   } catch (err) {
-    throw new Error(`Failed to sign request using private key at ${privateKeyPath}: ${err.message}`);
+    logDiag(`REST signing failed keyPath=${privateKeyPath} site=${siteUrl} code=${err?.code ?? '<none>'} message=${err?.message ?? '<none>'}`);
+    throw new Error(sanitizeSigningError(err));
   }
 
   const url = `${siteUrl}/wp-json/connectmwp/v1/${endpoint}`;
-  
+
   const headers = {
     'X-ConnectMWP-Key': keyId,
     'X-ConnectMWP-Timestamp': timestamp,
+    'X-ConnectMWP-Nonce': nonce,
     'X-ConnectMWP-Signature': signature
   };
   if (isUpload && fileHash) {
@@ -670,6 +715,8 @@ async function callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, metho
 
   // Calculate signature for AJAX fallback
   const timestamp = Math.floor(Date.now() / 1000).toString();
+  // Same per-request nonce contract as the REST path — see callWordPress.
+  const nonce = crypto.randomUUID();
   const requestPath = `/connectmwp/v1/${action}`;
   const queryHash = crypto.createHash('sha256').update('').digest('hex'); // no query parameters in AJAX URL
 
@@ -681,8 +728,12 @@ async function callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, metho
     bodyHash = crypto.createHash('sha256').update(body).digest('hex');
   }
 
+  // Canonical shape identical to REST path (timestamp, nonce, method, path,
+  // queryHash, bodyHash). Plugin reconstructs the same shape regardless of
+  // REST vs AJAX entry point.
   const canonical = [
     timestamp,
+    nonce,
     'POST', // AJAX is always POST
     requestPath,
     queryHash,
@@ -696,11 +747,13 @@ async function callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, metho
     const sigBuffer = crypto.sign(null, Buffer.from(canonical, 'utf-8'), privateKey);
     signature = sigBuffer.toString('base64');
   } catch (err) {
-    throw new Error(`Failed to sign AJAX request using private key at ${privateKeyPath}: ${err.message}`);
+    logDiag(`AJAX signing failed keyPath=${privateKeyPath} site=${siteUrl} action=${action} code=${err?.code ?? '<none>'} message=${err?.message ?? '<none>'}`);
+    throw new Error(sanitizeSigningError(err));
   }
 
   headers['X-ConnectMWP-Key'] = keyId;
   headers['X-ConnectMWP-Timestamp'] = timestamp;
+  headers['X-ConnectMWP-Nonce'] = nonce;
   headers['X-ConnectMWP-Signature'] = signature;
   if (isUpload && fileHash) {
     headers['X-ConnectMWP-Body-Hash'] = fileHash;
