@@ -1,7 +1,7 @@
 # CLAUDE.md
 
-> **Verified against:** connectMWP **v2.0.23** (all three components, lockstep).
-> **Last reviewed:** 2026-05-28.
+> **Verified against:** connectMWP **v2.0.24** (all three components, lockstep).
+> **Last reviewed:** 2026-05-29.
 > **Re-verify when:** the request-signing canonical string, the `permission_callback` / `rest_pre_dispatch` filter in the plugin, the on-disk schema of `~/.connectmwp.json` or `~/.connectmwp/<host>.ed25519`, the lockstep versioning rule, or the central-server-out-of-daily-path constraint changes.
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.

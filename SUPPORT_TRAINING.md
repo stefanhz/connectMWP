@@ -1,7 +1,7 @@
 # connectMWP Support Training & Troubleshooting Manual
 
-> **Verified against:** connectMWP **v2.0.23** (all three components, lockstep).
-> **Last reviewed:** 2026-05-28.
+> **Verified against:** connectMWP **v2.0.24** (all three components, lockstep).
+> **Last reviewed:** 2026-05-29.
 > **Re-verify when:** the pairing flow, signature headers, capability scoping, REST/AJAX fallback behavior, or any user-visible error message changes.
 >
 > **v2.0.15-v2.0.16 UX changes worth knowing for support:** after a successful pairing, the customer's terminal prints a friendly multi-line summary (`✓ Connected to "<site>" / ✓ Acting as: <user> — <role> / ✓ Can: <capabilities>`) confirming identity + capabilities. The plugin's settings page shows a green "Connection Status" banner with paired-client count, a "What now?" panel for ~1 hour after the most-recent pairing (with test prompt + multi-AI-client note), and highlights the newest row in the Paired Clients table. As of v2.0.16, the page also auto-updates without manual refresh: while a pairing code is visible, JS polls every 3s, and on successful pairing the card flips to "🎉 Pairing successful!" and the page reloads automatically. If a customer says "is it connected?" you can ask them to revisit Settings → connectMWP — the banner answers it.

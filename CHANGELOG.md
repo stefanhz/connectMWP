@@ -4,6 +4,26 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-29 — v2.0.24
+
+### Changed — module hygiene (P5 modularization step (iii))
+
+- **connectmwp-mcp — extracted `lib/validators.js` (T144 step (iii)).** Source: ARCH-REVIEW-REPORT_2026-05-28_19-03.md §1 (CRITICAL — Monolithic God File). The three input-validation functions — `isPrivateIp` (SSRF private/loopback/link-local IP classifier across IPv4, IPv6, and IPv4-mapped-IPv6 forms — T140), `validateImageUrl` (HTTPS-only + DNS-resolve + private-IP rejection that pins the safe IP for the anti-rebinding fetch — T140), and `validateImageMagicNumbers` (magic-number sniff guarding against arbitrary-file-read — I-2 Fix) — now live in one focused, header-documented module. `index.js` imports them and re-exports `isPrivateIp` / `validateImageUrl` / `validateImageMagicNumbers` for the verification harnesses. The now-dead `import dns from 'dns/promises'` was removed from `index.js` (`validateImageUrl` was its sole consumer). The monolith shrinks by ~125 lines.
+
+  **No behavior change — function bodies moved verbatim; lockstep bump.** `bash _internal/verify/p2_test.sh` (the direct regression guard exercising `isPrivateIp` / `validateImageUrl` via the `index.js` import) and all five other harnesses still pass.
+
+### Fixed — verification infra
+
+- **`_internal/verify/sanitization_test.sh`** — fixed a pre-existing false-failure in the AC5 throw-site leak audit. Under bash `set -euo pipefail`, the middle `grep -E` returned exit 1 on a no-match (the correct/no-leak case), which aborted the whole script before AC5/success printed. Wrapped the matching grep so a no-match no longer poisons the pipeline (`| { grep -E "…" || true; } |`). Assertion logic and thresholds unchanged.
+
+### Changed — documentation
+
+- All "Verified against" anchors → v2.0.24.
+
+### Bumped
+
+- All three components → 2.0.24 (lockstep). Plugin re-packaged in both mirrored locations.
+
 ## 2026-05-28 — v2.0.23
 
 ### Changed — module hygiene (P5 modularization step (i) + (ii))
