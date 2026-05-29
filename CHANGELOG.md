@@ -4,6 +4,29 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-28 — v2.0.23
+
+### Changed — module hygiene (P5 modularization step (i) + (ii))
+
+- **connectmwp-mcp — extracted `lib/constants.js` (T147).** Source: ARCH-REVIEW-REPORT_2026-05-28_19-03.md §3 (MEDIUM — Hardcoded Fallbacks & Metadata). `MEDIA_MAX_BYTES`, `MEDIA_MAX_MB`, `ALLOWED_EXTENSIONS`, and `FALLBACK_VERSION` (the legacy `1.2.4` runtime fallback string) now live in a single named module with documentation of why each value is what it is. `index.js` imports the constants instead of declaring them inline. Future P5 steps will route additional configurables through the same module.
+
+- **connectmwp-mcp — extracted `lib/crypto.js` with `buildCanonical()` + `signCanonical()` (T144 step (ii)).** Source: ARCH-REVIEW-REPORT_2026-05-28_19-03.md §1 (CRITICAL — Monolithic God File). Before: `callWordPress` (REST) and `callWordPressAjax` (AJAX) each built the 6-field canonical inline and ran their own PEM-read + `crypto.sign` + try/catch. Two copies of the byte-identical-with-PHP signing primitive, two copies of the catch block routing through `sanitizeSigningError` + `logDiag`. After: `buildCanonical(parts)` joins the array with `'\n'` at a single named seam (documented as the byte-format invariant that must match the plugin); `signCanonical(canonical, privateKeyPath, ctx, deps)` reads the PEM, signs, returns base64, and funnels the error through dependency-injected helpers (the error helpers stay in index.js for v2.0.23; the next P5 step extracts them to `lib/errors.js`). The byte-format invariant now has ONE place to read.
+
+  **Byte-identical with v2.0.22 — proved by harness.** `bash _internal/verify/interop_test.sh` still passes: Node signs, PHP reconstructs the canonical the same way, `sodium_crypto_sign_verify_detached` succeeds. `bash _internal/verify/p5_test.sh` adds explicit unit tests on `buildCanonical` (exact byte output for 3-part and 6-part inputs) and `signCanonical` (round-trip with a fresh keypair; sanitizer-wrapped error on bad path).
+
+### Added — verification
+
+- **`_internal/verify/p5_test.sh`** — 9-assertion proof of the extracted primitives. Run after any change to `lib/constants.js` or `lib/crypto.js`.
+- **`_internal/verify/p2_test.sh` updated** — AC6 now expects 0 cap literals in `index.js` and 1 in `lib/constants.js` (the lift target). All other ACs unchanged.
+
+### Changed — documentation
+
+- All "Verified against" anchors → v2.0.23.
+
+### Bumped
+
+- All three components → 2.0.23 (lockstep). Plugin re-packaged in both mirrored locations.
+
 ## 2026-05-28 — v2.0.22
 
 ### Changed — BREAKING (response shape)

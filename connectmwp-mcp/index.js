@@ -20,6 +20,13 @@ import {
   projectListTaxonomy,
   projectCreateTaxonomy,
 } from './lib/projections.js';
+import {
+  MEDIA_MAX_BYTES,
+  MEDIA_MAX_MB,
+  ALLOWED_EXTENSIONS,
+  FALLBACK_VERSION,
+} from './lib/constants.js';
+import { buildCanonical, signCanonical } from './lib/crypto.js';
 
 // Configuration file path
 const CONFIG_PATH = path.join(os.homedir(), '.connectmwp.json');
@@ -143,17 +150,10 @@ async function tightenPathPerms(targetPath, expectedMode) {
 }
 
 // ============================================================================
-// MEDIA HANDLING — constants + streaming + DNS-rebinding-resistant fetch
+// MEDIA HANDLING — streaming + DNS-rebinding-resistant fetch
 // ============================================================================
-// MEDIA_MAX_BYTES caps both remote downloads (chunked streams included) and
-// local-file uploads. Lifted from inline `10 * 1024 * 1024` literals in v2.0.20
-// (T139). Will move to lib/constants.js during P5 / T147 modularization.
-const MEDIA_MAX_BYTES = 10 * 1024 * 1024;
-const MEDIA_MAX_MB = MEDIA_MAX_BYTES / 1024 / 1024;
-
-// Allowed extensions for local-file uploads. Lifted from inline literal in
-// v2.0.20 (T139). Same P5 destination.
-const ALLOWED_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.tiff'];
+// MEDIA_MAX_BYTES + MEDIA_MAX_MB + ALLOWED_EXTENSIONS now live in
+// lib/constants.js (extracted in v2.0.23). Imported at top of file.
 
 /**
  * Drain any iterable byte source (Node Readable OR Web ReadableStream) into a
@@ -775,29 +775,25 @@ async function callWordPress(siteUrl, keyId, privateKeyPath, endpoint, method = 
   }
   const bodyHash = isUpload && fileHash ? fileHash : crypto.createHash('sha256').update(rawBody).digest('hex');
 
-  // Rebuild canonical string. Field order MUST stay aligned with the plugin's
-  // reconstruction in verify_request_signature (connectmwp-agent.php). Drift of
-  // a single byte (whitespace, encoding, field order) breaks every request.
-  const canonical = [
+  // Build + sign the canonical via the extracted lib/crypto primitives. Field
+  // order MUST stay aligned with the plugin's reconstruction in
+  // verify_request_signature (connectmwp-agent.php § 4.3). Drift of a single
+  // byte breaks every request — see _internal/verify/interop_test.sh.
+  const canonical = buildCanonical([
     timestamp,
     nonce,
     method.toUpperCase(),
     requestPath,
     queryHash,
-    bodyHash
-  ].join('\n');
+    bodyHash,
+  ]);
 
-  // Sign canonical string
-  let signature;
-  try {
-    const pem = await fs.readFile(privateKeyPath, 'utf-8');
-    const privateKey = crypto.createPrivateKey(pem);
-    const sigBuffer = crypto.sign(null, Buffer.from(canonical, 'utf-8'), privateKey);
-    signature = sigBuffer.toString('base64');
-  } catch (err) {
-    logDiag(`REST signing failed keyPath=${privateKeyPath} site=${siteUrl} code=${err?.code ?? '<none>'} message=${err?.message ?? '<none>'}`);
-    throw new Error(sanitizeSigningError(err));
-  }
+  const signature = await signCanonical(
+    canonical,
+    privateKeyPath,
+    { site: siteUrl, scope: 'REST' },
+    { sanitizeSigningError, logDiag },
+  );
 
   const url = `${siteUrl}/wp-json/connectmwp/v1/${endpoint}`;
 
@@ -923,25 +919,21 @@ async function callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, metho
   // Canonical shape identical to REST path (timestamp, nonce, method, path,
   // queryHash, bodyHash). Plugin reconstructs the same shape regardless of
   // REST vs AJAX entry point.
-  const canonical = [
+  const canonical = buildCanonical([
     timestamp,
     nonce,
     'POST', // AJAX is always POST
     requestPath,
     queryHash,
-    bodyHash
-  ].join('\n');
+    bodyHash,
+  ]);
 
-  let signature;
-  try {
-    const pem = await fs.readFile(privateKeyPath, 'utf-8');
-    const privateKey = crypto.createPrivateKey(pem);
-    const sigBuffer = crypto.sign(null, Buffer.from(canonical, 'utf-8'), privateKey);
-    signature = sigBuffer.toString('base64');
-  } catch (err) {
-    logDiag(`AJAX signing failed keyPath=${privateKeyPath} site=${siteUrl} action=${action} code=${err?.code ?? '<none>'} message=${err?.message ?? '<none>'}`);
-    throw new Error(sanitizeSigningError(err));
-  }
+  const signature = await signCanonical(
+    canonical,
+    privateKeyPath,
+    { site: siteUrl, scope: 'AJAX', action },
+    { sanitizeSigningError, logDiag },
+  );
 
   headers['X-ConnectMWP-Key'] = keyId;
   headers['X-ConnectMWP-Timestamp'] = timestamp;
@@ -964,7 +956,7 @@ async function callWordPressAjax(siteUrl, keyId, privateKeyPath, endpoint, metho
 // ============================================================================
 
 // Load package version dynamically (Architectural Review Fix)
-let version = '1.2.4';
+let version = FALLBACK_VERSION;
 try {
   const pkgPath = new URL('./package.json', import.meta.url);
   const pkgContent = await fs.readFile(pkgPath, 'utf-8');
