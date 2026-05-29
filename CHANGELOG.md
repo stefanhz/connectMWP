@@ -4,6 +4,25 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-28 — v2.0.21
+
+### Security — HIGH
+
+- **connectmwp-mcp — set 0600 on `~/.connectmwp.json` and 0700 on `~/.connectmwp/` (T149 + T150).** Source: SECURITY-REVIEW-REPORT_2026-05-28_18-58.md §3 (HIGH — Fix This Week). Previously the config file (containing `key_id`s, labels, and private-key paths) was created with the default umask perms (typically 0644) and the keystore directory at 0755 — both world-readable on a multi-user system or shared CI runner. Listing the directory leaked every paired host (one `<hostname>.ed25519` file per host). Two changes: `writeConfig` now passes `{ mode: 0o600 }` AND post-writes `fs.chmod(CONFIG_PATH, 0o600)` (covers the overwrite-existing case where mode is ignored). The add-site mkdir uses `{ recursive: true, mode: 0o700 }` AND chmod'd post-mkdir. A new `tightenPathPerms(targetPath, expectedMode)` helper does both the post-create chmod AND silently upgrades existing pre-v2.0.21 installs on the next `readConfig()` — emits one `[connectmwp:diag]` stderr line per tightening event (idempotent on already-tight installs, ENOENT swallowed silently). Windows is a no-op (NTFS doesn't honor POSIX mode bits; ACL-based perms are out of scope per Q3.1 Option A). Verified end-to-end: `bash _internal/verify/p3_test.sh` confirms 0644→0600 + 0755→0700 transitions, second-call idempotency, ENOENT swallowed.
+
+### Added — module hygiene
+
+- **`tightenPathPerms` exported** from `connectmwp-mcp/index.js` for verification harnesses + future test code.
+
+### Changed — documentation
+
+- `_internal/ARCHITECTURE.md` §8 security checklist — add line item for the perms tightening.
+- All "Verified against" anchors → v2.0.21.
+
+### Bumped
+
+- All three components → 2.0.21 (lockstep). Plugin re-packaged in both mirrored locations (only the Version header changed; verifies sha-identical between root copy and `connectmwp-server/public/connectmwp-agent.zip`).
+
 ## 2026-05-28 — v2.0.20
 
 ### Security — CRITICAL

@@ -46,11 +46,19 @@ function normalizeSiteUrl(url) {
 }
 
 /**
- * Load settings from the local configuration file
+ * Load settings from the local configuration file. Also opportunistically
+ * tightens perms on both the config file (0600) and the private-key
+ * directory (0700) to upgrade pre-v2.0.21 installs in place — silent on
+ * already-tight installs, single stderr log line on each tightening.
  */
 async function readConfig() {
   try {
     const data = await fs.readFile(CONFIG_PATH, 'utf-8');
+    // Best-effort tightening on existing installs. Failure must not break
+    // the read path — tightenPathPerms already swallows ENOENT and logs
+    // other errors via [connectmwp:diag] without throwing.
+    await tightenPathPerms(CONFIG_PATH, 0o600);
+    await tightenPathPerms(path.join(os.homedir(), '.connectmwp'), 0o700);
     return JSON.parse(data);
   } catch (error) {
     return { defaultSite: '', sites: {} };
@@ -58,10 +66,13 @@ async function readConfig() {
 }
 
 /**
- * Save settings to the local configuration file
+ * Save settings to the local configuration file. mode option only applies on
+ * CREATE; the post-write chmod covers the overwrite-existing case so perms
+ * are correct after every write regardless of prior state.
  */
 async function writeConfig(config) {
-  await fs.writeFile(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+  await fs.writeFile(CONFIG_PATH, JSON.stringify(config, null, 2), { encoding: 'utf-8', mode: 0o600 });
+  await tightenPathPerms(CONFIG_PATH, 0o600);
 }
 
 // ============================================================================
@@ -96,6 +107,29 @@ function logDiag(msg) {
   } catch {
     // Best-effort; never throws back into the caller's path even if stderr is
     // unavailable (closed, redirected, EBADF).
+  }
+}
+
+/**
+ * Tighten POSIX perms on a file or directory to `expectedMode`, idempotently.
+ * Silent no-op on Windows (NTFS doesn't honor POSIX mode bits; ACL-based
+ * permissions are out of scope). Used to upgrade pre-v2.0.21 installs from
+ * 0644/0755 to 0600/0700 on the next tool invocation.
+ */
+async function tightenPathPerms(targetPath, expectedMode) {
+  if (process.platform === 'win32') return;
+  try {
+    const stat = await fs.stat(targetPath);
+    const currentMode = stat.mode & 0o777;
+    if (currentMode === expectedMode) return; // already tight; silent.
+    await fs.chmod(targetPath, expectedMode);
+    logDiag(`tightened perms on ${targetPath} from ${currentMode.toString(8)} to ${expectedMode.toString(8)}`);
+  } catch (err) {
+    // ENOENT = file doesn't exist yet (fresh install) — expected; silent.
+    // EPERM / EACCES = user owns something we can't touch — log + continue.
+    if (err && err.code !== 'ENOENT') {
+      logDiag(`could not tighten perms on ${targetPath}: code=${err?.code ?? '<none>'} message=${err?.message ?? '<none>'}`);
+    }
   }
 }
 
@@ -495,8 +529,11 @@ if (command === 'add-site') {
     const tmpKeyPath = `${privateKeyPath}.tmp-${process.pid}`;
 
     try {
-      await fs.mkdir(privateKeyDir, { recursive: true });
-      await fs.writeFile(tmpKeyPath, privateKeyPem, 'utf-8');
+      // mode 0o700 on create; tightenPathPerms covers the existing-directory
+      // case (mkdir's mode option is ignored when the directory exists).
+      await fs.mkdir(privateKeyDir, { recursive: true, mode: 0o700 });
+      await tightenPathPerms(privateKeyDir, 0o700);
+      await fs.writeFile(tmpKeyPath, privateKeyPem, { encoding: 'utf-8', mode: 0o600 });
       await fs.chmod(tmpKeyPath, 0o600);
     } catch (err) {
       console.error(`[ERROR] Failed to save private key: ${err.message}`);
@@ -1425,6 +1462,7 @@ export {
   sanitizeSigningError,
   pinnedHttpsGet,
   validateImageUrl,
+  tightenPathPerms,
   MEDIA_MAX_BYTES,
   ALLOWED_EXTENSIONS,
 };
