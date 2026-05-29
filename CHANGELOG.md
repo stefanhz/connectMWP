@@ -4,6 +4,30 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-28 — v2.0.20
+
+### Security — CRITICAL
+
+- **connectmwp-mcp — streamed media downloads + uploads with a hard 10MB cap enforced mid-stream (T139).** Source: SECURITY-REVIEW-REPORT_2026-05-28_18-58.md §2 (Incident-Class) + ARCH-REVIEW-REPORT_2026-05-28_19-03.md §2 (HIGH). The previous code path called `imgRes.arrayBuffer()` on the remote fetch response and `fs.readFile(file_path)` on local files, checking size only AFTER the entire payload was in memory — bypassed by chunked-encoded hostile streams with no `Content-Length` header (Node OOM / GC thrash within seconds of a 100MB+ stream). The new path uses a single `streamToCappedBuffer(stream, maxBytes)` helper that drains both Node Readable streams (`fs.createReadStream`) and Web ReadableStreams iteratively, throwing the moment cumulative bytes exceed `MEDIA_MAX_BYTES` and destroying the source so the socket/fd is released immediately rather than waiting for GC. Local files also get an `fs.stat` fast-path that rejects obvious oversized files before reading a single byte. Verified end-to-end: a 100MB chunked-encoded `Content-Length`-omitting hostile server is aborted at ~10MB transferred with RSS growth bounded under ~35MB; a 20MB local file is rejected with zero file reads. `MEDIA_MAX_BYTES` and `ALLOWED_EXTENSIONS` lifted to single top-of-file constants (one place to change; future P5 move to `lib/constants.js`).
+
+- **connectmwp-mcp — pin the validated IP through the HTTP connect step to defeat DNS-rebinding SSRF (T140).** Source: SECURITY-REVIEW-REPORT_2026-05-28_18-58.md §2 (Incident-Class; OWASP API 2023 #7). Previously `validateImageUrl` resolved the hostname, checked the IP against the private-range blocklist, and trusted the URL string going forward — the subsequent `fetch(image_url)` did its OWN DNS resolution. A rebinding attacker controlled a hostname whose first lookup returned a safe public IP and whose second returned `127.0.0.1`, so validation passed and the fetch landed on the user's loopback. The new `pinnedHttpsGet(urlObj, validatedIp, family)` helper uses Node's built-in `https.request` with a `lookup` callback that returns the validation-time IP regardless of what DNS would say at connect time. TLS works naturally because `servername` is set to the URL's hostname (SNI uses the hostname, not the IP). `validateImageUrl` now returns `{ url, validatedIp, family }` instead of side-effecting only. The `isPrivateIp` blocklist was also extended to recognize IPv4-mapped IPv6 forms (`::ffff:127.0.0.1` and similar — a common attacker bypass), the `0.0.0.0/8` block, IPv6 link-local (`fe80::/10`), and IPv6 unique-local (`fc00::/7`). Verified by 22-case unit test of `isPrivateIp` plus a live in-process server that proves the lookup-callback pin lands on the pinned IP, not the system-resolved one.
+
+### Added — module hygiene
+
+- **`isMainModule()` guard around `run()`** so importing `connectmwp-mcp/index.js` from a test harness (or other module) does NOT auto-spawn the MCP stdio server. The bin entrypoint still boots normally — both the direct-node and symlinked-bin invocation paths are handled via `realpathSync`-resolved comparison. Enables clean unit testing of the exported helpers from verification scripts without spawning a stdio server.
+- **Exported internal helpers for verification harnesses:** `isPrivateIp`, `streamToCappedBuffer`, `sanitizeSigningError`, `pinnedHttpsGet`, `validateImageUrl`, `MEDIA_MAX_BYTES`, `ALLOWED_EXTENSIONS`. Not part of the public MCP tool surface; subject to P5 modularization.
+- **`_internal/verify/p2_test.sh`** — runnable proof of T139 + T140 closure (AC1 streaming abort, AC2 fs.stat fast-path, AC3 IP pinning lands on pinned IP, AC4 22-case IPv6/IPv4-private-range, AC6 constants externalized). Exits non-zero on any regression.
+
+### Changed — documentation
+
+- **`_internal/ARCHITECTURE.md` §8 security checklist** — two more boxes flipped to `[x]` (DNS rebinding closed via IP pinning; media downloads / uploads streamed with hard cap).
+- All "Verified against" anchors → v2.0.20 (`CLAUDE.md` project, `OPERATIONS.md`, `SUPPORT_TRAINING.md`, `_internal/ARCHITECTURE.md`).
+- `README.md` version line → v2.0.20.
+
+### Bumped
+
+- All three components → 2.0.20 (lockstep). Plugin re-packaged in both mirrored locations (only the Version header changed; verifies sha-identical between root copy and `connectmwp-server/public/connectmwp-agent.zip`).
+
 ## 2026-05-28 — v2.0.19
 
 ### Security — CRITICAL

@@ -3,10 +3,14 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import fs from 'fs/promises';
+import { createReadStream, realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import dns from 'dns/promises';
 import crypto from 'crypto';
+import http from 'http';
+import https from 'https';
+import { fileURLToPath } from 'url';
 
 // Configuration file path
 const CONFIG_PATH = path.join(os.homedir(), '.connectmwp.json');
@@ -93,6 +97,118 @@ function logDiag(msg) {
     // Best-effort; never throws back into the caller's path even if stderr is
     // unavailable (closed, redirected, EBADF).
   }
+}
+
+// ============================================================================
+// MEDIA HANDLING — constants + streaming + DNS-rebinding-resistant fetch
+// ============================================================================
+// MEDIA_MAX_BYTES caps both remote downloads (chunked streams included) and
+// local-file uploads. Lifted from inline `10 * 1024 * 1024` literals in v2.0.20
+// (T139). Will move to lib/constants.js during P5 / T147 modularization.
+const MEDIA_MAX_BYTES = 10 * 1024 * 1024;
+const MEDIA_MAX_MB = MEDIA_MAX_BYTES / 1024 / 1024;
+
+// Allowed extensions for local-file uploads. Lifted from inline literal in
+// v2.0.20 (T139). Same P5 destination.
+const ALLOWED_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.tiff'];
+
+/**
+ * Drain any iterable byte source (Node Readable OR Web ReadableStream) into a
+ * Buffer, aborting the source the moment cumulative bytes exceed maxBytes.
+ *
+ * Closes the underlying resource (socket, fd) immediately on overflow rather
+ * than waiting for GC — critical for the hostile-stream defense (T139).
+ */
+async function streamToCappedBuffer(stream, maxBytes) {
+  const chunks = [];
+  let total = 0;
+  try {
+    for await (const chunk of stream) {
+      total += chunk.length;
+      if (total > maxBytes) {
+        // Tear down source eagerly so the underlying socket/fd is released
+        // (don't wait for GC).
+        if (typeof stream.destroy === 'function') {
+          stream.destroy();
+        } else if (typeof stream.cancel === 'function') {
+          try { await stream.cancel(); } catch { /* best-effort */ }
+        }
+        throw new Error(`Image size exceeds the maximum limit of ${MEDIA_MAX_MB}MB.`);
+      }
+      chunks.push(chunk);
+    }
+  } catch (err) {
+    // Ensure cleanup on any iteration error (network reset, FS errors, etc.).
+    if (typeof stream.destroy === 'function') {
+      try { stream.destroy(); } catch { /* best-effort */ }
+    }
+    throw err;
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Open an HTTP(S) request whose TCP connect target is pinned to the
+ * pre-validated IP. SNI uses the URL's hostname (unchanged), so TLS cert
+ * validation works naturally. Closes the DNS-rebinding window between
+ * validation and connect that v2.0.19's bare `fetch(image_url)` left open.
+ *
+ * Returns a Node Readable IncomingMessage stream on success. Rejects on
+ * redirect (status 3xx) — matches the v2.0.19 SSRF guard's redirect:'manual'
+ * behavior. Rejects on 4xx/5xx with the generic failure message.
+ */
+async function pinnedHttpsGet(urlObj, validatedIp, family) {
+  return new Promise((resolve, reject) => {
+    const mod = urlObj.protocol === 'https:' ? https : http;
+    const port = urlObj.port
+      ? parseInt(urlObj.port, 10)
+      : (urlObj.protocol === 'https:' ? 443 : 80);
+
+    const req = mod.request({
+      hostname: urlObj.hostname,
+      port,
+      path: (urlObj.pathname || '/') + (urlObj.search || ''),
+      method: 'GET',
+      // Pin DNS: lookup is called instead of the system resolver. The
+      // pre-validated IP is the connect target regardless of what DNS would
+      // say at this moment (defeats rebind between validation and connect).
+      // Honors both dns.lookup shapes — single-address callback when opts.all
+      // is falsy, array-callback when opts.all is true. Node's http.request
+      // uses the single form, but some Node versions / agents request `all`.
+      lookup: (_hostname, opts, cb) => {
+        if (opts && opts.all) {
+          cb(null, [{ address: validatedIp, family }]);
+        } else {
+          cb(null, validatedIp, family);
+        }
+      },
+      // SNI: ensures TLS handshake presents the original hostname so the
+      // server's certificate matches and cert validation succeeds.
+      servername: urlObj.hostname,
+      headers: {
+        'User-Agent': 'connectmwp-mcp',
+        'Accept': '*/*',
+      },
+    }, (res) => {
+      const status = res.statusCode || 0;
+      if (status >= 300 && status < 400) {
+        res.resume();
+        reject(new Error(`SSRF Block: Redirects are not allowed during image download (${status}).`));
+        return;
+      }
+      if (status >= 400) {
+        res.resume();
+        reject(new Error(`Failed to download image from URL: ${urlObj.toString()}`));
+        return;
+      }
+      resolve(res);
+    });
+    req.on('error', reject);
+    req.setTimeout(30_000, () => {
+      req.destroy(new Error('Image download timed out after 30s.'));
+    });
+    req.end();
+  });
 }
 
 /**
@@ -201,10 +317,20 @@ function printPairingSummary(identity, ctx) {
 }
 
 /**
- * Helper to check if an IP address is in a private, loopback, or link-local range (I-2)
+ * Helper to check if an IP address is in a private, loopback, or link-local
+ * range. Handles both IPv4, IPv6, AND IPv4-mapped IPv6 forms (e.g.
+ * `::ffff:127.0.0.1`) so an attacker can't smuggle a loopback target by
+ * dual-stack representation (T140 hardening).
  */
 function isPrivateIp(ip) {
-  // IPv4 Checks
+  // IPv4-mapped IPv6 form (`::ffff:1.2.3.4`) — strip prefix, recurse on the
+  // embedded IPv4 address. Common attacker bypass; rejected explicitly.
+  const mappedMatch = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  if (mappedMatch) {
+    return isPrivateIp(mappedMatch[1]);
+  }
+
+  // IPv4 checks
   if (/^(127\.|10\.|169\.254\.|192\.168\.)/.test(ip)) {
     return true;
   }
@@ -212,15 +338,30 @@ function isPrivateIp(ip) {
   if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip)) {
     return true;
   }
-  // IPv6 Checks
-  if (ip === '::1' || ip.startsWith('fe80:') || ip.startsWith('fc00:') || ip.startsWith('fd00:')) {
+  // 0.0.0.0/8 — "this host" address; not usable as a remote target but
+  // sometimes resolves on misconfigured services. Block defensively.
+  if (/^0\./.test(ip)) {
     return true;
   }
+
+  // IPv6 checks
+  // ::1 = loopback
+  // ::  = unspecified
+  // fe80::/10 = link-local
+  // fc00::/7 = unique-local (covers fc and fd prefixes)
+  if (ip === '::1' || ip === '::' || ip.toLowerCase().startsWith('fe80:')
+      || ip.toLowerCase().startsWith('fc') || ip.toLowerCase().startsWith('fd')) {
+    return true;
+  }
+
   return false;
 }
 
 /**
- * Validate image URL to prevent SSRF (I-2)
+ * Validate image URL to prevent SSRF. Returns the parsed URL, the pre-resolved
+ * safe IP, and the IP family — used by `pinnedHttpsGet` to skip DNS at connect
+ * time so a rebinding attacker can't redirect the fetch between validation
+ * and connect (T140 hardening).
  */
 async function validateImageUrl(imageUrl) {
   const url = new URL(imageUrl);
@@ -229,27 +370,32 @@ async function validateImageUrl(imageUrl) {
   }
 
   const hostname = url.hostname;
-  let ips = [];
+  let resolved = [];
 
+  // Prefer dns.lookup (returns {address, family}) so we get the family
+  // we'll need to pass to https.request's lookup callback. dns.resolve
+  // doesn't return family.
   try {
-    // Attempt resolving hostname to IP addresses
-    const addresses = await dns.resolve(hostname);
-    ips = addresses;
-  } catch (error) {
-    try {
-      // Fallback for direct IP hostnames or DNS lookup
-      const lookupResult = await dns.lookup(hostname);
-      ips = [lookupResult.address];
-    } catch {
-      throw new Error(`Could not resolve hostname: ${hostname}`);
+    const result = await dns.lookup(hostname, { all: true });
+    resolved = result.map(r => ({ address: r.address, family: r.family }));
+  } catch {
+    throw new Error(`Could not resolve hostname: ${hostname}`);
+  }
+
+  if (resolved.length === 0) {
+    throw new Error(`Could not resolve hostname: ${hostname}`);
+  }
+
+  for (const r of resolved) {
+    if (isPrivateIp(r.address)) {
+      throw new Error(`Access to private IP range is blocked: ${r.address}`);
     }
   }
 
-  for (const ip of ips) {
-    if (isPrivateIp(ip)) {
-      throw new Error(`Access to private IP range is blocked: ${ip}`);
-    }
-  }
+  // Pin the first safe IP for the subsequent fetch. Family must match the IP
+  // (4 for IPv4, 6 for IPv6) — passed unchanged into `lookup` callback.
+  const first = resolved[0];
+  return { url, validatedIp: first.address, family: first.family };
 }
 
 /**
@@ -1133,54 +1279,54 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         if (image_url) {
-          // SSRF Validation (I-2 Fix)
-          await validateImageUrl(image_url);
+          // SSRF validation now ALSO returns the safe IP, which we pin through
+          // the subsequent fetch so a DNS-rebinding attacker can't redirect
+          // the connect target between validation and connect (T140).
+          const { url, validatedIp, family } = await validateImageUrl(image_url);
 
-          // Fetch image from URL, manually handling redirects to prevent SSRF bypass
-          const imgRes = await fetch(image_url, { redirect: 'manual' });
-          if (imgRes.status >= 300 && imgRes.status < 400) {
-            throw new Error(`SSRF Block: Redirects are not allowed during image download (${imgRes.status}).`);
-          }
-          if (!imgRes.ok) throw new Error(`Failed to download image from URL: ${image_url}`);
+          // Native https.request with the pinned IP as the connect target.
+          // SNI uses url.hostname unchanged so TLS cert validation succeeds.
+          // Redirects are NOT followed (matches the v2.0.19 SSRF guard).
+          const imgRes = await pinnedHttpsGet(url, validatedIp, family);
 
-          // Size limit check on Content-Length header if present
-          const contentLength = imgRes.headers.get('content-length');
-          if (contentLength && parseInt(contentLength, 10) > 10 * 1024 * 1024) {
-            throw new Error('Image size exceeds the maximum limit of 10MB.');
-          }
-
-          fileBuffer = Buffer.from(await imgRes.arrayBuffer());
-          
-          // Verify final buffer size
-          if (fileBuffer.byteLength > 10 * 1024 * 1024) {
-            throw new Error('Image size exceeds the maximum limit of 10MB.');
+          // Content-Length fast path: catches honest oversized payloads
+          // before we read a byte. Cheap; runs BEFORE the streaming cap.
+          const contentLength = imgRes.headers['content-length'];
+          if (contentLength && parseInt(contentLength, 10) > MEDIA_MAX_BYTES) {
+            imgRes.destroy();
+            throw new Error(`Image size exceeds the maximum limit of ${MEDIA_MAX_MB}MB.`);
           }
 
-          // Verify magic numbers
+          // Streaming cap: defense against chunked-encoded or
+          // header-omitting hostile streams. Aborts the connection mid-stream
+          // the moment cumulative bytes exceed MEDIA_MAX_BYTES (T139).
+          fileBuffer = await streamToCappedBuffer(imgRes, MEDIA_MAX_BYTES);
+
           validateImageMagicNumbers(fileBuffer);
 
           if (!filename) {
-            const urlPath = new URL(image_url).pathname;
+            const urlPath = url.pathname;
             const parsedName = path.basename(urlPath);
             if (parsedName && parsedName.includes('.')) nameToUse = parsedName;
           }
         } else {
-          // File extension allowlist validation (I-2 Fix)
-          const ALLOWED_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.tiff'];
           const ext = path.extname(file_path).toLowerCase();
           if (!ALLOWED_EXTENSIONS.includes(ext)) {
             throw new Error(`Invalid file extension: ${ext}. Only image files (${ALLOWED_EXTENSIONS.join(', ')}) are allowed.`);
           }
 
-          // Read local file
-          fileBuffer = await fs.readFile(file_path);
-          
-          // Verify buffer size
-          if (fileBuffer.byteLength > 10 * 1024 * 1024) {
-            throw new Error('File size exceeds the maximum limit of 10MB.');
+          // fs.stat fast-path: rejects obvious oversized files without
+          // reading a single byte. Cheap; runs BEFORE the streaming cap.
+          const stat = await fs.stat(file_path);
+          if (stat.size > MEDIA_MAX_BYTES) {
+            throw new Error(`File size exceeds the maximum limit of ${MEDIA_MAX_MB}MB.`);
           }
 
-          // Verify magic numbers
+          // Streaming read with cap closes the post-open TOCTOU window
+          // (negligible on a single-user dev machine, but the streaming
+          // primitive is shared with the remote path so it's free) (T139).
+          fileBuffer = await streamToCappedBuffer(createReadStream(file_path), MEDIA_MAX_BYTES);
+
           validateImageMagicNumbers(fileBuffer);
 
           if (!filename) nameToUse = path.basename(file_path);
@@ -1270,7 +1416,38 @@ async function run() {
   console.error('connectMWP MCP Server running on stdio');
 }
 
-run().catch((error) => {
-  console.error('Fatal error running server:', error);
-  process.exit(1);
-});
+// Internal helpers exported for unit tests / verification harnesses. Not part
+// of the public MCP tool surface — importers should never depend on these
+// (they are subject to P5 modularization into lib/*.js).
+export {
+  isPrivateIp,
+  streamToCappedBuffer,
+  sanitizeSigningError,
+  pinnedHttpsGet,
+  validateImageUrl,
+  MEDIA_MAX_BYTES,
+  ALLOWED_EXTENSIONS,
+};
+
+// Boot the MCP server only when invoked directly (e.g. `npx connectmwp-mcp`,
+// or via the npm-installed `connectmwp-mcp` bin symlink). When imported (e.g.
+// from a test harness), skip boot so the importer can exercise the exported
+// helpers without spawning a stdio server. realpath handles the symlink
+// case — npm's bin shim points at index.js via a symlink whose path differs
+// from import.meta.url until both are resolved.
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  try {
+    const argvReal = realpathSync(process.argv[1]);
+    const fileReal = realpathSync(fileURLToPath(import.meta.url));
+    return argvReal === fileReal;
+  } catch {
+    return false;
+  }
+}
+if (isMainModule()) {
+  run().catch((error) => {
+    console.error('Fatal error running server:', error);
+    process.exit(1);
+  });
+}
