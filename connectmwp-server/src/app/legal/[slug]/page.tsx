@@ -48,12 +48,12 @@ export default async function LegalPage({ params }: PageProps) {
     const rawContent = await fs.readFile(filePath, 'utf-8');
     parsedHtml = parseMarkdown(rawContent);
   } catch {
-    parsedHtml = `<h1 class="md-h1">Page Not Found</h1><p class="md-p">The requested legal page could not be located.</p>`;
+    parsedHtml = `<h1>Page Not Found</h1><p>The requested legal page could not be located.</p>`;
   }
 
   return (
-    <div className="min-h-screen w-full flex flex-col justify-center items-center bg-[radial-gradient(circle_at_top,_#1e1e2f_0%,_#0d0d15_100%)] text-white font-sans px-5 py-20 box-border">
-      <div className="max-w-[700px] w-full bg-white/3 backdrop-blur-[16px] border border-white/8 rounded-2xl p-10 shadow-[0_20px_50px_rgba(0,0,0,0.3)] text-left">
+    <div className="min-h-screen w-full flex flex-col justify-center items-center bg-[image:var(--brand-radial)] text-white font-sans px-5 py-20 box-border">
+      <div className="max-w-[700px] w-full bg-white/3 backdrop-blur-[16px] border border-white/8 rounded-2xl p-10 shadow-card text-left">
         {/* Header navigation */}
         <div className="flex justify-between items-center mb-6 pb-4 border-b border-white/8">
           <Link href="/" className="text-zinc-400 no-underline text-sm hover:text-white transition-colors">
@@ -66,7 +66,7 @@ export default async function LegalPage({ params }: PageProps) {
 
         {/* Dynamic HTML Content */}
         <div
-          className="text-[14px] leading-relaxed text-zinc-300"
+          className="prose prose-invert max-w-none text-zinc-300"
           dangerouslySetInnerHTML={{ __html: parsedHtml }}
         />
       </div>

@@ -1,8 +1,11 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import pkg from '../../package.json';
+import { PAIRING_COMMAND } from '@/lib/constants';
+
+const COPY_FEEDBACK_MS = 2000;
 
 interface ClientPageProps {
   faqs: {
@@ -15,20 +18,31 @@ export default function ClientPage({ faqs }: ClientPageProps) {
   const [openFaq, setOpenFaq] = useState<number | null>(null);
   const [copiedCmd, setCopiedCmd] = useState(false);
 
-  const pairingCmd = 'npx -y connectmwp-mcp@latest add-site --enroll "<your_site_url>,<pairing_code>"';
+  const pairingCmd = PAIRING_COMMAND;
+
+  // Track the "Copied!" reset timer so rapid re-clicks don't stack timers and
+  // so a timer never fires setState after the component unmounts.
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleCopyCmd = () => {
     navigator.clipboard.writeText(pairingCmd);
     setCopiedCmd(true);
-    setTimeout(() => setCopiedCmd(false), 2000);
+    if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+    copyTimeoutRef.current = setTimeout(() => setCopiedCmd(false), COPY_FEEDBACK_MS);
   };
 
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+    };
+  }, []);
+
   return (
-    <div className="min-h-screen w-full flex flex-col justify-start items-center bg-[radial-gradient(circle_at_top,_#1e1e2f_0%,_#0d0d15_100%)] text-white font-sans px-5 py-20 box-border">
+    <div className="min-h-screen w-full flex flex-col justify-start items-center bg-[image:var(--brand-radial)] text-white font-sans px-5 py-20 box-border">
       {/* Main Container Card */}
-      <div className="max-w-[550px] w-full bg-white/3 backdrop-blur-[16px] border border-white/8 rounded-2xl p-10 shadow-[0_20px_50px_rgba(0,0,0,0.3)] text-left">
+      <div className="max-w-[550px] w-full bg-white/3 backdrop-blur-[16px] border border-white/8 rounded-2xl p-10 shadow-card text-left">
         <div className="flex justify-center mb-2">
-          <div className="inline-flex p-3 bg-gradient-to-br from-orange-500 to-amber-500 rounded-xl mb-0 font-bold text-2xl shadow-[0_8px_20px_rgba(249,115,22,0.3)] text-white">
+          <div className="inline-flex p-3 bg-gradient-to-br from-orange-500 to-amber-500 rounded-xl mb-0 font-bold text-2xl shadow-brand-glow text-white">
             MWP
           </div>
         </div>
@@ -79,7 +93,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
       </div>
 
       {/* FAQ Accordion Card */}
-      <div className="max-w-[550px] w-full mt-10 bg-white/2 border border-white/6 rounded-2xl p-9 box-border shadow-[0_10px_30px_rgba(0,0,0,0.15)]">
+      <div className="max-w-[550px] w-full mt-10 bg-white/2 border border-white/6 rounded-2xl p-9 box-border shadow-card-soft">
         <h2 className="text-lg font-bold text-white mt-0 mb-5 border-b border-white/8 pb-3">
           Frequently Asked Questions
         </h2>
@@ -96,13 +110,15 @@ export default function ClientPage({ faqs }: ClientPageProps) {
                 ▼
               </span>
             </button>
-            {openFaq === index && (
-              <div
-                id={`faq-content-${index}`}
-                className="text-[13.5px] leading-relaxed text-zinc-400 mt-2 transition-all text-left"
-                dangerouslySetInnerHTML={{ __html: item.a }}
-              />
-            )}
+            {/* Body is always rendered so `aria-controls` always resolves and the
+                injected HTML isn't re-parsed on every toggle; the `hidden` utility
+                (display:none) removes the collapsed body from layout AND the a11y
+                tree. `prose prose-invert` styles the now-classless markdown tags. */}
+            <div
+              id={`faq-content-${index}`}
+              className={`prose prose-invert prose-sm max-w-none mt-2 text-left ${openFaq === index ? 'block' : 'hidden'}`}
+              dangerouslySetInnerHTML={{ __html: item.a }}
+            />
           </div>
         ))}
       </div>

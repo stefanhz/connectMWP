@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-> **Verified against:** connectMWP **v2.0.29** (all three components, lockstep).
+> **Verified against:** connectMWP **v2.0.30** (all three components, lockstep).
 > **Last reviewed:** 2026-05-29.
 > **Re-verify when:** the request-signing canonical string, the `permission_callback` / `rest_pre_dispatch` filter in the plugin, the on-disk schema of `~/.connectmwp.json` or `~/.connectmwp/<host>.ed25519`, the lockstep versioning rule, or the central-server-out-of-daily-path constraint changes.
 

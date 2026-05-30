@@ -6,7 +6,7 @@ export function parseMarkdown(markdown: string): string {
 
   // Split by double newlines to process paragraphs and blocks
   const blocks = text.split(/\n\s*\n/);
-  
+
   const parsedBlocks = blocks.map(block => {
     let trimmed = block.trim();
     if (!trimmed) return '';
@@ -17,31 +17,35 @@ export function parseMarkdown(markdown: string): string {
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
 
-    // Markdown Headers (# H1, ## H2, ### H3)
+    // Markdown Headers (# H1, ## H2, ### H3) — emit plain semantic tags; styling
+    // comes from the `prose` (Tailwind Typography) wrapper on the consuming
+    // container, not bespoke `.md-*` classes.
     if (trimmed.startsWith('# ')) {
       const headerText = trimmed.replace(/^#\s+/, '').trim();
-      return `<h1 class="md-h1">${headerText}</h1>`;
+      return `<h1>${headerText}</h1>`;
     }
     if (trimmed.startsWith('## ')) {
       const headerText = trimmed.replace(/^##\s+/, '').trim();
-      return `<h2 class="md-h2">${headerText}</h2>`;
+      return `<h2>${headerText}</h2>`;
     }
     if (trimmed.startsWith('### ')) {
       const headerText = trimmed.replace(/^###\s+/, '').trim();
-      return `<h3 class="md-h3">${headerText}</h3>`;
+      return `<h3>${headerText}</h3>`;
     }
 
     // Bold text (**text**)
     trimmed = trimmed.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
 
-    // Markdown Links ([text](url)) - Render with class instead of inline styles and sanitize URL
+    // Markdown Links ([text](url)) - sanitize URL (preserve link safety: only
+    // http(s)/relative/mailto allowed, else '#'; always target=_blank +
+    // rel=noopener noreferrer). `prose` styles the anchor; no bespoke class.
     trimmed = trimmed.replace(
       /\[(.*?)\]\((.*?)\)/g,
       (match, linkText, url) => {
         const trimmedUrl = url.trim();
         const isSafe = /^https?:\/\//i.test(trimmedUrl) || trimmedUrl.startsWith('/') || trimmedUrl.startsWith('mailto:');
         const safeUrl = isSafe ? trimmedUrl : '#';
-        return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" class="md-link">${linkText}</a>`;
+        return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${linkText}</a>`;
       }
     );
 
@@ -50,13 +54,13 @@ export function parseMarkdown(markdown: string): string {
       const lines = trimmed.split('\n');
       const listItems = lines.map(line => {
         const itemText = line.replace(/^-\s+/, '').trim();
-        return `<li class="md-li">${itemText}</li>`;
+        return `<li>${itemText}</li>`;
       });
-      return `<ul class="md-ul">${listItems.join('\n')}</ul>`;
+      return `<ul>${listItems.join('\n')}</ul>`;
     }
 
     // Normal paragraph block
-    return `<p class="md-p">${trimmed.replace(/\n/g, '<br>')}</p>`;
+    return `<p>${trimmed.replace(/\n/g, '<br>')}</p>`;
   });
 
   return parsedBlocks.join('\n');

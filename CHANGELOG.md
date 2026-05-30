@@ -4,6 +4,26 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-29 — v2.0.30
+
+### Changed — central-server cleanups (P10, server-only)
+
+- **The website's FAQ and the three legal pages now share one styling system (T051).** The FAQ answers on the home page and the About / Privacy / Terms pages used to be styled by a hand-maintained set of custom CSS rules that duplicated what a standard typography library already does. They now use that standard system (Tailwind Typography), so the three legal pages and the FAQ look consistent with far less styling code to keep in sync. Links in this content still open in a new tab, carry the safe `noopener noreferrer` attributes, and have their URLs sanitized exactly as before.
+- **The page background and card shadows are defined once instead of copy-pasted (T047).** The dark radial background and the card drop-shadows were written inline and duplicated across the home and legal pages. They are now defined a single time and reused. The pages look pixel-for-pixel identical; the source is just cleaner.
+- **The website's pairing command now exactly matches the plugin and the docs (T053).** The command shown on the website previously included a redundant `@latest`; it now reads the plain `npx -y connectmwp-mcp …` form, the same as the WordPress plugin's pairing screen and the documentation. The package name and the command template now live in one shared file in the server code.
+
+### Fixed — P10
+
+- **A missing or broken FAQ file is now visible instead of silently swallowed (T050).** If the FAQ content file is missing, unreadable, or empty, the home page still loads normally with a graceful fallback message (the page's main download-and-setup purpose never breaks). The difference: the server now writes a single clear, categorized log line saying exactly which kind of failure happened — missing file, permission problem, empty/garbled content, or something else — so the cause is diagnosable at a glance rather than hidden.
+- **The "Copied!" button feedback timer is now cleaned up properly (T046).** Clicking the copy-command button rapidly no longer stacks multiple reset timers, and no leftover timer tries to update the page after you navigate away.
+
+### Internal — P10
+
+- **FAQ accordion answers are now always in the page and shown/hidden with CSS (T048).** Previously each answer was added to and removed from the page on every open/close. Keeping them present makes the accessibility wiring correct at all times and avoids re-processing the answer text on every toggle. Collapsed answers are hidden from both the screen and assistive technology.
+- Added `@tailwindcss/typography` as a build-time dependency of the central server.
+- All three components bumped to **v2.0.30** in lockstep (project rule), even though only the central server changed.
+- Plugin zip rebuilt and mirrored to `connectmwp-server/public/connectmwp-agent.zip` (both copies sha-identical) so it carries the v2.0.30 plugin header.
+
 ## 2026-05-29 — v2.0.29
 
 ### Changed — taxonomy pagination parity + pagination-limit SSOT (P9, plugin)
