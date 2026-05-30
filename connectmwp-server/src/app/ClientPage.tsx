@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import pkg from '../../package.json';
 import { PAIRING_COMMAND } from '@/lib/constants';
+import { PageShell, GlassCard } from '@/components/Surfaces';
 
 const COPY_FEEDBACK_MS = 2000;
 
@@ -17,6 +18,7 @@ interface ClientPageProps {
 export default function ClientPage({ faqs }: ClientPageProps) {
   const [openFaq, setOpenFaq] = useState<number | null>(null);
   const [copiedCmd, setCopiedCmd] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   const pairingCmd = PAIRING_COMMAND;
 
@@ -24,11 +26,18 @@ export default function ClientPage({ faqs }: ClientPageProps) {
   // so a timer never fires setState after the component unmounts.
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // T056: gate the success UI on the clipboard write actually resolving. A
+  // rejection (non-secure context, unfocused doc, restrictive permissions
+  // policy) must NOT show "Copied!" — otherwise the user pastes nothing.
   const handleCopyCmd = () => {
-    navigator.clipboard.writeText(pairingCmd);
-    setCopiedCmd(true);
-    if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
-    copyTimeoutRef.current = setTimeout(() => setCopiedCmd(false), COPY_FEEDBACK_MS);
+    const flash = (setter: (v: boolean) => void) => {
+      setter(true);
+      if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = setTimeout(() => setter(false), COPY_FEEDBACK_MS);
+    };
+    navigator.clipboard.writeText(pairingCmd)
+      .then(() => flash(setCopiedCmd))
+      .catch(() => flash(setCopyFailed));
   };
 
   useEffect(() => {
@@ -38,9 +47,9 @@ export default function ClientPage({ faqs }: ClientPageProps) {
   }, []);
 
   return (
-    <div className="min-h-screen w-full flex flex-col justify-start items-center bg-[image:var(--brand-radial)] text-white font-sans px-5 py-20 box-border">
+    <PageShell>
       {/* Main Container Card */}
-      <div className="max-w-[550px] w-full bg-white/3 backdrop-blur-[16px] border border-white/8 rounded-2xl p-10 shadow-card text-left">
+      <GlassCard className="max-w-[550px]">
         <div className="flex justify-center mb-2">
           <div className="inline-flex p-3 bg-gradient-to-br from-orange-500 to-amber-500 rounded-xl mb-0 font-bold text-2xl shadow-brand-glow text-white">
             MWP
@@ -82,15 +91,15 @@ export default function ClientPage({ faqs }: ClientPageProps) {
               {pairingCmd}
               <button
                 onClick={handleCopyCmd}
-                className={`absolute top-1/2 right-3 -translate-y-1/2 border-none text-white px-3.5 py-2 rounded font-semibold text-xs cursor-pointer transition-colors ${copiedCmd ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-indigo-500 hover:bg-indigo-600'}`}
+                className={`absolute top-1/2 right-3 -translate-y-1/2 border-none text-white px-3.5 py-2 rounded font-semibold text-xs cursor-pointer transition-colors ${copiedCmd ? 'bg-emerald-500 hover:bg-emerald-600' : copyFailed ? 'bg-red-500 hover:bg-red-600' : 'bg-indigo-500 hover:bg-indigo-600'}`}
                 aria-label="Copy pairing command to clipboard"
               >
-                {copiedCmd ? 'Copied!' : 'Copy'}
+                {copiedCmd ? 'Copied!' : copyFailed ? 'Press ⌘C' : 'Copy'}
               </button>
             </div>
           </div>
         </div>
-      </div>
+      </GlassCard>
 
       {/* FAQ Accordion Card */}
       <div className="max-w-[550px] w-full mt-10 bg-white/2 border border-white/6 rounded-2xl p-9 box-border shadow-card-soft">
@@ -143,6 +152,6 @@ export default function ClientPage({ faqs }: ClientPageProps) {
           connectMWP Client v{pkg.version}
         </div>
       </footer>
-    </div>
+    </PageShell>
   );
 }

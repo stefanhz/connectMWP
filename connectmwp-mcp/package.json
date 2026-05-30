@@ -1,11 +1,11 @@
 {
   "name": "connectmwp-mcp",
-  "version": "2.0.31",
+  "version": "2.0.32",
   "description": "Local MCP client for connectMWP — connects AI clients (Claude Desktop, Claude Code, Cursor) directly to self-hosted WordPress sites using session-less Ed25519 signature auth.",
   "main": "index.js",
   "type": "module",
   "bin": {
-    "connectmwp-mcp": "./index.js"
+    "connectmwp-mcp": "index.js"
   },
   "files": [
     "index.js",

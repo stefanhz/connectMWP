@@ -4,6 +4,42 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-30 — v2.0.32
+
+Backlog-clearing release from two fresh audits (`_internal/SECURITY-REVIEW-REPORT_2026-05-30_10-30.md`, `_internal/ARCH-REVIEW-REPORT_2026-05-30_10-20.md`). Static + build + interop verification green (`_internal/verify/p12_test.sh`, 25/25); live-WP behavioral verification of the security items (T064/T065/T066) pending deploy.
+
+### Security
+
+- **connectmwp-agent — closed an enrollment-code TOCTOU (T064).** Two concurrent requests presenting the same valid single-use pairing code could both mint a key, and because both succeeded a stolen code left no visible "Invalid code" tamper signal for the victim. Consumption is now serialized through an atomic `add_option` claim sentinel (the same primitive as the replay defense), acquired after input validation so a malformed request can't burn a valid code's retry. (`connectmwp-agent/connectmwp-agent.php`)
+- **connectmwp-agent — scoped `/posts/{id}` update & delete to the `post` type (T065).** The `edit_post`/`delete_post` meta-cap passes for Pages and other post types an Editor/Admin can edit, so without a type guard the "posts" tool could mutate or trash non-post objects — widening blast radius beyond its contract. Mirrors the guard `get_post` already had. (`connectmwp-agent/connectmwp-agent.php`)
+- **connectmwp-agent — stopped echoing raw `WP_Error` text on taxonomy create (T066).** `create_category`/`create_tag` returned `wp_insert_term`'s message verbatim — the one un-normalized upstream-message passthrough in the codebase. Client now gets a fixed string; the raw detail goes to the error log only. (`connectmwp-agent/connectmwp-agent.php`)
+- **connectmwp-server — FAQ rendered at build time, not request time (T067).** The landing page read `content/faq.md` via `process.cwd()` per-request; on a read-only serverless filesystem the file may be absent from the bundle, silently degrading the FAQ in production. The page is now `force-static`, baking the FAQ at build like the legal pages. (`connectmwp-server/src/app/page.tsx`)
+
+### Changed
+
+- **connectmwp-agent — promoted signature-timing and client-status magic numbers to named constants (T060, closes part of T034).** `TIMESTAMP_SKEW_SECONDS`, `REPLAY_TTL_SECONDS` (with the documented invariant that it must exceed the skew window), `LAST_USED_THROTTLE_SECONDS`, and the staleness/just-paired thresholds now live in one place. (`connectmwp-agent/connectmwp-agent.php`)
+- **connectmwp-agent — single-sourced the 10 MB media cap to a plugin constant (T057).** Removes the duplicated inline `10 * 1024 * 1024` literal + "10MB" string; documents the cross-language contract with the MCP client's `MEDIA_MAX_BYTES`. (`connectmwp-agent/connectmwp-agent.php`)
+- **connectmwp-agent — extracted a pure, testable `classify_key_status()` (T055, partial).** The "just-paired / stale" business rules are now an SSOT method instead of inline in the settings render loop. (Asset-enqueue extraction of the inline CSS/JS deferred — needs live-WP verification.) (`connectmwp-agent/connectmwp-agent.php`)
+- **connectmwp-server — extracted shared `PageShell` / `GlassCard` surfaces (T059, closes part of T034).** The page shell + frosted card, previously hand-copied across the landing and legal pages, are now one component. (`connectmwp-server/src/components/Surfaces.tsx`)
+
+### Performance
+
+- **connectmwp-agent — retired the O(N) key fan-out on the 3-second pairing poll (T058).** `pairing_status_handler` now reads a denormalized latest-client hint + the index length instead of resolving and sorting every key row each poll, falling back to the authoritative scan only when the hint is absent. (`connectmwp-agent/connectmwp-agent.php`)
+
+### Fixed
+
+- **connectmwp-mcp + connectmwp-agent — clipboard "Copied!" no longer shown when the copy fails (T056).** The copy buttons (landing-page pairing command, plugin pairing command + key-id chips) assumed `navigator.clipboard.writeText` always resolved; on a rejection the user was told it copied while the clipboard stayed empty. Now gated on success with a "Press ⌘C" / "select & ⌘C" fallback. (`connectmwp-server/src/app/ClientPage.tsx`, `connectmwp-agent/connectmwp-agent.php`)
+- **connectmwp-agent — the pairing-status poll surfaces failure instead of swallowing it (T062).** After repeated failed polls the loop now stops and shows an "auto-refresh paused — reload" notice rather than failing silently. (`connectmwp-agent/connectmwp-agent.php`)
+- **connectmwp-mcp — `bin` path normalized to `index.js` (T054).** Drops the leading `./` that triggered an `npm warn publish "bin[...] script name was cleaned"` on every publish. (`connectmwp-mcp/package.json`)
+
+### Accessibility
+
+- **connectmwp-agent — Configure-card tabs are now real `<button role="tab">` elements (T061).** The Claude/Cursor/Other switcher was mouse-only clickable `<div>`s; it now has keyboard operation, arrow-key navigation, and `role="tablist"`/`aria-selected`. (`connectmwp-agent/connectmwp-agent.php`)
+
+### Bumped
+
+- All three components → 2.0.32 (lockstep). Plugin re-packaged (both zip locations sha-identical).
+
 ## 2026-05-29 — v2.0.31
 
 ### Fixed — P11 (plugin)

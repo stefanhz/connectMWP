@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.31
+ * Version: 2.0.32
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -52,6 +52,15 @@ class ConnectMWP_Agent {
     const KEY_MIGRATED_FLAG  = 'connectmwp_keys_migrated'; // migration sentinel (atomic add_option)
     const KEY_INDEX_MAX_RETRY = 5;                       // bounded optimistic-retry for the index option
 
+    // Pairing-poll "latest client" hint (T058). The settings page polls every 3s
+    // during a pairing window; resolving every key row each poll is an O(N) option
+    // fan-out. This denormalized hint lets the poll read the newest client from
+    // ONE option (total comes from the index length), falling back to the
+    // authoritative list_keys() only when the hint is absent. Name deliberately
+    // avoids the `connectmwp_key_` prefix so the index-rebuild LIKE scan can never
+    // mistake it for a key row.
+    const LATEST_CLIENT_OPTION = 'connectmwp_latest_client';
+
     // Wire-format length of an enrollment code: bin2hex(random_bytes(16)) yields
     // exactly 32 lowercase hex chars (see generate_enrollment_code()). Declared
     // once so the mint side and the structural validator cannot drift (T041).
@@ -66,6 +75,26 @@ class ConnectMWP_Agent {
     const MAX_PER_PAGE       = 200;  // cap for taxonomy lists (matches MCP tag/category contract)
     const MAX_PER_PAGE_POSTS = 100;  // cap for post lists (rows may carry content)
     const MIN_PER_PAGE       = 1;    // hard lower bound for any list page size
+
+    // Media upload size cap (T057) — SSOT mirror of the MCP client's
+    // MEDIA_MAX_BYTES (connectmwp-mcp/lib/constants.js). There is NO compile-time
+    // link between the two languages, so they MUST be changed together — see the
+    // cross-language contract note in CLAUDE.md.
+    const MEDIA_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+    const MEDIA_MAX_MB    = 10;
+
+    // Signature-verification timing, seconds (T060). INVARIANT:
+    // REPLAY_TTL_SECONDS MUST exceed TIMESTAMP_SKEW_SECONDS — otherwise a
+    // signature can age out of the replay cache while still inside the accepted
+    // clock-skew window, reopening the replay hole. Do not narrow this gap.
+    const TIMESTAMP_SKEW_SECONDS     = 300; // ± window on X-ConnectMWP-Timestamp
+    const REPLAY_TTL_SECONDS         = 360; // sig-hash replay cache lifetime (> skew)
+    const LAST_USED_THROTTLE_SECONDS = 60;  // min interval between last_used writes
+
+    // Client-status display thresholds, seconds (T060) — used by the settings page.
+    const JUST_PAIRED_SECONDS     = 3600;       // < 1h old → JUST PAIRED badge
+    const STALE_UNUSED_SECONDS    = 7 * 86400;  // never used + older than this → stale
+    const STALE_LAST_USED_SECONDS = 30 * 86400; // last use older than this → stale
 
     private static $instance = null;
 
@@ -363,7 +392,7 @@ class ConnectMWP_Agent {
         }
 
         // 3. Verify timestamp skew (within ±300s)
-        if (abs(time() - intval($timestamp)) > 300) {
+        if (abs(time() - intval($timestamp)) > self::TIMESTAMP_SKEW_SECONDS) {
             $this->verification_error_code = 'connectmwp_timestamp_skew';
             $this->signature_verified = false;
             return false;
@@ -481,7 +510,7 @@ class ConnectMWP_Agent {
     private function is_replay_signature($sig_hash) {
         $option_name = 'cmwp_sig_' . $sig_hash;
         $now = time();
-        $expiry = $now + 360;
+        $expiry = $now + self::REPLAY_TTL_SECONDS;
 
         // add_option is atomic in WordPress
         $added = add_option($option_name, $expiry, '', 'no');
@@ -649,6 +678,14 @@ class ConnectMWP_Agent {
             update_option(self::LEGACY_KEYS_OPTION, $legacy, 'no');
             $removed = true;
         }
+
+        // Invalidate the latest-client poll hint if it pointed at the revoked key
+        // (T058) — the poll then falls back to the authoritative list_keys().
+        $hint = get_option(self::LATEST_CLIENT_OPTION);
+        if (is_array($hint) && isset($hint['key_id']) && $hint['key_id'] === $key_id) {
+            delete_option(self::LATEST_CLIENT_OPTION);
+        }
+
         return (bool) $removed;
     }
 
@@ -841,7 +878,7 @@ class ConnectMWP_Agent {
         }
         $last_used_str = $record['last_used'] ?? '';
         $last_used_time = !empty($last_used_str) && $last_used_str !== 'Never' ? strtotime($last_used_str) : 0;
-        if (time() - $last_used_time > 60) {
+        if (time() - $last_used_time > self::LAST_USED_THROTTLE_SECONDS) {
             $this->update_key_fields($key_id, [
                 'last_used' => current_time('mysql'),
                 'last_ip'   => $this->get_client_ip(),
@@ -1035,21 +1072,36 @@ class ConnectMWP_Agent {
             $expires_in = max(0, intval($stored['expires']) - time());
         }
 
-        $keys = $this->list_keys();
-        $total_keys = count($keys);
+        // (T058) Cheap path: total from the index length (O(1)) + newest client
+        // from the denormalized hint, avoiding the per-key option fan-out on this
+        // 3s poll. Fall back to the authoritative list_keys() only when the hint
+        // is absent (pre-upgrade sites, or just after the latest key was revoked).
+        $index = get_option(self::KEY_INDEX_OPTION, []);
+        $total_keys = is_array($index) ? count($index) : 0;
 
         $latest_key_id  = null;
         $latest_created = null;
         $latest_label   = null;
-        if ($total_keys > 0) {
-            $sorted = $keys;
-            uasort($sorted, function($a, $b) {
-                return strcmp($b['created'] ?? '', $a['created'] ?? '');
-            });
-            $first_id = array_key_first($sorted);
-            $latest_key_id  = $first_id;
-            $latest_created = $sorted[$first_id]['created'] ?? null;
-            $latest_label   = $sorted[$first_id]['label']   ?? null;
+
+        $hint = get_option(self::LATEST_CLIENT_OPTION);
+        if (is_array($hint) && !empty($hint['key_id'])) {
+            $latest_key_id  = $hint['key_id'];
+            $latest_created = $hint['created'] ?? null;
+            $latest_label   = $hint['label']   ?? null;
+        } else {
+            // Fallback: authoritative resolve (also re-syncs total to the rows).
+            $keys = $this->list_keys();
+            $total_keys = count($keys);
+            if ($total_keys > 0) {
+                $sorted = $keys;
+                uasort($sorted, function($a, $b) {
+                    return strcmp($b['created'] ?? '', $a['created'] ?? '');
+                });
+                $first_id = array_key_first($sorted);
+                $latest_key_id  = $first_id;
+                $latest_created = $sorted[$first_id]['created'] ?? null;
+                $latest_label   = $sorted[$first_id]['label']   ?? null;
+            }
         }
 
         wp_send_json([
@@ -1144,7 +1196,24 @@ class ConnectMWP_Agent {
             return new WP_REST_Response(['success' => false, 'error' => 'Invalid public key format'], 400);
         }
 
+        // (T064) Atomic single-use claim — the serialization point, placed AFTER
+        // input validation. The window between the hash_equals above and the
+        // delete_option on success is otherwise wide enough that two concurrent
+        // requests presenting the SAME valid code both pass and both mint a key;
+        // and because both succeed, a stolen code leaves no visible "Invalid code"
+        // tamper signal for the victim. add_option is atomic (same primitive as
+        // the replay defense): exactly one racer wins the claim; the rest get the
+        // standard invalid-code 401. Acquired AFTER the public-key checks so a
+        // malformed-but-valid-code request can't burn the claim and brick the
+        // user's legitimate retry, and AFTER hash_equals so a code-guessing flood
+        // never creates claim rows (preserves the T041 no-bloat property).
+        $claim_key = 'cmwp_enroll_claimed_' . hash('sha256', $custom_code);
+        if (!add_option($claim_key, time(), '', 'no')) {
+            return new WP_REST_Response(['success' => false, 'error' => 'Invalid enrollment code'], 401);
+        }
+
         $key_id = 'cmwp_key_' . bin2hex(random_bytes(8));
+        $created_now = current_time('mysql');
 
         // Atomic per-key create (T039). add_key writes ONLY this key's row, so a
         // concurrent enroll of a different key cannot clobber it and vice versa.
@@ -1152,13 +1221,24 @@ class ConnectMWP_Agent {
             'public_key'     => $public_key,
             'bound_user_id'  => intval($stored['user_id']),
             'label'          => $label,
-            'created'        => current_time('mysql'),
+            'created'        => $created_now,
             'last_used'      => '',
             'last_ip'        => ''
         ]);
 
-        // Delete pairing code and rate-limit transient immediately on success
+        // Refresh the pairing-poll "latest client" hint (T058) so the settings
+        // page's 3s poll detects this new pairing from one option read.
+        update_option(self::LATEST_CLIENT_OPTION, [
+            'key_id'  => $key_id,
+            'created' => $created_now,
+            'label'   => $label,
+        ], 'no');
+
+        // Delete pairing code and rate-limit transient immediately on success.
+        // Also drop the single-use claim sentinel (T064) — the code is gone, so
+        // the sentinel has served its purpose; cleaning it up bounds wp_options.
         delete_option('connectmwp_enrollment_code');
+        delete_option($claim_key);
         delete_transient($ip_key);
 
         return new WP_REST_Response(
@@ -1384,6 +1464,17 @@ class ConnectMWP_Agent {
 
     public function update_post_handler(WP_REST_Request $request) {
         $post_id = intval($request['id']);
+
+        // (T065) Scope the mutation to actual posts. The edit_post meta-cap in the
+        // permission_callback passes for any object the bound user can edit —
+        // including Pages and other CPTs — so without this guard the "posts" tool
+        // could mutate non-post objects, widening blast radius beyond its contract.
+        // Mirrors the existing post_type gate in get_post_handler.
+        $existing_post = get_post($post_id);
+        if (!$existing_post || $existing_post->post_type !== 'post') {
+            return new WP_REST_Response(['success' => false, 'error' => 'Post not found.'], 404);
+        }
+
         $params = $request->get_json_params();
         if (empty($params)) {
             $params = $request->get_body_params();
@@ -1440,7 +1531,9 @@ class ConnectMWP_Agent {
         $force = isset($params['force']) ? filter_var($params['force'], FILTER_VALIDATE_BOOLEAN) : false;
 
         $post = get_post($post_id);
-        if (!$post) {
+        // (T065) Same post_type scoping as update — the delete_post meta-cap would
+        // otherwise allow trashing Pages / CPTs through the "posts" tool.
+        if (!$post || $post->post_type !== 'post') {
             return new WP_REST_Response(['success' => false, 'error' => 'Post not found.'], 404);
         }
 
@@ -1470,8 +1563,8 @@ class ConnectMWP_Agent {
             return new WP_REST_Response(['success' => false, 'error' => 'No file uploaded'], 400);
         }
 
-        if (!empty($_FILES['file']['size']) && $_FILES['file']['size'] > 10 * 1024 * 1024) {
-            return new WP_REST_Response(['success' => false, 'error' => 'File size exceeds maximum limit of 10MB.'], 400);
+        if (!empty($_FILES['file']['size']) && $_FILES['file']['size'] > self::MEDIA_MAX_BYTES) {
+            return new WP_REST_Response(['success' => false, 'error' => 'File size exceeds maximum limit of ' . self::MEDIA_MAX_MB . 'MB.'], 400);
         }
 
         // Validate multipart file signature body hash
@@ -1630,7 +1723,12 @@ class ConnectMWP_Agent {
 
         $term = wp_insert_term($name, 'category', $args);
         if (is_wp_error($term)) {
-            return new WP_REST_Response(['success' => false, 'error' => $term->get_error_message()], 400);
+            // (T066) Do NOT echo the raw WP_Error to the client — it's the one
+            // verbatim upstream-message passthrough in the codebase and a future
+            // WP/filter could enrich it with internals. Operator gets detail in
+            // the log; client gets a fixed, intent-revealing string.
+            error_log('connectmwp: wp_insert_term(category) failed: ' . $term->get_error_message());
+            return new WP_REST_Response(['success' => false, 'error' => 'Could not create the category (it may already exist).'], 400);
         }
 
         return new WP_REST_Response([
@@ -1660,7 +1758,9 @@ class ConnectMWP_Agent {
 
         $term = wp_insert_term($name, 'post_tag', $args);
         if (is_wp_error($term)) {
-            return new WP_REST_Response(['success' => false, 'error' => $term->get_error_message()], 400);
+            // (T066) See create_category_handler — never echo the raw WP_Error.
+            error_log('connectmwp: wp_insert_term(post_tag) failed: ' . $term->get_error_message());
+            return new WP_REST_Response(['success' => false, 'error' => 'Could not create the tag (it may already exist).'], 400);
         }
 
         return new WP_REST_Response([
@@ -1763,6 +1863,32 @@ class ConnectMWP_Agent {
         );
     }
 
+    /**
+     * Pure status classifier for a paired client (T055). SSOT for the
+     * "is this client just-paired / stale?" business rules so the policy lives in
+     * one testable place instead of inline in the render loop. No I/O, no globals.
+     *
+     * @param int|false   $created_ts    Unix ts of pairing, or false if unparsable.
+     * @param int|false   $last_used_ts  Unix ts of last use, or false.
+     * @param string      $last_used_raw Raw last_used string ('' / 'never' => unused).
+     * @param int         $now           Current Unix ts.
+     * @return array{is_just_paired:bool,is_stale:bool}
+     */
+    private function classify_key_status($created_ts, $last_used_ts, $last_used_raw, $now) {
+        $age_created   = $created_ts   ? ($now - $created_ts)   : 0;
+        $age_last_used = $last_used_ts ? ($now - $last_used_ts) : null;
+        $never_used    = empty($last_used_raw);
+
+        $is_just_paired = (bool) ($created_ts && $age_created < self::JUST_PAIRED_SECONDS);
+        $is_stale = ($never_used && $age_created > self::STALE_UNUSED_SECONDS) ||
+                    ($age_last_used !== null && $age_last_used > self::STALE_LAST_USED_SECONDS);
+
+        return [
+            'is_just_paired' => $is_just_paired,
+            'is_stale'       => (bool) $is_stale,
+        ];
+    }
+
     public function render_settings_page() {
         if (!current_user_can('manage_options')) {
             wp_die(__('You do not have sufficient privileges to access this page.'));
@@ -1842,9 +1968,6 @@ class ConnectMWP_Agent {
         // the JUST PAIRED badge + the What now? panel), and a "stale" flag
         // (never used + > 7d old, OR last used > 30d ago — drives the grey dot).
         $now = time();
-        $stale_unused_threshold  = 7  * 86400;  // 7 days
-        $stale_last_used_threshold = 30 * 86400; // 30 days
-        $just_paired_threshold     = 3600;        // 1 hour
         foreach ($all_keys_with_users as &$k) {
             $k['display_created']    = $k['created']   ?? '';
             $k['display_last_used']  = !empty($k['last_used']) ? $k['last_used'] : 'never';
@@ -1867,12 +1990,9 @@ class ConnectMWP_Agent {
                     }
                 }
             }
-            $age_created   = $k['created_ts']   ? ($now - $k['created_ts'])   : 0;
-            $age_last_used = $k['last_used_ts'] ? ($now - $k['last_used_ts']) : null;
-            $k['is_just_paired'] = $k['created_ts'] && $age_created < $just_paired_threshold;
-            $never_used = empty($k['last_used']);
-            $k['is_stale'] = ($never_used && $age_created > $stale_unused_threshold) ||
-                             ($age_last_used !== null && $age_last_used > $stale_last_used_threshold);
+            $status = $this->classify_key_status($k['created_ts'], $k['last_used_ts'], $k['last_used'], $now);
+            $k['is_just_paired'] = $status['is_just_paired'];
+            $k['is_stale']       = $status['is_stale'];
         }
         unset($k);
 
@@ -1977,9 +2097,10 @@ class ConnectMWP_Agent {
             .cmwp-config-card .cmwp-card-title { font-size: 15px; }
             .cmwp-config-card .cmwp-card-sub { font-size: 12.5px; }
             .cmwp-tabs { display: flex; gap: 4px; border-bottom: 1px solid #d8e3ec; margin: 14px 0 16px; flex-wrap: wrap; }
-            .cmwp-tab { padding: 8px 14px; font-size: 13px; font-weight: 600; color: #7f8c8d; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color 0.15s ease, border-color 0.15s ease; user-select: none; }
+            .cmwp-tab { padding: 8px 14px; font-size: 13px; font-weight: 600; color: #7f8c8d; cursor: pointer; background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color 0.15s ease, border-color 0.15s ease; user-select: none; font-family: inherit; }
             .cmwp-tab.active { color: #3498db; border-bottom-color: #3498db; }
             .cmwp-tab:hover:not(.active) { color: #34495e; }
+            .cmwp-tab:focus-visible { outline: 2px solid #3498db; outline-offset: 2px; border-radius: 4px; }
             .cmwp-tab-tip { font-size: 12px; color: #7f8c8d; line-height: 1.55; margin-bottom: 10px; }
             .cmwp-tab-tip b { color: #3498db; }
             .cmwp-config-json { background: #fff; border: 1px solid #dbe5ed; border-radius: 8px; padding: 12px 16px; font-family: SF Mono, Menlo, Consolas, monospace; font-size: 12px; color: #2c3e50; line-height: 1.55; overflow-x: auto; margin: 0; }
@@ -2081,7 +2202,7 @@ class ConnectMWP_Agent {
                     </div>
                     <div class="cmwp-pc-cmd">
                         <textarea readonly class="cmwp-pc-textarea" id="cmwp-enroll-cmd"><?php echo esc_textarea($npx_cmd); ?></textarea>
-                        <button type="button" class="cmwp-btn-copy" onclick="navigator.clipboard.writeText(document.getElementById('cmwp-enroll-cmd').value).then(() => showConnectMWPToast(this, 'Command copied!'))">Copy</button>
+                        <button type="button" class="cmwp-btn-copy" onclick="navigator.clipboard.writeText(document.getElementById('cmwp-enroll-cmd').value).then(() => showConnectMWPToast(this, 'Command copied!')).catch(() => showConnectMWPToast(this, 'Copy failed — select &amp; ⌘C'))">Copy</button>
                     </div>
 
                     <script>
@@ -2119,6 +2240,22 @@ class ConnectMWP_Agent {
                         const initialLatest = <?php echo $most_recent ? "'" . esc_js($most_recent['key_id']) . "'" : 'null'; ?>;
                         let stopped = false;
                         let timer = null;
+                        let failCount = 0; // consecutive poll failures (T062)
+
+                        // After repeated poll failures (expired nonce, 5xx, network),
+                        // stop the loop and TELL the admin instead of failing silent.
+                        function noteFailureAndMaybeStop() {
+                            failCount++;
+                            if (failCount < 3) return;
+                            stop();
+                            const card = document.querySelector('.cmwp-pairing-card');
+                            if (!card || document.getElementById('cmwp-poll-stalled')) return;
+                            const note = document.createElement('p');
+                            note.id = 'cmwp-poll-stalled';
+                            note.style.cssText = 'margin: 12px 0 0; font-size: 12.5px; color: #b9770e;';
+                            note.textContent = '⚠ Auto-refresh paused (could not reach the server). Reload this page after pairing to see the new client.';
+                            card.appendChild(note);
+                        }
 
                         // Named so the SAME reference can be detached in stop().
                         const onVisibility = function() {
@@ -2168,8 +2305,9 @@ class ConnectMWP_Agent {
                             try {
                                 const params = new URLSearchParams({ action: 'connectmwp_pairing_status', _wpnonce: nonce });
                                 const res = await fetch(ajaxUrl + '?' + params.toString(), { credentials: 'same-origin', cache: 'no-store' });
-                                if (!res.ok) return;
+                                if (!res.ok) { noteFailureAndMaybeStop(); return; }
                                 const data = await res.json();
+                                failCount = 0; // a clean round resets the failure streak (T062)
                                 const claimed = (data.total_keys > initialTotal) || (data.latest_key_id && data.latest_key_id !== initialLatest);
                                 if (claimed) {
                                     stop();
@@ -2180,7 +2318,7 @@ class ConnectMWP_Agent {
                                 if (!data.code_active) {
                                     stop();
                                 }
-                            } catch (e) {}
+                            } catch (e) { noteFailureAndMaybeStop(); }
                         }
 
                         poll();
@@ -2273,10 +2411,10 @@ class ConnectMWP_Agent {
                     </div>
                 </div>
 
-                <div class="cmwp-tabs" id="cmwp-config-tabs">
-                    <div class="cmwp-tab active" data-target="claude">Claude Desktop</div>
-                    <div class="cmwp-tab" data-target="cursor">Cursor</div>
-                    <div class="cmwp-tab" data-target="other">Other (ChatGPT Desktop, Cline, Continue…)</div>
+                <div class="cmwp-tabs" id="cmwp-config-tabs" role="tablist" aria-label="AI client configuration">
+                    <button type="button" class="cmwp-tab active" data-target="claude" role="tab" aria-selected="true">Claude Desktop</button>
+                    <button type="button" class="cmwp-tab" data-target="cursor" role="tab" aria-selected="false">Cursor</button>
+                    <button type="button" class="cmwp-tab" data-target="other" role="tab" aria-selected="false">Other (ChatGPT Desktop, Cline, Continue…)</button>
                 </div>
 
                 <div class="cmwp-tab-tip" data-tip="claude">
@@ -2318,24 +2456,39 @@ class ConnectMWP_Agent {
                 document.querySelectorAll('.cmwp-copy').forEach(function(el) {
                     el.addEventListener('click', function() {
                         const text = el.dataset.copy || el.textContent;
+                        // T056: never claim success if the clipboard write rejects
+                        // (non-secure context, unfocused doc, restrictive policy).
                         navigator.clipboard.writeText(text).then(function() {
                             showConnectMWPToast(el, 'Key ID copied');
+                        }).catch(function() {
+                            showConnectMWPToast(el, 'Copy failed — select & ⌘C');
                         });
                     });
                 });
 
-                document.querySelectorAll('#cmwp-config-tabs .cmwp-tab').forEach(function(tab) {
-                    tab.addEventListener('click', function() {
-                        const target = tab.dataset.target;
-                        document.querySelectorAll('#cmwp-config-tabs .cmwp-tab').forEach(function(t) {
-                            t.classList.toggle('active', t === tab);
-                        });
-                        document.querySelectorAll('[data-pane]').forEach(function(p) {
-                            p.style.display = (p.dataset.pane === target ? 'block' : 'none');
-                        });
-                        document.querySelectorAll('[data-tip]').forEach(function(p) {
-                            p.style.display = (p.dataset.tip === target ? 'block' : 'none');
-                        });
+                const tabs = Array.prototype.slice.call(document.querySelectorAll('#cmwp-config-tabs .cmwp-tab'));
+                function activateTab(tab) {
+                    const target = tab.dataset.target;
+                    tabs.forEach(function(t) {
+                        const on = t === tab;
+                        t.classList.toggle('active', on);
+                        t.setAttribute('aria-selected', on ? 'true' : 'false');
+                    });
+                    document.querySelectorAll('[data-pane]').forEach(function(p) {
+                        p.style.display = (p.dataset.pane === target ? 'block' : 'none');
+                    });
+                    document.querySelectorAll('[data-tip]').forEach(function(p) {
+                        p.style.display = (p.dataset.tip === target ? 'block' : 'none');
+                    });
+                }
+                tabs.forEach(function(tab, i) {
+                    tab.addEventListener('click', function() { activateTab(tab); });
+                    // Arrow-key navigation between tabs (WAI-ARIA tabs pattern).
+                    tab.addEventListener('keydown', function(e) {
+                        let next = null;
+                        if (e.key === 'ArrowRight') next = tabs[(i + 1) % tabs.length];
+                        else if (e.key === 'ArrowLeft') next = tabs[(i - 1 + tabs.length) % tabs.length];
+                        if (next) { e.preventDefault(); activateTab(next); next.focus(); }
                     });
                 });
             })();

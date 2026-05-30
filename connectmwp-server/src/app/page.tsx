@@ -3,6 +3,11 @@ import path from 'path';
 import ClientPage from './ClientPage';
 import { parseFaqMarkdown } from '@/lib/markdown';
 
+// T067: render at build time so content/faq.md is read during static generation
+// (where the file is present + traced) and baked into static HTML — never read
+// from process.cwd() at request time on a read-only serverless filesystem.
+export const dynamic = 'force-static';
+
 type Faq = { q: string; a: string };
 
 const FALLBACK_FAQS: Faq[] = [

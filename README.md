@@ -1,7 +1,7 @@
 # connectMWP
 
-**Current Release Version: v2.0.31**
-*(Doc verified against v2.0.31 on 2026-05-29.)*
+**Current Release Version: v2.0.32**
+*(Doc verified against v2.0.32 on 2026-05-30.)*
 
 connectMWP is a secure, decentralized Model Context Protocol (MCP) server that connects local AI clients (such as Claude Desktop, Cursor, and Claude Code) directly to self-hosted WordPress websites to draft content, upload media, and manage posts directly from your workspace.
 
@@ -18,7 +18,7 @@ Two design choices fell out of that:
 1. **Works alongside your security plugins, not against them.** Most integrations authenticate by logging in as a WordPress user on each call. On a locked-down site that login is exactly what your security plugins and firewall are there to scrutinize — 2FA challenges, cookie policies, and tools like Wordfence, Solid Security, or miniOrange can stop it cold. connectMWP is **100% session-less**: it verifies a per-request Ed25519 signature in the permission callback and never establishes a login session at all. There's no login for the security layer to challenge, so a hardened site and connectMWP can coexist — no compromises on either side.
 2. **A direct connection, with nothing in the middle.** connectMWP is **fully decentralized** — the local MCP client signs the request and talks straight to your site over HTTPS. Nothing is routed through a third-party proxy, so there are no extra API keys, no middleware subscription, and no central server in the traffic path ($0 proxy cost). It works with the AI subscription you already pay for.
 
-I'm sharing this publicly because experience has taught me that when I hit a wall like this, I'm rarely the only one. If you ran into the same problem, I hope it saves you the detour — and **contributions are genuinely welcome**. The goal here is simple: things that *work*.
+I'm sharing this publicly because experience has taught me that when I hit a wall like this, I'm rarely the only one. If you ran into the same problem, I hope it saves you the detour. The goal here is simple: things that *work*.
 
 ---
 

@@ -3,6 +3,7 @@ import path from 'path';
 import Link from 'next/link';
 import { Metadata } from 'next';
 import { parseMarkdown } from '@/lib/markdown';
+import { PageShell, GlassCard } from '@/components/Surfaces';
 import pkg from '../../../../package.json';
 
 interface PageProps {
@@ -52,8 +53,8 @@ export default async function LegalPage({ params }: PageProps) {
   }
 
   return (
-    <div className="min-h-screen w-full flex flex-col justify-center items-center bg-[image:var(--brand-radial)] text-white font-sans px-5 py-20 box-border">
-      <div className="max-w-[700px] w-full bg-white/3 backdrop-blur-[16px] border border-white/8 rounded-2xl p-10 shadow-card text-left">
+    <PageShell align="center">
+      <GlassCard className="max-w-[700px]">
         {/* Header navigation */}
         <div className="flex justify-between items-center mb-6 pb-4 border-b border-white/8">
           <Link href="/" className="text-zinc-400 no-underline text-sm hover:text-white transition-colors">
@@ -69,7 +70,7 @@ export default async function LegalPage({ params }: PageProps) {
           className="prose prose-invert max-w-none text-zinc-300"
           dangerouslySetInnerHTML={{ __html: parsedHtml }}
         />
-      </div>
-    </div>
+      </GlassCard>
+    </PageShell>
   );
 }
