@@ -1,8 +1,8 @@
 # connectMWP — Operations Runbook
 
-> **Verified against:** connectMWP **v2.0.25** (all three components, lockstep).
+> **Verified against:** connectMWP **v2.0.26** (all three components, lockstep).
 > **Last reviewed:** 2026-05-29.
-> **Re-verify when:** the MCP CLI surface changes (`add-site`/`remove-site`/`set-default`/`list-sites` flags), the plugin auth flow changes, the release/publish process changes, or component versions drift out of lockstep.
+> **Re-verify when:** the MCP CLI surface changes (`add-site`/`remove-site`/`set-default`/`list-sites` flags), the plugin auth flow changes, the release/publish process changes, the `connectmwp_trust_proxy` / `CONNECTMWP_TRUST_PROXY` trusted-proxy setting changes, or component versions drift out of lockstep.
 
 Project-internal operational guide. **Not user-facing** — for that, see `README.md`.
 This file is the Stefan-and-Claude reference for the recurring operational moves:
@@ -17,6 +17,7 @@ pairing sites, re-pairing after a key revoke, and shipping a new npm release.
 5. [Replay-blocked verification (T137 / v2.0.19+)](#5-replay-blocked-verification-t137--v2019)
 6. [Local Node↔PHP interop verification (signing-canonical proof)](#6-local-nodephp-interop-verification-signing-canonical-proof)
 7. [Local error-sanitization verification (T138)](#7-local-error-sanitization-verification-t138)
+8. [Security hardening — edge rate-limiting & trusted proxy](#8-security-hardening--edge-rate-limiting--trusted-proxy)
 
 ---
 
@@ -393,3 +394,72 @@ T138 SANITIZATION VERIFIED
 
 Exits non-zero on any leak. Run after any change to throw sites in
 `connectmwp-mcp/index.js`.
+
+---
+
+## 8. Security hardening — edge rate-limiting & trusted proxy
+
+> Added in v2.0.26 (P6 / T041). The `/enroll` endpoint is the only request the
+> plugin accepts without a signature, so it carries its own abuse controls. This
+> section explains the in-plugin controls and the edge control you should pair
+> with them.
+
+### 8.1 Edge rate-limiting (the primary control)
+
+The plugin includes a per-IP enrollment limiter (5 attempts / 10 minutes), and
+as of v2.0.26 it no longer writes any database row for structurally-malformed or
+missing codes — a flood of garbage `X-ConnectMWP-Enroll-Code` values creates
+**zero** `wp_options` rows. That closes the unbounded-write vector.
+
+It is still defense-in-depth, not the whole defense: an attacker rotating across
+many **real** source IPs can only be capped at the edge, because the in-plugin
+limiter can only meter what it can attribute to a single IP. **Rate-limit
+`POST /wp-json/connectmwp/v1/enroll` at the web server / WAF / CDN.** Examples:
+
+- **Nginx** (in the server block):
+  ```nginx
+  limit_req_zone $binary_remote_addr zone=cmwp_enroll:10m rate=10r/m;
+  location = /wp-json/connectmwp/v1/enroll {
+      limit_req zone=cmwp_enroll burst=5 nodelay;
+      try_files $uri $uri/ /index.php?$args;
+  }
+  ```
+- **Cloudflare**: Security → WAF → Rate limiting rules → match URI Path equals
+  `/wp-json/connectmwp/v1/enroll`, threshold e.g. 10 requests / 1 minute per IP,
+  action Block for 10 minutes.
+- **fail2ban**: a jail watching the access log for repeated `POST .../enroll`
+  responses (401/429) from one IP.
+
+### 8.2 "Behind trusted proxy" setting
+
+By default the plugin reads the client IP from the direct connection
+(`REMOTE_ADDR`), which cannot be spoofed. If this site genuinely sits behind a
+reverse proxy / CDN you control (Cloudflare, Nginx, a load balancer), the direct
+connection is the proxy, so you may want the plugin to attribute the limiter to
+the real client IP from the forwarding headers instead.
+
+Turn it on **only if** the statement above is true for your site.
+
+**Via the admin UI:**
+1. Log in to WordPress as an administrator.
+2. Go to **Settings → connectMWP**.
+3. Scroll to the **Network & security** card.
+4. Tick **"This site is behind a trusted reverse proxy / CDN"**.
+5. Click **Save setting**. You should see "Trusted-proxy setting saved."
+
+**Via `wp-config.php` (infra-as-code, overrides the UI setting):**
+```php
+define('CONNECTMWP_TRUST_PROXY', true);
+```
+Place this line above the `/* That's all, stop editing! */` comment. When the
+constant is defined it wins over the admin checkbox (the checkbox is shown
+disabled, reflecting the forced value).
+
+- **OFF (default):** client IP = `REMOTE_ADDR` — un-spoofable.
+- **ON:** client IP = the **last** hop of `X-Forwarded-For` (the value your
+  trusted proxy appended), or `X-Real-IP`; if those are absent/invalid it falls
+  back to `REMOTE_ADDR` — it never trusts a forged value.
+
+**Warning:** enabling this while the site is **not** actually behind a controlled
+proxy lets a caller spoof their IP via `X-Forwarded-For`, evading the per-IP
+limiter. When in doubt, leave it OFF and rely on the edge rate-limit in §8.1.

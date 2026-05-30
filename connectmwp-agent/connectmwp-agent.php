@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.25
+ * Version: 2.0.26
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -35,6 +35,11 @@ class ConnectMWP_Agent {
     const OPTION_TOKENS = 'connectmwp_agent_tokens';
     const OPTION_NONCES = 'connectmwp_agent_nonces';
     const API_NAMESPACE = 'connectmwp/v1';
+
+    // Wire-format length of an enrollment code: bin2hex(random_bytes(16)) yields
+    // exactly 32 lowercase hex chars (see generate_enrollment_code()). Declared
+    // once so the mint side and the structural validator cannot drift (T041).
+    const ENROLL_CODE_HEX_LEN = 32;
 
     private static $instance = null;
 
@@ -490,11 +495,49 @@ class ConnectMWP_Agent {
         }
     }
 
+    /**
+     * Client IP. Default and only trusted source: REMOTE_ADDR (un-forgeable when
+     * talking to PHP directly). Forwarding headers (X-Forwarded-For / X-Real-IP)
+     * are honoured ONLY when this site is explicitly declared to sit behind a
+     * trusted reverse proxy via is_behind_trusted_proxy() — default OFF, so
+     * upgrade behavior is unchanged and forged headers can never be trusted.
+     */
     private function get_client_ip() {
-        if (!empty($_SERVER['REMOTE_ADDR']) && filter_var($_SERVER['REMOTE_ADDR'], FILTER_VALIDATE_IP)) {
-            return $_SERVER['REMOTE_ADDR'];
+        $remote = (!empty($_SERVER['REMOTE_ADDR']) && filter_var($_SERVER['REMOTE_ADDR'], FILTER_VALIDATE_IP))
+            ? $_SERVER['REMOTE_ADDR'] : '';
+
+        if ($this->is_behind_trusted_proxy()) {
+            // Single trusted proxy: take the LAST hop it appended (the one it
+            // can vouch for), not the spoofable leftmost client-supplied value.
+            if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+                $parts = array_map('trim', explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']));
+                $cand  = end($parts);
+                if (filter_var($cand, FILTER_VALIDATE_IP)) {
+                    return $cand;
+                }
+            }
+            if (!empty($_SERVER['HTTP_X_REAL_IP']) && filter_var(trim($_SERVER['HTTP_X_REAL_IP']), FILTER_VALIDATE_IP)) {
+                return trim($_SERVER['HTTP_X_REAL_IP']);
+            }
         }
-        return 'unknown';
+
+        // Default path. The no-REMOTE_ADDR fallback collapses onto a single
+        // deterministic 'unknown' bucket — acceptable: REMOTE_ADDR is present on
+        // all real HTTP requests, the bucket auto-expires, and never fails open
+        // to a forgeable forwarded value.
+        return $remote !== '' ? $remote : 'unknown';
+    }
+
+    /**
+     * SSOT: is this site behind a trusted reverse proxy? Constant override
+     * (infra-as-code) wins; else the admin option; default false. Every
+     * "may I trust forwarding headers?" decision routes through here (T041).
+     */
+    private function is_behind_trusted_proxy() {
+        if (defined('CONNECTMWP_TRUST_PROXY')) {
+            return (bool) CONNECTMWP_TRUST_PROXY;
+        }
+        return (bool) get_option('connectmwp_trust_proxy', false);
     }
 
     // Permission callbacks
@@ -679,13 +722,9 @@ class ConnectMWP_Agent {
             return new WP_REST_Response(['success' => false, 'error' => 'HTTPS is required for enrollment.'], 403);
         }
 
-        // Transient-based IP rate limiting
-        $ip_key = 'cmwp_enroll_limit_' . md5($client_ip);
-        $attempts = intval(get_transient($ip_key));
-        if ($attempts >= 5) {
-            return new WP_REST_Response(['success' => false, 'error' => 'Too many enrollment attempts. Please try again later.'], 429);
-        }
-
+        // Extract the enrollment code from any of its three transports BEFORE
+        // touching the rate-limit transient. All three reads are cheap and do no
+        // DB write, so moving them ahead of the limiter is safe (T041).
         $custom_code = '';
         if (function_exists('getallheaders')) {
             $headers = getallheaders();
@@ -699,7 +738,6 @@ class ConnectMWP_Agent {
         if (empty($custom_code) && isset($_SERVER['HTTP_X_CONNECTMWP_ENROLL_CODE'])) {
             $custom_code = $_SERVER['HTTP_X_CONNECTMWP_ENROLL_CODE'];
         }
-
         if (empty($custom_code)) {
             $params = $request->get_json_params();
             if (empty($params)) {
@@ -708,14 +746,27 @@ class ConnectMWP_Agent {
             $custom_code = !empty($params['code']) ? sanitize_text_field($params['code']) : '';
         }
 
-        if (empty($custom_code)) {
+        // (T041) Reject structurally-invalid / missing codes BEFORE any
+        // rate-limit DB write, so a flood of malformed/garbage codes creates
+        // zero wp_options rows. A well-formed-but-wrong code still meters below.
+        // Collapsing "missing" and "malformed" into one 401 also avoids telling
+        // an attacker whether their guess had the right shape vs was absent.
+        if (!$this->is_well_formed_enroll_code($custom_code)) {
             return new WP_REST_Response(['success' => false, 'error' => 'Enrollment code is required'], 401);
+        }
+
+        // Transient-based IP rate limiting (reached only for well-formed codes).
+        // Reuse the $client_ip already computed above for the SSL/localhost gate.
+        $ip_key = 'cmwp_enroll_limit_' . md5($client_ip);
+        $attempts = intval(get_transient($ip_key));
+        if ($attempts >= 5) {
+            return new WP_REST_Response(['success' => false, 'error' => 'Too many enrollment attempts. Please try again later.'], 429);
         }
 
         // Validate single-use enrollment code
         $stored = get_option('connectmwp_enrollment_code');
         if (!is_array($stored) || empty($stored['code']) || !hash_equals($stored['code'], $custom_code)) {
-            set_transient($ip_key, $attempts + 1, 600); // Lock for 10 mins
+            set_transient($ip_key, $attempts + 1, 600); // count well-formed misses only; lock for 10 mins
             return new WP_REST_Response(['success' => false, 'error' => 'Invalid enrollment code'], 401);
         }
 
@@ -770,6 +821,22 @@ class ConnectMWP_Agent {
         );
     }
 
+    /**
+     * Canonical wire-format check for an enrollment code: exactly
+     * ENROLL_CODE_HEX_LEN lowercase hex chars (the output of
+     * bin2hex(random_bytes(16)) in generate_enrollment_code()). Cheap, pure,
+     * no DB. SSOT for "is this a syntactically valid enroll code?" (T041).
+     */
+    private function is_well_formed_enroll_code($code) {
+        if (!is_string($code) || $code === '') {
+            return false;
+        }
+        if (strlen($code) !== self::ENROLL_CODE_HEX_LEN) {
+            return false;
+        }
+        return (bool) preg_match('/^[0-9a-f]{' . self::ENROLL_CODE_HEX_LEN . '}$/', $code);
+    }
+
     private function generate_enrollment_code() {
         $code = bin2hex(random_bytes(16));
         $expiry = time() + 600; // 10 minutes
@@ -780,6 +847,21 @@ class ConnectMWP_Agent {
         ];
         update_option('connectmwp_enrollment_code', $data, 'no');
         return $code;
+    }
+
+    /**
+     * Object-level read authorization for a single post, session-less.
+     * Uses the WP `read_post` meta-cap, which map_meta_cap resolves correctly
+     * for public / private / pending / trashed / future statuses against the
+     * bound user. Decides against $this->bound_user_id only — there is no
+     * current WP user to consult, by design.
+     * SSOT for "may this paired key read THIS post object?" (T038).
+     */
+    private function can_read_post($post) {
+        if (!$post || empty($this->bound_user_id)) {
+            return false; // fail closed
+        }
+        return user_can($this->bound_user_id, 'read_post', $post->ID);
     }
 
     /**
@@ -854,11 +936,12 @@ class ConnectMWP_Agent {
             return new WP_REST_Response(['success' => false, 'error' => 'Post not found.'], 404);
         }
 
-        // Check if reader has permission for draft
-        if ($post->post_status === 'draft') {
-            if ($post->post_author != $this->bound_user_id && !user_can($this->bound_user_id, 'edit_others_posts')) {
-                return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
-            }
+        // Object-level read authorization for ALL statuses (T038).
+        // The `read_post` meta-cap covers draft/private/pending/trash/future
+        // correctly; the draft-only check it replaces left private/trash readable
+        // by any edit_posts-capable (e.g. Contributor) key — a textbook IDOR.
+        if (!$this->can_read_post($post)) {
+            return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
         }
 
         $fields_param = $request->get_param('fields');
@@ -1331,6 +1414,15 @@ class ConnectMWP_Agent {
         if (isset($_POST['connectmwp_action']) && $_POST['connectmwp_action'] === 'generate_pairing') {
             check_admin_referer('connectmwp_generate_pairing');
             $this->generate_enrollment_code();
+        }
+
+        // Process the "behind trusted proxy" setting (T041). Single write site
+        // for the connectmwp_trust_proxy option; is_behind_trusted_proxy() is the
+        // single read site.
+        if (isset($_POST['connectmwp_action']) && $_POST['connectmwp_action'] === 'set_trust_proxy') {
+            check_admin_referer('connectmwp_proxy_setting');
+            update_option('connectmwp_trust_proxy', !empty($_POST['connectmwp_trust_proxy']));
+            echo '<div class="notice notice-success is-dismissible"><p>Trusted-proxy setting saved.</p></div>';
         }
 
         // Retrieve active pairing code if it exists and hasn't expired

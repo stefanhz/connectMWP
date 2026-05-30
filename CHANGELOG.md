@@ -4,6 +4,22 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-29 — v2.0.26
+
+### Fixed — plugin security hardening (P6)
+
+- **Private and trashed posts can no longer leak to under-privileged clients (T038, HIGH).** Reading a single post (`GET /connectmwp/v1/posts/<id>`, over both REST and the admin-AJAX fallback) now checks per-object read permission for **every** post status, not just drafts. Previously a key bound to a lower-privilege WordPress role (e.g. a Contributor) could fetch another author's *private* post, or any *trashed* post, and get the full body back — a broken object-level authorization (IDOR) gap. The fix routes every single-post read through one shared check that uses WordPress's own object-level read rule, so the answer matches exactly what that user would be allowed to read in the WordPress admin. Well-behaved Author/Editor/Administrator clients are unaffected; only the previously-leaking case now returns a 403. The list, update, and delete paths were already correct and gained regression coverage.
+
+- **Malformed enrollment requests no longer create database rows (T041, MEDIUM).** The one-time pairing endpoint (`/enroll`) has a per-IP rate limiter. Previously, any request carrying a wrong-but-non-empty code wrote a rate-limit record to the database, so a flood of garbage codes from many source addresses could bloat the WordPress options table. Now a structurally-invalid or missing code is rejected up front with **zero** database writes; only a correctly-shaped (real or brute-forced) code counts against the 5-attempts-per-10-minutes limiter, exactly as before. The client-visible behavior of legitimate pairing is unchanged.
+
+### Added — optional admin setting (P6 / T041)
+
+- **New "Behind trusted proxy" setting (default OFF).** Under **Settings → connectMWP → Network & security**, an administrator can declare that the site sits behind a reverse proxy / CDN they control (Cloudflare, Nginx, a load balancer), so the enrollment limiter attributes requests to the real client IP from the forwarding headers. **Default is OFF**, in which case client IPs come from the direct connection and cannot be spoofed — so upgrading changes nothing unless you opt in. Can also be forced via `define('CONNECTMWP_TRUST_PROXY', true);` in `wp-config.php`. New OPERATIONS.md §8 documents this plus the recommended edge rate-limiting (the primary abuse control). Enabling it while *not* actually behind a controlled proxy re-introduces an IP-spoofing vector — leave it OFF if unsure.
+
+### Changed — versioning
+
+- **Bumped all three components to v2.0.26 (lockstep)** via the `/VERSION` SSOT + `scripts/sync-version.mjs`. Plugin zip rebuilt and mirrored to `connectmwp-server/public/` (sha-identical). New verification harnesses `_internal/verify/p6_idor_test.sh` and `_internal/verify/p6_enroll_test.sh` (+ `p6_enroll_shim.php`, `p6_idor_test.php`) added; the full existing harness suite (`interop`, `sanitization`, `p2`–`p5`) still passes.
+
 ## 2026-05-29 — v2.0.24
 
 ### Changed — module hygiene (P5 modularization step (iii))
