@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.30
+ * Version: 2.0.31
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -2120,6 +2120,18 @@ class ConnectMWP_Agent {
                         let stopped = false;
                         let timer = null;
 
+                        // Named so the SAME reference can be detached in stop().
+                        const onVisibility = function() {
+                            if (document.visibilityState === 'visible' && !stopped) poll();
+                        };
+
+                        // Single teardown chokepoint (SSOT): flag, interval, listener.
+                        function stop() {
+                            stopped = true;
+                            if (timer) clearInterval(timer);
+                            document.removeEventListener('visibilitychange', onVisibility);
+                        }
+
                         // DOM-only success state build — no innerHTML, so the server-supplied
                         // label is structurally XSS-safe.
                         function flipCardToSuccess(label) {
@@ -2160,24 +2172,20 @@ class ConnectMWP_Agent {
                                 const data = await res.json();
                                 const claimed = (data.total_keys > initialTotal) || (data.latest_key_id && data.latest_key_id !== initialLatest);
                                 if (claimed) {
-                                    stopped = true;
-                                    if (timer) clearInterval(timer);
+                                    stop();
                                     flipCardToSuccess(data.latest_label);
                                     setTimeout(function() { window.location.reload(); }, 1500);
                                     return;
                                 }
                                 if (!data.code_active) {
-                                    stopped = true;
-                                    if (timer) clearInterval(timer);
+                                    stop();
                                 }
                             } catch (e) {}
                         }
 
                         poll();
                         timer = setInterval(poll, 3000);
-                        document.addEventListener('visibilitychange', function() {
-                            if (document.visibilityState === 'visible' && !stopped) poll();
-                        });
+                        document.addEventListener('visibilitychange', onVisibility);
                     })();
                     </script>
                 </section>

@@ -4,6 +4,17 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-29 — v2.0.31
+
+### Fixed — P11 (plugin)
+
+- **The pairing screen no longer leaves behind a tab-focus watcher after it finishes (T042).** While you have a live pairing code on screen, the WordPress Settings → connectMWP page checks every few seconds whether the pairing completed, and also re-checks the instant you switch back to that browser tab. Previously, once pairing finished (success) or the code expired, that "switch-back" watcher was never removed — a harmless leftover the browser would only clear when you left the page. It is now removed the moment polling stops. As part of the fix, the page's stop logic (mark stopped, clear the timer, remove the watcher) was consolidated into one place, so it can't drift out of sync again. This is admin-screen behavior only — it does not touch the AI-to-WordPress publishing path, signatures, sessions, or any authentication.
+
+### Internal — P11
+
+- All three components bumped to **v2.0.31** in lockstep (project rule), even though only the WordPress plugin changed.
+- Plugin zip rebuilt and mirrored to `connectmwp-server/public/connectmwp-agent.zip` (both copies sha-identical) so it carries the v2.0.31 plugin header.
+
 ## 2026-05-29 — v2.0.30
 
 ### Changed — central-server cleanups (P10, server-only)
