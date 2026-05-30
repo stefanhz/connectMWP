@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.26
+ * Version: 2.0.27
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -35,6 +35,22 @@ class ConnectMWP_Agent {
     const OPTION_TOKENS = 'connectmwp_agent_tokens';
     const OPTION_NONCES = 'connectmwp_agent_nonces';
     const API_NAMESPACE = 'connectmwp/v1';
+
+    // ---- Key storage DAL constants (T039) ----------------------------------
+    // Keys were historically stored as ONE monolithic associative-array option
+    // (`connectmwp_keys`), mutated via non-atomic read-modify-write — a TOCTOU
+    // race that could silently drop a concurrently-enrolled key. As of v2.0.27
+    // each key lives in its OWN option row so a write to one key can never
+    // clobber another. A self-healing index option lists the key ids for cheap
+    // enumeration (the per-key rows remain the source of truth). The legacy
+    // monolithic row is retained for one release as a backward-read fallback and
+    // is dropped in a follow-up release (v2.0.28) — see CHANGELOG.
+    const LEGACY_KEYS_OPTION = 'connectmwp_keys';        // read-only fallback (one release)
+    const KEY_OPTION_PREFIX  = 'connectmwp_key_';        // + bare hex suffix => per-key option name
+    const KEY_INDEX_OPTION   = 'connectmwp_key_index';   // array of key_id (hint, self-healing)
+    const KEY_PREFIX_STRIP   = 'cmwp_key_';              // stripped from key_id to form the option suffix
+    const KEY_MIGRATED_FLAG  = 'connectmwp_keys_migrated'; // migration sentinel (atomic add_option)
+    const KEY_INDEX_MAX_RETRY = 5;                       // bounded optimistic-retry for the index option
 
     // Wire-format length of an enrollment code: bin2hex(random_bytes(16)) yields
     // exactly 32 lowercase hex chars (see generate_enrollment_code()). Declared
@@ -74,6 +90,15 @@ class ConnectMWP_Agent {
 
         // Admin settings page hook
         add_action('admin_menu', [$this, 'add_settings_page']);
+
+        // One-time, sentinel-guarded migration of the legacy monolithic
+        // `connectmwp_keys` array into atomic per-key option rows (T039).
+        // Runs on plugins_loaded so it fires on a plugin UPDATE (activation
+        // hooks do not). The sentinel short-circuits after the first run, so
+        // this is a single cheap get_option() on every subsequent request.
+        // The lazy per-entry migration in get_key() covers the window before
+        // the first plugins_loaded run on an API-only request.
+        add_action('plugins_loaded', [$this, 'maybe_migrate_legacy_keys']);
     }
 
     /**
@@ -474,24 +499,343 @@ class ConnectMWP_Agent {
         );
     }
 
-    private function find_key_by_id($key_id) {
-        $keys = get_option('connectmwp_keys', []);
-        if (is_array($keys) && isset($keys[$key_id])) {
-            return $keys[$key_id];
+    // ========================================================================
+    // Key storage DAL (SSOT) — T039
+    //
+    // The ONLY code permitted to touch key storage. Every handler/lookup routes
+    // through these helpers; no call site reads/writes the raw option names
+    // directly (enforced by the SSOT grep gate in _internal/verify/p7_test.sh).
+    //
+    // Atomicity model: each key is its own `connectmwp_key_<hex>` option row, so
+    // a write to one key never rewrites another (closes the array read-modify-
+    // write TOCTOU that could silently drop a concurrently-enrolled key). The
+    // `connectmwp_key_index` option is a non-authoritative, self-healing list of
+    // key ids used only for enumeration — the per-key rows are the source of
+    // truth, so a stale/lost index can never delete a key.
+    //
+    // None of these establish a login session or call get_current_user_id().
+    // ========================================================================
+
+    /**
+     * Map a key_id to its per-key option name. SSOT for the naming convention.
+     * Strips the `cmwp_key_` id prefix so the option is `connectmwp_key_<hex>`
+     * (avoids a confusing `connectmwp_key_cmwp_key_<hex>` and any collision with
+     * the `cmwp_sig_` / `cmwp_enroll_limit_` families). Ids without the expected
+     * prefix fall back to a deterministic hash so they still map stably.
+     */
+    private function key_option_name($key_id) {
+        $key_id = (string) $key_id;
+        $strip = self::KEY_PREFIX_STRIP;
+        if (strpos($key_id, $strip) === 0) {
+            $suffix = substr($key_id, strlen($strip));
+        } else {
+            // Defensive: any legacy/odd id still maps deterministically.
+            $suffix = substr(hash('sha256', $key_id), 0, 32);
+        }
+        return self::KEY_OPTION_PREFIX . $suffix;
+    }
+
+    /**
+     * Normalize a raw key record to the canonical six-field shape so every
+     * consumer sees a stable structure regardless of source (per-key row, legacy
+     * array, or a partial record). SSOT for the on-WP key schema.
+     */
+    private function normalize_key_record($raw) {
+        if (!is_array($raw)) {
+            $raw = [];
+        }
+        return [
+            'public_key'    => isset($raw['public_key']) ? (string) $raw['public_key'] : '',
+            'bound_user_id' => isset($raw['bound_user_id']) ? intval($raw['bound_user_id']) : 0,
+            'label'         => isset($raw['label']) ? (string) $raw['label'] : '',
+            'created'       => isset($raw['created']) ? (string) $raw['created'] : '',
+            'last_used'     => isset($raw['last_used']) ? (string) $raw['last_used'] : '',
+            'last_ip'       => isset($raw['last_ip']) ? (string) $raw['last_ip'] : '',
+        ];
+    }
+
+    /**
+     * Read a single key by id. Source of truth is the per-key option row; on a
+     * miss we fall back to the retained legacy array (one-release backward read)
+     * and lazily migrate that single entry forward so the new store warms on
+     * read. Returns the normalized record, or false if the key does not exist.
+     */
+    private function get_key($key_id) {
+        $row = get_option($this->key_option_name($key_id), null);
+        if (is_array($row)) {
+            return $this->normalize_key_record($row);
+        }
+
+        // Backward-read fallback: legacy monolithic array (retained one release).
+        $legacy = get_option(self::LEGACY_KEYS_OPTION, []);
+        if (is_array($legacy) && isset($legacy[$key_id]) && is_array($legacy[$key_id])) {
+            $record = $this->normalize_key_record($legacy[$key_id]);
+            // Lazy single-entry migration: warm the per-key store + index.
+            // add_option is atomic — if a concurrent writer beat us, no harm.
+            add_option($this->key_option_name($key_id), $record, '', 'no');
+            $this->index_add($key_id);
+            return $record;
+        }
+
+        return false;
+    }
+
+    /**
+     * Atomic upsert of a single key row (touches only this key). Ensures the id
+     * is present in the index.
+     */
+    private function save_key($key_id, array $record) {
+        $record = $this->normalize_key_record($record);
+        update_option($this->key_option_name($key_id), $record, 'no');
+        $this->index_add($key_id);
+        return true;
+    }
+
+    /**
+     * Atomic create of a new key row. Uses add_option (fails if the row already
+     * exists), so two concurrent enrollments of DIFFERENT keys both succeed on
+     * their own rows — the headline race the array storage could not survive.
+     * Returns true on create, false if a row for this id already existed.
+     */
+    private function add_key($key_id, array $record) {
+        $record = $this->normalize_key_record($record);
+        $created = add_option($this->key_option_name($key_id), $record, '', 'no');
+        // Whether freshly created or already present, make sure the index lists it.
+        $this->index_add($key_id);
+        return (bool) $created;
+    }
+
+    /**
+     * Update specific fields on a single key. Reads the freshest record
+     * immediately before writing, so the read-modify-write window is per-key and
+     * tiny — even two workers racing on the SAME key's last_used only produce a
+     * last-writer-wins timestamp on THAT key, never a cross-key clobber.
+     */
+    private function update_key_fields($key_id, array $changes) {
+        $record = $this->get_key($key_id);
+        if ($record === false) {
+            return false;
+        }
+        foreach ($changes as $field => $value) {
+            $record[$field] = $value;
+        }
+        return $this->save_key($key_id, $record);
+    }
+
+    /**
+     * Delete a single key: remove the per-key row, drop it from the index, and
+     * (durability across the legacy fallback window) remove it from the legacy
+     * array too — otherwise list_keys()'s legacy union could resurrect a revoked
+     * key. Returns true if a per-key row or legacy entry was removed.
+     */
+    private function delete_key($key_id) {
+        $removed = delete_option($this->key_option_name($key_id));
+        $this->index_remove($key_id);
+
+        // Remove from the retained legacy array if present so revoke is durable.
+        $legacy = get_option(self::LEGACY_KEYS_OPTION, []);
+        if (is_array($legacy) && isset($legacy[$key_id])) {
+            unset($legacy[$key_id]);
+            update_option(self::LEGACY_KEYS_OPTION, $legacy, 'no');
+            $removed = true;
+        }
+        return (bool) $removed;
+    }
+
+    /**
+     * Enumerate all keys as key_id => normalized_record. Single entry point for
+     * the settings table (T043), pairing_status_handler and migration. Reads the
+     * index, resolves each via get_key() (covers per-key rows + lazy legacy
+     * migration), self-heals (drops index entries whose row is gone), and unions
+     * any not-yet-migrated legacy ids (one-release fallback). De-dups by id.
+     */
+    private function list_keys() {
+        $out = [];
+
+        $index = get_option(self::KEY_INDEX_OPTION, []);
+        if (is_array($index)) {
+            $healed = [];
+            foreach ($index as $key_id) {
+                $rec = $this->get_key($key_id);
+                if ($rec !== false) {
+                    $out[$key_id] = $rec;
+                    $healed[] = $key_id;
+                }
+            }
+            // Self-heal: if the index referenced dead rows, prune them.
+            if (count($healed) !== count($index)) {
+                $this->write_key_index(array_values(array_unique($healed)));
+            }
+        }
+
+        // Union any legacy-array ids not yet represented (backward-read window).
+        $legacy = get_option(self::LEGACY_KEYS_OPTION, []);
+        if (is_array($legacy)) {
+            foreach ($legacy as $key_id => $raw) {
+                if (!isset($out[$key_id])) {
+                    $rec = $this->get_key($key_id); // warms + indexes via lazy migration
+                    if ($rec !== false) {
+                        $out[$key_id] = $rec;
+                    }
+                }
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Append a key_id to the index with a bounded optimistic retry. The index is
+     * a non-authoritative hint; worst case it is briefly stale, which never
+     * deletes a key because the per-key rows are independent.
+     */
+    private function index_add($key_id) {
+        for ($i = 0; $i < self::KEY_INDEX_MAX_RETRY; $i++) {
+            $index = get_option(self::KEY_INDEX_OPTION, []);
+            if (!is_array($index)) {
+                $index = [];
+            }
+            if (in_array($key_id, $index, true)) {
+                return true; // already present
+            }
+            $next = $index;
+            $next[] = $key_id;
+            // update_option returns false when the stored value is unchanged;
+            // since we appended, a false here means a concurrent writer changed
+            // the row out from under us — re-read and retry.
+            if (update_option(self::KEY_INDEX_OPTION, $next, 'no')) {
+                return true;
+            }
+            // Re-read on next iteration to merge the concurrent change.
         }
         return false;
     }
 
-    private function update_key_last_used($user_id, $key_id) {
-        $keys = get_option('connectmwp_keys', []);
-        if (is_array($keys) && isset($keys[$key_id])) {
-            $last_used_str = $keys[$key_id]['last_used'] ?? '';
-            $last_used_time = !empty($last_used_str) && $last_used_str !== 'Never' ? strtotime($last_used_str) : 0;
-            if (time() - $last_used_time > 60) {
-                $keys[$key_id]['last_used'] = current_time('mysql');
-                $keys[$key_id]['last_ip'] = $this->get_client_ip();
-                update_option('connectmwp_keys', $keys, 'no');
+    /**
+     * Remove a key_id from the index with a bounded optimistic retry.
+     */
+    private function index_remove($key_id) {
+        for ($i = 0; $i < self::KEY_INDEX_MAX_RETRY; $i++) {
+            $index = get_option(self::KEY_INDEX_OPTION, []);
+            if (!is_array($index)) {
+                return true; // nothing to remove
             }
+            if (!in_array($key_id, $index, true)) {
+                return true; // already absent
+            }
+            $next = array_values(array_filter($index, function ($id) use ($key_id) {
+                return $id !== $key_id;
+            }));
+            if (update_option(self::KEY_INDEX_OPTION, $next, 'no')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Overwrite the index option wholesale. Used by self-heal and rebuild.
+     */
+    private function write_key_index(array $ids) {
+        update_option(self::KEY_INDEX_OPTION, array_values(array_unique($ids)), 'no');
+    }
+
+    /**
+     * Recovery path: rebuild the index from the authoritative per-key rows by
+     * scanning wp_options for `connectmwp_key_%` (excluding the index option
+     * itself). Used by migration to seed the index and available for support if
+     * the index is ever lost. The `_` in the prefix is escaped so it matches a
+     * literal underscore, not the LIKE single-char wildcard.
+     */
+    private function rebuild_key_index() {
+        global $wpdb;
+        $prefix = self::KEY_OPTION_PREFIX;
+        // Escape LIKE metacharacters in the prefix (notably `_`).
+        $like = $wpdb->esc_like($prefix) . '%';
+        $names = $wpdb->get_col(
+            $wpdb->prepare(
+                "SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s AND option_name != %s",
+                $like,
+                self::KEY_INDEX_OPTION
+            )
+        );
+
+        // Reconstruct key_ids from option names. The per-key suffix is the bare
+        // hex of a `cmwp_key_<hex>` id, so the id is KEY_PREFIX_STRIP . suffix.
+        $ids = [];
+        if (is_array($names)) {
+            foreach ($names as $name) {
+                $suffix = substr($name, strlen($prefix));
+                if ($suffix !== '' && $suffix !== false) {
+                    $ids[] = self::KEY_PREFIX_STRIP . $suffix;
+                }
+            }
+        }
+        $this->write_key_index($ids);
+        return $ids;
+    }
+
+    /**
+     * Sentinel-guarded, idempotent migration from the legacy monolithic
+     * `connectmwp_keys` array to atomic per-key rows. NON-DESTRUCTIVE: the
+     * legacy row is intentionally retained this release as a backward-read
+     * fallback (dropped in v2.0.28). Preserves all six fields verbatim.
+     */
+    public function maybe_migrate_legacy_keys() {
+        // Atomic guard: add_option fails if the sentinel already exists, so only
+        // the first worker to reach this performs the migration.
+        if (!add_option(self::KEY_MIGRATED_FLAG, '0', '', 'no')) {
+            return; // already migrated (or in progress) — short-circuit
+        }
+
+        $legacy = get_option(self::LEGACY_KEYS_OPTION, []);
+        if (!is_array($legacy) || empty($legacy)) {
+            // Fresh install or nothing to migrate. Mark done.
+            update_option(self::KEY_MIGRATED_FLAG, self::version(), 'no');
+            return;
+        }
+
+        foreach ($legacy as $key_id => $raw) {
+            $record = $this->normalize_key_record($raw);
+            // add_key is atomic create; if a per-key row already exists from a
+            // prior lazy migration, add_option returns false and we skip — the
+            // existing row (already migrated) is authoritative.
+            $this->add_key($key_id, $record);
+        }
+
+        // Seed/refresh the index from the now-written per-key rows.
+        $this->rebuild_key_index();
+
+        // Record completion (and the version that did it). Legacy row stays put.
+        update_option(self::KEY_MIGRATED_FLAG, self::version(), 'no');
+    }
+
+    // ---- Thin wrappers preserving existing call signatures -----------------
+
+    /**
+     * Hot-path key lookup used by verify_request_signature. Now a single
+     * per-key option read (independent of total key count) via the DAL.
+     */
+    private function find_key_by_id($key_id) {
+        return $this->get_key($key_id);
+    }
+
+    /**
+     * Throttled (~60s) last-used / last-ip touch. Mutates ONLY this key's row
+     * (atomic) — the array clobber that could drop a concurrent enroll is gone.
+     */
+    private function update_key_last_used($user_id, $key_id) {
+        $record = $this->get_key($key_id);
+        if ($record === false) {
+            return;
+        }
+        $last_used_str = $record['last_used'] ?? '';
+        $last_used_time = !empty($last_used_str) && $last_used_str !== 'Never' ? strtotime($last_used_str) : 0;
+        if (time() - $last_used_time > 60) {
+            $this->update_key_fields($key_id, [
+                'last_used' => current_time('mysql'),
+                'last_ip'   => $this->get_client_ip(),
+            ]);
         }
     }
 
@@ -641,9 +985,9 @@ class ConnectMWP_Agent {
         $key_id = $this->matched_key_id;
         $label = null;
         if (!empty($key_id)) {
-            $keys = get_option('connectmwp_keys', []);
-            if (is_array($keys) && isset($keys[$key_id]) && !empty($keys[$key_id]['label'])) {
-                $label = $keys[$key_id]['label'];
+            $rec = $this->get_key($key_id);
+            if ($rec !== false && !empty($rec['label'])) {
+                $label = $rec['label'];
             }
         }
         return new WP_REST_Response(
@@ -681,10 +1025,7 @@ class ConnectMWP_Agent {
             $expires_in = max(0, intval($stored['expires']) - time());
         }
 
-        $keys = get_option('connectmwp_keys', []);
-        if (!is_array($keys)) {
-            $keys = [];
-        }
+        $keys = $this->list_keys();
         $total_keys = count($keys);
 
         $latest_key_id  = null;
@@ -795,21 +1136,16 @@ class ConnectMWP_Agent {
 
         $key_id = 'cmwp_key_' . bin2hex(random_bytes(8));
 
-        $keys = get_option('connectmwp_keys', []);
-        if (!is_array($keys)) {
-            $keys = [];
-        }
-
-        $keys[$key_id] = [
+        // Atomic per-key create (T039). add_key writes ONLY this key's row, so a
+        // concurrent enroll of a different key cannot clobber it and vice versa.
+        $this->add_key($key_id, [
             'public_key'     => $public_key,
             'bound_user_id'  => intval($stored['user_id']),
             'label'          => $label,
             'created'        => current_time('mysql'),
             'last_used'      => '',
             'last_ip'        => ''
-        ];
-
-        update_option('connectmwp_keys', $keys, 'no');
+        ]);
 
         // Delete pairing code and rate-limit transient immediately on success
         delete_option('connectmwp_enrollment_code');
@@ -1402,10 +1738,10 @@ class ConnectMWP_Agent {
         if (isset($_POST['connectmwp_action']) && $_POST['connectmwp_action'] === 'revoke_key' && isset($_POST['key_id'])) {
             check_admin_referer('connectmwp_revoke_key');
             $key_id_to_revoke = sanitize_text_field($_POST['key_id']);
-            $keys = get_option('connectmwp_keys', []);
-            if (is_array($keys) && isset($keys[$key_id_to_revoke])) {
-                unset($keys[$key_id_to_revoke]);
-                update_option('connectmwp_keys', $keys, 'no');
+            // Confirm existence first so the success notice stays accurate, then
+            // delete the per-key row + index entry + legacy fallback (T039 DAL).
+            if ($this->get_key($key_id_to_revoke) !== false) {
+                $this->delete_key($key_id_to_revoke);
                 echo '<div class="notice notice-success is-dismissible"><p>Client key successfully revoked.</p></div>';
             }
         }
@@ -1432,17 +1768,30 @@ class ConnectMWP_Agent {
             $enrollment_string = esc_url(home_url()) . ',' . $stored['code'];
         }
 
-        $all_keys = get_option('connectmwp_keys', []);
-        $all_keys_with_users = [];
-        if (is_array($all_keys)) {
-            foreach ($all_keys as $key_id => $key_data) {
-                $user_info = get_userdata($key_data['bound_user_id']);
-                $key_data['user_login'] = $user_info ? $user_info->user_login : 'Unknown User';
-                $key_data['user_display'] = $user_info ? ($user_info->display_name ?: $user_info->user_login) : 'Unknown User';
-                $key_data['user_roles'] = $user_info && is_array($user_info->roles) ? array_values($user_info->roles) : [];
-                $key_data['key_id'] = $key_id;
-                $all_keys_with_users[] = $key_data;
+        // Source keys via the DAL (T039 SSOT) and resolve bound users with a
+        // single batched query instead of one get_userdata() per key (T043 N+1
+        // fix). `fields` is intentionally omitted so each WP_User exposes
+        // ->roles directly (WP batches the role meta load) — keeping the table
+        // output byte-identical while collapsing N user lookups into ONE query.
+        $all_keys = $this->list_keys();
+        $user_ids = array_values(array_unique(array_filter(array_map(function ($k) {
+            return intval($k['bound_user_id']);
+        }, $all_keys))));
+        $user_map = [];
+        if (!empty($user_ids)) {
+            foreach (get_users(['include' => $user_ids]) as $u) {
+                $user_map[intval($u->ID)] = $u;
             }
+        }
+
+        $all_keys_with_users = [];
+        foreach ($all_keys as $key_id => $key_data) {
+            $user_info = $user_map[intval($key_data['bound_user_id'])] ?? null;
+            $key_data['user_login']   = $user_info ? $user_info->user_login : 'Unknown User';
+            $key_data['user_display'] = $user_info ? ($user_info->display_name ?: $user_info->user_login) : 'Unknown User';
+            $key_data['user_roles']   = $user_info && is_array($user_info->roles) ? array_values($user_info->roles) : [];
+            $key_data['key_id']       = $key_id;
+            $all_keys_with_users[]    = $key_data;
         }
 
         // Newest first — so the most recent pairing is immediately visible and

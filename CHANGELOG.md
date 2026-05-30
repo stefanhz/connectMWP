@@ -4,6 +4,25 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-29 — v2.0.27
+
+### Fixed — plugin data-integrity + performance (P7)
+
+- **Data-loss race in paired-key storage (security/integrity, HIGH — T039).** Every paired client's key used to live in one shared database record that the plugin rewrote in full on each change. Under concurrent activity — for example a brand-new pairing arriving at the same instant an existing client made a request — one process could overwrite the other's change, silently dropping a just-paired key (it would show as "paired" on the user's machine but never actually authenticate) or even undoing a revoke. Each key now lives in its **own** database record, so a change to one key can no longer clobber another. Existing pairings are migrated automatically and **non-destructively** on upgrade — nothing the user set up before needs redoing, and the old combined record is kept (read-only) for one release as a safety net.
+
+- **Slow "Paired Clients" settings page with many clients (cleanup, LOW — T043).** The plugin's admin settings screen looked up each paired client's WordPress user one at a time. It now fetches them all in a single query, so the page stays fast regardless of how many clients are paired. The table shows exactly the same information as before (login, display name, roles, the "Unknown User" fallback for a deleted user).
+
+### Internal — P7
+
+- **One key-storage data-access layer (DAL / SSOT).** All key reads and writes now go through a single set of helpers (`get_key` / `save_key` / `add_key` / `update_key_fields` / `delete_key` / `list_keys`, plus `index_add` / `index_remove` / `rebuild_key_index` / `key_option_name` / `normalize_key_record`). No code outside the DAL touches key storage directly — enforced by a grep gate in the verification harness. Per-key rows are the source of truth; a self-healing index lists the ids for cheap enumeration and is fully rebuildable from the rows.
+- **Migration is one-time, sentinel-guarded (atomic `add_option`), and idempotent** (`maybe_migrate_legacy_keys`, fired on `plugins_loaded` so it runs on a plugin update; also lazily per-entry on read). It preserves all six stored fields per key (public key, bound user, label, created, last-used, last-IP) and **retains the legacy combined record this release** as a backward-read fallback.
+- **Follow-up (v2.0.28):** drop the now-redundant legacy `connectmwp_keys` record after confirming all installs have migrated. Captured here so it is not forgotten.
+- Added `_internal/verify/p7_test.sh`: an always-on static layer (DAL present, SSOT grep gate, atomic primitives, non-destructive migration, index recovery, batched settings render, auth-model invariants unchanged) plus a WP-CLI-gated behavioral layer (migration correctness, the concurrency race reproduction, and the T043 query-count proof) that skips cleanly when no WordPress is available.
+
+### Changed — versioning
+
+- **Bumped all three components to v2.0.27 (lockstep)** via the `/VERSION` SSOT + `scripts/sync-version.mjs`. Plugin zip rebuilt and mirrored to `connectmwp-server/public/` (sha-identical). All existing verification harnesses (`interop`, `sanitization`, `p2`–`p5`, `p6_idor`, `p6_enroll`) still pass.
+
 ## 2026-05-29 — v2.0.26
 
 ### Fixed — plugin security hardening (P6)
