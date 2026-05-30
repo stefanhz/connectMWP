@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# connectMWP pre-commit hook — version SSOT drift gate.
+# Blocks any commit where the version literals (package.json x2, plugin header)
+# have drifted from the canonical repo-root VERSION file. Install with:
+#   bash scripts/install-hooks.sh
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+if [ -f "$ROOT/scripts/sync-version.mjs" ]; then
+  if ! node "$ROOT/scripts/sync-version.mjs" --check; then
+    echo ""
+    echo "pre-commit BLOCKED: version drift detected."
+    echo "Fix with: node scripts/sync-version.mjs   (then re-stage and commit)"
+    exit 1
+  fi
+fi

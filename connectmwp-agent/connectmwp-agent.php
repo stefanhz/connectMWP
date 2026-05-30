@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.24
+ * Version: 2.0.25
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -13,7 +13,25 @@ defined('ABSPATH') || exit;
 
 class ConnectMWP_Agent {
 
-    const VERSION = '2.0.24';
+    /**
+     * Plugin version. SINGLE SOURCE OF TRUTH is the `Version:` header at the top
+     * of this file (itself propagated from the repo-root /VERSION file by
+     * scripts/sync-version.mjs). Read at runtime via get_file_data() and cached
+     * in a static, so the plugin carries no second version literal to drift.
+     * Replaces the former `const VERSION`.
+     */
+    private static $version_cache = null;
+    public static function version() {
+        if (self::$version_cache === null) {
+            if (!function_exists('get_file_data')) {
+                require_once ABSPATH . 'wp-includes/functions.php';
+            }
+            $data = get_file_data(__FILE__, ['Version' => 'Version']);
+            self::$version_cache = !empty($data['Version']) ? $data['Version'] : 'unknown';
+        }
+        return self::$version_cache;
+    }
+
     const OPTION_TOKENS = 'connectmwp_agent_tokens';
     const OPTION_NONCES = 'connectmwp_agent_nonces';
     const API_NAMESPACE = 'connectmwp/v1';
@@ -1561,7 +1579,7 @@ class ConnectMWP_Agent {
         <div class="wrap cmwp-wrap">
 
             <header class="cmwp-hero">
-                <h1>🔌 connectMWP Agent <span class="cmwp-ver">v<?php echo esc_html(self::VERSION); ?></span></h1>
+                <h1>🔌 connectMWP Agent <span class="cmwp-ver">v<?php echo esc_html(self::version()); ?></span></h1>
                 <p>Secure, signature-based direct connector between local AI clients (Claude Desktop, Cursor, ChatGPT Desktop, Antigravity, etc.) and this WordPress site.</p>
             </header>
 

@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-> **Verified against:** connectMWP **v2.0.24** (all three components, lockstep).
+> **Verified against:** connectMWP **v2.0.25** (all three components, lockstep).
 > **Last reviewed:** 2026-05-29.
 > **Re-verify when:** the request-signing canonical string, the `permission_callback` / `rest_pre_dispatch` filter in the plugin, the on-disk schema of `~/.connectmwp.json` or `~/.connectmwp/<host>.ed25519`, the lockstep versioning rule, or the central-server-out-of-daily-path constraint changes.
 
@@ -20,7 +20,7 @@ This repo is a monorepo of three loosely-coupled deliverables. **Project rule: a
 | `connectmwp-mcp/` | Local MCP client / signer (stdio server the AI client spawns; published on npm as `connectmwp-mcp`) | Node ESM | `version` in `package.json` |
 | `connectmwp-server/` | Central web app (marketing, legal pages, plugin zip download; **not** in the daily auth/content path) | Next.js 16 / React 19 | `version` in `package.json` |
 
-The README's setup commands and version references can drift from the source files — **trust the source files (plugin header + two `package.json`s) over any README claim.** When updating versions, change all three locations.
+The README's setup commands and version references can drift from the source files — **trust the source files (plugin header + two `package.json`s) over any README claim.** **The version Single Source of Truth is the repo-root `/VERSION` file.** Never hand-edit the per-file version literals — run `node scripts/sync-version.mjs` to propagate `/VERSION` into the plugin header + both `package.json`s, and a git pre-commit hook (`scripts/install-hooks.sh`) runs `node scripts/sync-version.mjs --check` to block any commit where they've drifted. The plugin no longer has a `const VERSION`; its UI reads the header at runtime via `get_file_data()`.
 
 ## Commands
 
