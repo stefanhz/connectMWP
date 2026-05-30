@@ -160,9 +160,14 @@ cd /Users/stefanhz/Documents/aiSpace/connectMWP/connectmwp-mcp
 npm pack --dry-run
 ```
 
-Expect exactly **3 files**: `README.md`, `index.js`, `package.json`. If anything
-else appears (`node_modules`, `*.tmp`, `package-lock.json`) — STOP, fix the
-`files` field in `package.json`, re-run.
+Expect exactly **7 files** (as of v2.0.25, after the `lib/` modularization):
+`README.md`, `index.js`, `lib/constants.js`, `lib/crypto.js`,
+`lib/projections.js`, `lib/validators.js`, `package.json`. All four `lib/*.js`
+modules are imported by `index.js` (lines 27–31) and MUST ship — without them the
+published package crashes on launch with a module-not-found error. The `files`
+allowlist in `package.json` (`index.js`, `lib/**`, `README.md`) is what controls
+this. If anything *outside* that set appears (`node_modules`, `*.tmp`,
+`package-lock.json`, stray `*.ed25519`) — STOP, fix the `files` field, re-run.
 
 ### Step 6 — Publish
 

@@ -11,10 +11,14 @@ Each signed request carries a per-request UUID nonce as the second field of the 
 
 ## Why connectMWP? (Motivation & Design Choices)
 
-While there are other WordPress integration solutions and MCP servers available on the market (such as Automattic's official WordPress MCP server), connectMWP was built to address two critical pain points:
+connectMWP started with a problem I couldn't solve on my own site. There are good WordPress + MCP options out there already — Automattic's official WordPress MCP server chief among them — and I tried them first. I just couldn't get one working against my own setup: the security plugins I run kept blocking the connection, and I wasn't willing to weaken my site's defenses to get past them. So I built an approach that works *with* a hardened site instead of around it.
 
-1. **Uncompromised Security & WAF Compatibility**: The prime alternatives require logging in as a WordPress user session on each call, which triggers immediate blocks from security plugins (like Wordfence, Solid Security, miniOrange) or edge firewalls/WAFs enforcing 2FA or cookie policies. connectMWP operates **100% session-less** (verifying per-request cryptographic Ed25519 signatures in the permission callback without establishing a login session), allowing secure connections straight through strict security plugins without compromising your site's safety.
-2. **Direct Connection with No Middleware Costs**: Other platforms act as centralized middleware, routing traffic through third-party proxies that require separate API keys and extra monthly subscription fees. connectMWP is **fully decentralized** (the local MCP server acts as the signer and calls your site directly). It works out of the box with your existing, paid local setup (e.g., Claude.ai Pro/Team subscription) at $0 middleware proxy cost.
+Two design choices fell out of that:
+
+1. **Works alongside your security plugins, not against them.** Most integrations authenticate by logging in as a WordPress user on each call. On a locked-down site that login is exactly what your security plugins and firewall are there to scrutinize — 2FA challenges, cookie policies, and tools like Wordfence, Solid Security, or miniOrange can stop it cold. connectMWP is **100% session-less**: it verifies a per-request Ed25519 signature in the permission callback and never establishes a login session at all. There's no login for the security layer to challenge, so a hardened site and connectMWP can coexist — no compromises on either side.
+2. **A direct connection, with nothing in the middle.** connectMWP is **fully decentralized** — the local MCP client signs the request and talks straight to your site over HTTPS. Nothing is routed through a third-party proxy, so there are no extra API keys, no middleware subscription, and no central server in the traffic path ($0 proxy cost). It works with the AI subscription you already pay for.
+
+I'm sharing this publicly because experience has taught me that when I hit a wall like this, I'm rarely the only one. If you ran into the same problem, I hope it saves you the detour — and **contributions are genuinely welcome**. The goal here is simple: things that *work*.
 
 ---
 
