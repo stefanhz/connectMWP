@@ -1,6 +1,6 @@
 # connectMWP — Operations Runbook
 
-> **Verified against:** connectMWP **v2.0.24** (all three components, lockstep).
+> **Verified against:** connectMWP **v2.0.25** (all three components, lockstep).
 > **Last reviewed:** 2026-05-29.
 > **Re-verify when:** the MCP CLI surface changes (`add-site`/`remove-site`/`set-default`/`list-sites` flags), the plugin auth flow changes, the release/publish process changes, or component versions drift out of lockstep.
 
@@ -112,13 +112,17 @@ stays until the next re-enroll overwrites it.
 
 Edit `connectmwp-mcp/index.js` (or `connectmwp-server/...` or `connectmwp-agent/connectmwp-agent.php`) as needed.
 
-### Step 2 — Bump versions in all THREE locations
+### Step 2 — Bump the version (ONE place — the `/VERSION` file)
 
-| File | Field | Format |
-|---|---|---|
-| `connectmwp-mcp/package.json` | `"version"` | `"2.0.X"` |
-| `connectmwp-server/package.json` | `"version"` | `"2.0.X"` |
-| `connectmwp-agent/connectmwp-agent.php` | `Version:` header (top of file, ~line 6) | `2.0.X` |
+The version Single Source of Truth is the repo-root **`/VERSION`** file (since v2.0.25). Edit it, then propagate with the sync script — never hand-edit the per-file version literals:
+
+```bash
+echo "2.0.X" > VERSION                 # the ONLY version you hand-edit
+node scripts/sync-version.mjs          # writes it into both package.json files + the plugin Version: header
+node scripts/sync-version.mjs --check  # gate: exits non-zero on any drift
+```
+
+The plugin no longer carries a `const VERSION` — its settings UI reads its own header at runtime via `get_file_data()`, so there is nothing else to touch. A git pre-commit hook runs `--check` and BLOCKS any commit where the literals have drifted; install it once per clone with `bash scripts/install-hooks.sh`. (Doc `Verified against:` anchors + README version mentions are deliberately NOT script-managed — refresh those in Step 3 / the doc-review step.)
 
 Semver guidance: patch for fixes/tweaks/config; minor for new features; major for breaking changes.
 
