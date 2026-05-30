@@ -4,6 +4,19 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-30 — v2.0.33
+
+WordPress.org submission-prep release. No behavioral or auth-path change — packaging and metadata only. The v2.0.32 security items (T064/T065/T066) were live-WP behaviorally verified on 2morrow.ai before this release (4-way concurrent enrollment race → exactly one winner + three rejected; a Page read through the posts endpoint → 404; duplicate-tag create → generic error, no raw `WP_Error`).
+
+### Added
+
+- **Repo-root `LICENSE`** — canonical GPLv2 text. The repo previously shipped no license file at all. (`LICENSE`)
+- **`connectmwp-agent/readme.txt`** — WordPress.org directory readme: header block (Stable tag, Requires/Tested, GPLv2), an **External Services** disclosure documenting that the plugin makes no outbound calls, plus Installation, FAQ, and Changelog sections. (`connectmwp-agent/readme.txt`)
+
+### Changed
+
+- **connectmwp-agent — completed the plugin header for directory review.** Added `Requires at least`, `Requires PHP`, `License URI`, and `Text Domain`; promoted `License` to `GPLv2 or later`; and rewrote the stale `Description`, which still described the v1 "client-level tokens" model rather than the v2 session-less Ed25519 design. No code path changed. (`connectmwp-agent/connectmwp-agent.php`)
+
 ## 2026-05-30 — v2.0.32
 
 Backlog-clearing release from two fresh audits (`_internal/SECURITY-REVIEW-REPORT_2026-05-30_10-30.md`, `_internal/ARCH-REVIEW-REPORT_2026-05-30_10-20.md`). Static + build + interop verification green (`_internal/verify/p12_test.sh`, 25/25); live-WP behavioral verification of the security items (T064/T065/T066) pending deploy.

@@ -1,7 +1,7 @@
 # connectmwp-mcp
 
-> **Verified against:** connectMWP **v2.0.18** (lockstep across plugin, MCP client, central server).
-> **Last reviewed:** 2026-05-28.
+> **Verified against:** connectMWP **v2.0.33** (lockstep across plugin, MCP client, central server).
+> **Last reviewed:** 2026-05-30.
 > **Re-verify when:** the `add-site` / `remove-site` / `set-default` / `list-sites` flag surface changes, or the security-model summary below diverges from `_internal/ARCHITECTURE.md`.
 
 Local MCP (Model Context Protocol) client for [connectMWP](https://github.com/stefanhz/connectMWP) — connects AI clients (Claude Desktop, Claude Code, Cursor) directly to self-hosted WordPress sites over HTTPS, with no central proxy in the daily traffic path.

@@ -2,11 +2,15 @@
 /**
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
- * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.32
+ * Description: Securely let your own local AI client (Claude, Cursor) publish to this WordPress site over a signed, session-less Ed25519 connection — no login, no central server.
+ * Version: 2.0.33
+ * Requires at least: 6.0
+ * Requires PHP: 7.4
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
- * License: GPLv2
+ * License: GPLv2 or later
+ * License URI: https://www.gnu.org/licenses/gpl-2.0.html
+ * Text Domain: connectmwp-agent
  */
 
 defined('ABSPATH') || exit;
