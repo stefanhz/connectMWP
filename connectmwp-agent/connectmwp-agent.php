@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP Agent
  * Plugin URI: https://connectmwp.com
  * Description: Secure remote connector for connectmwp.com. Exposes safe REST API and Admin-AJAX endpoints signed with client-level tokens.
- * Version: 2.0.28
+ * Version: 2.0.29
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2
@@ -56,6 +56,16 @@ class ConnectMWP_Agent {
     // exactly 32 lowercase hex chars (see generate_enrollment_code()). Declared
     // once so the mint side and the structural validator cannot drift (T041).
     const ENROLL_CODE_HEX_LEN = 32;
+
+    // Pagination limits — SSOT for list endpoints (T052). Posts cap (100) and
+    // taxonomy cap (200) are deliberately distinct: post rows may carry content
+    // (large), so they get a tighter ceiling. MAX_PER_PAGE / DEFAULT_PER_PAGE
+    // mirror the "default 50, max 200" contract the MCP client advertises for
+    // tags/categories; keep them in agreement (guarded by p9_test.sh).
+    const DEFAULT_PER_PAGE   = 50;   // default page size for all list endpoints
+    const MAX_PER_PAGE       = 200;  // cap for taxonomy lists (matches MCP tag/category contract)
+    const MAX_PER_PAGE_POSTS = 100;  // cap for post lists (rows may carry content)
+    const MIN_PER_PAGE       = 1;    // hard lower bound for any list page size
 
     private static $instance = null;
 
@@ -1204,8 +1214,8 @@ class ConnectMWP_Agent {
      * REST Handlers
      */
     public function get_posts_handler(WP_REST_Request $request) {
-        $limit = $request->get_param('limit') ? intval($request->get_param('limit')) : 50;
-        $limit = min(100, max(1, $limit));
+        $limit = $request->get_param('limit') ? intval($request->get_param('limit')) : self::DEFAULT_PER_PAGE;
+        $limit = min(self::MAX_PER_PAGE_POSTS, max(self::MIN_PER_PAGE, $limit));
         $offset = $request->get_param('offset') ? intval($request->get_param('offset')) : 0;
         $offset = max(0, $offset);
         
@@ -1503,15 +1513,15 @@ class ConnectMWP_Agent {
     }
 
     public function get_tags_handler(?WP_REST_Request $request = null) {
-        $limit = 50;
+        $limit = self::DEFAULT_PER_PAGE;
         $offset = 0;
         $search = '';
         if ($request instanceof WP_REST_Request) {
-            $limit = $request->get_param('limit') ? intval($request->get_param('limit')) : 50;
+            $limit = $request->get_param('limit') ? intval($request->get_param('limit')) : self::DEFAULT_PER_PAGE;
             $offset = $request->get_param('offset') ? intval($request->get_param('offset')) : 0;
             $search = $request->get_param('search') ? sanitize_text_field($request->get_param('search')) : '';
         }
-        $limit = min(200, max(1, $limit));
+        $limit = min(self::MAX_PER_PAGE, max(self::MIN_PER_PAGE, $limit));
         $offset = max(0, $offset);
 
         $args = [
@@ -1534,19 +1544,31 @@ class ConnectMWP_Agent {
                 ];
             }
         }
-        return new WP_REST_Response(['success' => true, 'tags' => $result], 200);
+
+        // T049: pagination parity with get_posts. Count the full filtered set
+        // (same hide_empty + search as the listing, but no number/offset window)
+        // so the AI client can paginate deterministically instead of over-fetching.
+        $count_args = ['taxonomy' => 'post_tag', 'hide_empty' => false];
+        if (!empty($search)) {
+            $count_args['search'] = $search;
+        }
+        $count = wp_count_terms($count_args);
+        $total = is_wp_error($count) ? count($result) : intval($count);
+        $has_more = ($offset + count($result)) < $total;
+
+        return new WP_REST_Response(['success' => true, 'tags' => $result, 'total' => $total, 'has_more' => $has_more], 200);
     }
 
     public function get_categories_handler(?WP_REST_Request $request = null) {
-        $limit = 50;
+        $limit = self::DEFAULT_PER_PAGE;
         $offset = 0;
         $search = '';
         if ($request instanceof WP_REST_Request) {
-            $limit = $request->get_param('limit') ? intval($request->get_param('limit')) : 50;
+            $limit = $request->get_param('limit') ? intval($request->get_param('limit')) : self::DEFAULT_PER_PAGE;
             $offset = $request->get_param('offset') ? intval($request->get_param('offset')) : 0;
             $search = $request->get_param('search') ? sanitize_text_field($request->get_param('search')) : '';
         }
-        $limit = min(200, max(1, $limit));
+        $limit = min(self::MAX_PER_PAGE, max(self::MIN_PER_PAGE, $limit));
         $offset = max(0, $offset);
 
         $args = [
@@ -1569,7 +1591,19 @@ class ConnectMWP_Agent {
                 ];
             }
         }
-        return new WP_REST_Response(['success' => true, 'categories' => $result], 200);
+
+        // T049: pagination parity with get_posts. Count the full filtered set
+        // (same hide_empty + search as the listing, but no number/offset window)
+        // so the AI client can paginate deterministically instead of over-fetching.
+        $count_args = ['taxonomy' => 'category', 'hide_empty' => false];
+        if (!empty($search)) {
+            $count_args['search'] = $search;
+        }
+        $count = wp_count_terms($count_args);
+        $total = is_wp_error($count) ? count($result) : intval($count);
+        $has_more = ($offset + count($result)) < $total;
+
+        return new WP_REST_Response(['success' => true, 'categories' => $result, 'total' => $total, 'has_more' => $has_more], 200);
     }
 
     public function create_category_handler(WP_REST_Request $request) {

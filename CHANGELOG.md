@@ -4,6 +4,23 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-29 — v2.0.29
+
+### Changed — taxonomy pagination parity + pagination-limit SSOT (P9, plugin)
+
+- **Tags and categories now tell AI clients how many exist (T049).** Listing your tags or categories used to return only the current page with no signal that more existed, so an AI client had to keep guessing offsets and re-asking until it hit an empty page — wasting tokens and round-trips. Both lists now report the full count and a clear "there's more" flag, exactly the way the posts list already did, so a client can fetch precisely the next page and stop when it's done. The count respects the same filters as the listing (it counts every tag/category, empty ones included, and honors any search term), so paging through a filtered list behaves correctly.
+- **Pagination limits live in one place now (T052).** The default page size and the maximum page sizes were previously hard-coded separately inside each list endpoint. They are now single named settings at the top of the plugin. Behavior is unchanged on purpose: posts still cap at 100 per page, tags and categories at 200, default 50 — the deliberate difference between posts (whose rows can carry large content) and taxonomies is preserved, just no longer scattered across the code. The taxonomy cap and default deliberately mirror the MCP client's own page-size settings, and a verification check now guards against the two drifting apart.
+
+### Internal — P9
+
+- Plugin (`connectmwp-agent/connectmwp-agent.php`): added class constants `DEFAULT_PER_PAGE` (50), `MAX_PER_PAGE` (200, taxonomy cap), `MAX_PER_PAGE_POSTS` (100, posts cap), `MIN_PER_PAGE` (1) and replaced the inline `50` / `min(100, …)` / `min(200, …)` literals in `get_posts_handler`, `get_tags_handler`, and `get_categories_handler` with `self::` references. `get_tags_handler` and `get_categories_handler` now compute `total` via `wp_count_terms()` (honoring the listing's `hide_empty=false` + `search`) and `has_more` via the exact `($offset + count($result)) < $total` formula `get_posts_handler` uses (SSOT of response shape). A `WP_Error` from the count degrades gracefully to the page count rather than 500. No auth/permission/session changes — `$this->bound_user_id` only.
+- MCP client unchanged: `projectListTaxonomy` already folds `total` into a `pagination` object via `buildPagination`, so the new field surfaces automatically.
+- Added `_internal/verify/p9_test.sh` (static-always layer asserting the constants, the absence of inline literals, `wp_count_terms`, and the `total`/`has_more` shape in both taxonomy handlers; a Node layer proving the plugin shape produces a `pagination` object and that an offset past the end yields `has_more=false`/`next_offset=null`; and a WP-CLI-gated behavioral layer that skips cleanly without WordPress). All existing harnesses (`interop`, `sanitization`, `p2`–`p5`, `p6_idor`, `p6_enroll`, `p7`, `tool_error_sanitization`, `config_error_classes`) still pass.
+
+### Changed — versioning
+
+- **Bumped all three components to v2.0.29 (lockstep)** via the `/VERSION` SSOT + `scripts/sync-version.mjs`. **Plugin changed — the plugin zip was repackaged and mirrored to `connectmwp-server/public/connectmwp-agent.zip` (byte-identical sha).**
+
 ## 2026-05-29 — v2.0.28
 
 ### Fixed — MCP client error handling & observability (P8)
