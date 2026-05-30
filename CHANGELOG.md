@@ -4,6 +4,23 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-29 — v2.0.28
+
+### Fixed — MCP client error handling & observability (P8)
+
+- **Tool failures no longer leak internal detail to the AI (security, MEDIUM — T040).** When a publishing tool hits an error, the AI client now receives a single, generic message — `Tool execution failed — see local connectMWP diagnostics (stderr).` — instead of the raw error text. Previously the raw text could expose a filesystem path, your username, or other internal state in the chat transcript. The full technical detail (message, error code, stack) is still written to the local diagnostics stream (stderr) so a developer or support engineer can troubleshoot. Signing-specific errors keep their existing helpful wording, and the "Unknown tool" signal is preserved.
+
+- **Config & version load errors are surfaced instead of silently swallowed (architecture, MEDIUM — T044; absorbs/closes backlog T033).** Previously, a corrupt `~/.connectmwp.json` (a truncated write or a bad hand-edit) made all your paired sites silently vanish — `list-sites` said "No sites configured" with no hint that a recoverable file problem had occurred. Now the three cases are told apart: a genuinely missing file on first run stays silent (expected); a corrupt file prints a clear notice — "your paired sites are NOT lost — fix or restore the file" — plus a diagnostics line; an unreadable file (permissions / I/O) is logged before falling back. The runtime version loader likewise logs before falling back to its built-in version.
+
+### Internal — P8
+
+- New SSOT helpers in `connectmwp-mcp/index.js`: `toClientErrorMessage()` + the exported `GENERIC_TOOL_ERROR` constant (one error→message mapper for the CallTool catch-all), `classifyReadError()` (ENOENT→missing / SyntaxError→corrupt / EACCES→unreadable), and `noticeIfCorrupt()` (single-sourced CLI corrupt-config notice). `readConfig()` split into read-then-parse so first-run ENOENT stays silent while corrupt JSON is always surfaced. New helpers exported past the `isMainModule()` guard for harness import.
+- Added `_internal/verify/tool_error_sanitization_test.sh` (T040) and `_internal/verify/config_error_classes_test.sh` (T044).
+
+### Changed — versioning
+
+- **Bumped all three components to v2.0.28 (lockstep)** via the `/VERSION` SSOT + `scripts/sync-version.mjs`. **MCP-client-only change — the WordPress plugin was not touched, so the plugin zip is unchanged (not repackaged).** All existing verification harnesses (`interop`, `sanitization`, `p2`–`p5`, `p6_idor`, `p6_enroll`, `p7`) plus the two new P8 harnesses pass.
+
 ## 2026-05-29 — v2.0.27
 
 ### Fixed — plugin data-integrity + performance (P7)

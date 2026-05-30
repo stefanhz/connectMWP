@@ -1,7 +1,7 @@
 # connectMWP
 
-**Current Release Version: v2.0.27**
-*(Doc verified against v2.0.27 on 2026-05-29.)*
+**Current Release Version: v2.0.28**
+*(Doc verified against v2.0.28 on 2026-05-29.)*
 
 connectMWP is a secure, decentralized Model Context Protocol (MCP) server that connects local AI clients (such as Claude Desktop, Cursor, and Claude Code) directly to self-hosted WordPress websites to draft content, upload media, and manage posts directly from your workspace.
 

@@ -31,6 +31,11 @@ import { isPrivateIp, validateImageUrl, validateImageMagicNumbers } from './lib/
 // Configuration file path
 const CONFIG_PATH = path.join(os.homedir(), '.connectmwp.json');
 
+// Single canonical message returned to the LLM client when a tool fails with an
+// unrecognized error class. Operator detail goes to stderr via logDiag; the LLM
+// only ever sees this generic string (T040). Defined once (no-hardcoding SSOT).
+const GENERIC_TOOL_ERROR = 'Tool execution failed — see local connectMWP diagnostics (stderr).';
+
 /**
  * Clean and normalize site URLs
  */
@@ -67,17 +72,65 @@ function normalizeSiteUrl(url) {
  * directory (0700) to upgrade pre-v2.0.21 installs in place — silent on
  * already-tight installs, single stderr log line on each tightening.
  */
+/**
+ * SSOT classifier for config-read failures (T044). Distinguishes the three
+ * cases that readConfig must treat differently (R8 — no silent failures, but
+ * a missing file on first run is EXPECTED and must stay silent):
+ *   'missing'    — ENOENT: file genuinely absent (first run). Silent, expected.
+ *   'corrupt'    — SyntaxError from JSON.parse: file exists but is unparseable.
+ *   'unreadable' — EACCES / EPERM / other I/O: file exists but cannot be read.
+ * One classification feeds both the diag line and the human CLI notice (no
+ * scattered instanceof / code checks).
+ */
+function classifyReadError(error) {
+  if (error && error.code === 'ENOENT') return 'missing';
+  if (error instanceof SyntaxError) return 'corrupt';
+  return 'unreadable';
+}
+
 async function readConfig() {
+  let data;
   try {
-    const data = await fs.readFile(CONFIG_PATH, 'utf-8');
+    data = await fs.readFile(CONFIG_PATH, 'utf-8');
     // Best-effort tightening on existing installs. Failure must not break
     // the read path — tightenPathPerms already swallows ENOENT and logs
     // other errors via [connectmwp:diag] without throwing.
     await tightenPathPerms(CONFIG_PATH, 0o600);
     await tightenPathPerms(path.join(os.homedir(), '.connectmwp'), 0o700);
-    return JSON.parse(data);
   } catch (error) {
+    // ENOENT (first run) is expected — stay silent. EACCES / other I/O is a
+    // real failure — log to stderr before returning the safe empty fallback.
+    const kind = classifyReadError(error); // 'missing' | 'unreadable'
+    if (kind !== 'missing') {
+      logDiag(`config-read-error kind=${kind} code=${error && error.code ? error.code : '<none>'} message=${error && error.message ? error.message : String(error)}`);
+    }
     return { defaultSite: '', sites: {} };
+  }
+  try {
+    const cfg = JSON.parse(data);
+    if (!cfg.sites) cfg.sites = {};
+    if (!cfg.defaultSite) cfg.defaultSite = '';
+    return cfg;
+  } catch (error) {
+    // Corrupt JSON: the file is on disk but unparseable. Never silently hide
+    // the user's paired sites as "no sites" — log AND tag the fallback so the
+    // CLI command blocks can print an explicit human notice (noticeIfCorrupt).
+    logDiag(`config-corrupt path=${CONFIG_PATH} message=${error && error.message ? error.message : String(error)}`);
+    const fallback = { defaultSite: '', sites: {} };
+    Object.defineProperty(fallback, '__corrupt', { value: true, enumerable: false });
+    return fallback;
+  }
+}
+
+/**
+ * Print a clear, actionable stderr notice if the config was corrupt (T044).
+ * SSOT for the message; CLI command blocks call this once after readConfig so
+ * a corrupt file never masquerades as "no sites configured" without a trace.
+ * stderr is safe for human notices (CLI terminal); never the LLM transcript.
+ */
+function noticeIfCorrupt(cfg) {
+  if (cfg && cfg.__corrupt) {
+    process.stderr.write('connectMWP: ~/.connectmwp.json is present but unreadable (invalid JSON). Your paired sites are NOT lost — fix or restore the file. See the [connectmwp:diag] line above for details.\n');
   }
 }
 
@@ -111,6 +164,24 @@ function sanitizeSigningError(err) {
     return 'Failed to sign request — private key file not readable (permission denied). Verify the connectMWP key directory is owned by your user. If unrecoverable, re-pair with: npx -y connectmwp-mcp add-site --enroll "<site_url>,<pairing_code>".';
   }
   return 'Failed to sign request — private key could not be parsed. The keystore may be corrupted. Re-pair with: npx -y connectmwp-mcp add-site --enroll "<site_url>,<pairing_code>".';
+}
+
+/**
+ * SSOT mapper: convert any caught tool-dispatch error into a SAFE client-facing
+ * string (T040). The catch-all's lone return site calls this; no inline message
+ * logic lives anywhere else. Allowlist, first match wins:
+ *   1. signing errors (`__signing`) delegate to sanitizeSigningError (keep the
+ *      signing vocabulary owned by its existing SSOT — compose, don't duplicate).
+ *   2. `Unknown tool:` passes through verbatim (names a tool, no sensitive
+ *      content; preserves the useful default-case signal).
+ *   3. everything else collapses to GENERIC_TOOL_ERROR — no raw message, stack,
+ *      or fs path ever reaches the LLM transcript.
+ */
+function toClientErrorMessage(error) {
+  if (error && error.__signing) return sanitizeSigningError(error);
+  const m = error && typeof error.message === 'string' ? error.message : '';
+  if (m.startsWith('Unknown tool:')) return m;
+  return GENERIC_TOOL_ERROR;
 }
 
 function logDiag(msg) {
@@ -464,6 +535,7 @@ if (command === 'add-site') {
       await fs.rename(tmpKeyPath, privateKeyPath);
 
       const config = await readConfig();
+      noticeIfCorrupt(config);
       config.sites = config.sites || {};
       config.sites[siteUrl] = {
         key_id: resData.key_id,
@@ -526,6 +598,7 @@ if (command === 'add-site') {
 
 if (command === 'list-sites') {
   const config = await readConfig();
+  noticeIfCorrupt(config);
   const sitesList = Object.keys(config.sites || {});
 
   if (sitesList.length === 0) {
@@ -560,6 +633,7 @@ if (command === 'remove-site') {
 
   const normalizedSite = normalizeSiteUrl(site);
   const config = await readConfig();
+  noticeIfCorrupt(config);
 
   if (config.sites && config.sites[normalizedSite]) {
     delete config.sites[normalizedSite];
@@ -591,6 +665,7 @@ if (command === 'set-default') {
 
   const normalizedSite = normalizeSiteUrl(site);
   const config = await readConfig();
+  noticeIfCorrupt(config);
 
   if (config.sites && config.sites[normalizedSite]) {
     config.defaultSite = normalizedSite;
@@ -839,7 +914,11 @@ try {
     version = pkg.version;
   }
 } catch (err) {
-  // Fallback to static version if package.json cannot be read at runtime
+  // A package.json beside the script is always expected — there is no
+  // legitimate "first run silence" case here, so log unconditionally before
+  // falling back to FALLBACK_VERSION (T044 / absorbs T033).
+  logDiag(`version-load-error code=${err && err.code ? err.code : '<none>'} message=${err && err.message ? err.message : String(err)}`);
+  // version stays at FALLBACK_VERSION
 }
 
 // Create the MCP Server instance
@@ -1314,9 +1393,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         throw new Error(`Unknown tool: ${name}`);
     }
   } catch (error) {
+    // Operator channel FIRST: full detail (message + code + stack) to stderr,
+    // structurally isolated from the JSON-RPC stdout stream (T040).
+    const code = error && error.code ? ` code=${error.code}` : '';
+    const detail = error && error.message ? error.message : String(error);
+    const stack = error && error.stack ? ` | ${error.stack}` : '';
+    logDiag(`tool-error tool=${name}${code} message=${detail}${stack}`);
+    // LLM channel: ONLY the safe, mapped message — never raw error detail.
     return {
       isError: true,
-      content: [{ type: 'text', text: JSON.stringify({ success: false, error: error.message }) }],
+      content: [{ type: 'text', text: JSON.stringify({ success: false, error: toClientErrorMessage(error) }) }],
     };
   }
 });
@@ -1335,6 +1421,11 @@ export {
   isPrivateIp,
   streamToCappedBuffer,
   sanitizeSigningError,
+  toClientErrorMessage,
+  GENERIC_TOOL_ERROR,
+  classifyReadError,
+  readConfig,
+  logDiag,
   pinnedHttpsGet,
   validateImageUrl,
   validateImageMagicNumbers,

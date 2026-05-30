@@ -1,6 +1,6 @@
 # connectMWP — Operations Runbook
 
-> **Verified against:** connectMWP **v2.0.27** (all three components, lockstep).
+> **Verified against:** connectMWP **v2.0.28** (all three components, lockstep).
 > **Last reviewed:** 2026-05-29.
 > **Re-verify when:** the MCP CLI surface changes (`add-site`/`remove-site`/`set-default`/`list-sites` flags), the plugin auth flow changes, the release/publish process changes, the `connectmwp_trust_proxy` / `CONNECTMWP_TRUST_PROXY` trusted-proxy setting changes, or component versions drift out of lockstep.
 
@@ -394,6 +394,25 @@ T138 SANITIZATION VERIFIED
 
 Exits non-zero on any leak. Run after any change to throw sites in
 `connectmwp-mcp/index.js`.
+
+### P8 error-handling notes (v2.0.28)
+
+- **Diagnosing a generic "Tool execution failed" report.** As of v2.0.28 the
+  AI client only sees `Tool execution failed — see local connectMWP
+  diagnostics (stderr).` for any unrecognized tool error — the real cause
+  (message, error code, stack) is on the `[connectmwp:diag] ... tool-error
+  tool=<name> ...` line in the spawning client's captured stderr. Grep that
+  log for `tool-error`.
+- **`list-sites` shows nothing unexpectedly.** v2.0.28 distinguishes the
+  cases: a genuinely missing `~/.connectmwp.json` (first run) is silent; a
+  **corrupt** file no longer silently hides your sites — the CLI prints
+  `connectMWP: ~/.connectmwp.json is present but unreadable (invalid JSON).
+  Your paired sites are NOT lost — fix or restore the file.` and emits a
+  `[connectmwp:diag] config-corrupt` line; an unreadable file (permissions)
+  emits `[connectmwp:diag] config-read-error`. Grep stderr for `config-` to
+  tell a corrupt/locked file apart from a true first run.
+- Coverage: `bash _internal/verify/tool_error_sanitization_test.sh` and
+  `bash _internal/verify/config_error_classes_test.sh`.
 
 ---
 
