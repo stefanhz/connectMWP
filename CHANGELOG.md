@@ -4,6 +4,18 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-31 — v2.0.36
+
+Completed the rename on the distribution side: the plugin is now shipped as `connectmwp.zip` and installs into a `connectmwp/` folder (matching the WordPress.org slug), replacing the old `connectmwp-agent.zip` / `connectmwp-agent/` install folder. No code, behavior, or auth-path change. The source working directory remains `connectmwp-agent/` (build stages it into a `connectmwp/` folder); the v2.0.35 note that the source filename is unchanged still holds.
+
+> **Operational note:** because the installed plugin folder changes from `connectmwp-agent/` to `connectmwp/`, redeploying to an existing site (2morrow.ai) is effectively a fresh install of the new folder — deactivate/remove the old `connectmwp-agent` copy after activating the new one. Paired keys live in user meta (not the plugin folder), so existing pairings are unaffected.
+
+### Changed
+
+- **Distribution artifact renamed** `connectmwp-agent.zip` → `connectmwp.zip` at both locations (gitignored repo-root build copy + committed `connectmwp-server/public/connectmwp.zip` served at `https://connectmwp.com/connectmwp.zip`); internal top folder is now `connectmwp/`. (`connectmwp-server/public/connectmwp.zip`, `.gitignore`)
+- **connectmwp-server — landing-page download link** updated to `/connectmwp.zip`. (`connectmwp-server/src/app/ClientPage.tsx`)
+- **Docs** — `OPERATIONS.md`, `README.md`, and `CLAUDE.md` zip-build commands and references updated to the new artifact name + `connectmwp/` staging folder.
+
 ## 2026-05-31 — v2.0.35
 
 Plugin renamed from "connectMWP Agent" to "connectMWP" so the WordPress.org slug resolves to the brand-exact `connectmwp` (`wordpress.org/plugins/connectmwp/`). Display/identity only — no behavioral, auth-path, or logic change. Lockstep bump across all three components per project rule (only the plugin and the server's download-link label actually changed).

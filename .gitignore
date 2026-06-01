@@ -27,6 +27,6 @@ dist
 /connectmwp-server/.env.test.local
 /connectmwp-server/.env.production.local
 /connectmwp-mcp/node_modules/
-/connectmwp-agent.zip
+/connectmwp.zip
 
 conversations/

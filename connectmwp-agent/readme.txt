@@ -4,7 +4,7 @@ Tags: mcp, rest-api, ai, publishing, automation
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 2.0.35
+Stable tag: 2.0.36
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -66,6 +66,9 @@ Yes. Those tools police login state, and this plugin never establishes one.
 
 == Changelog ==
 
+= 2.0.36 =
+* Distribution: the plugin is now packaged as `connectmwp.zip` and installs to a `connectmwp/` folder (matching the directory slug). No code or behavior change.
+
 = 2.0.35 =
 * Renamed the plugin from "connectMWP Agent" to "connectMWP" (text domain `connectmwp`). Display/identity only — no behavioral or auth-path change.
 
@@ -84,6 +87,9 @@ Yes. Those tools police login state, and this plugin never establishes one.
 (Earlier history is maintained in the project CHANGELOG.)
 
 == Upgrade Notice ==
+
+= 2.0.36 =
+Packaging only — plugin folder is now `connectmwp`. No functional change.
 
 = 2.0.35 =
 Plugin name shortened to "connectMWP". No functional change.

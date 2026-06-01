@@ -147,10 +147,14 @@ If the agent changed, also note: `Plugin re-packaged.`
 
 ```bash
 cd /Users/stefanhz/Documents/aiSpace/connectMWP
-rm connectmwp-agent.zip connectmwp-server/public/connectmwp-agent.zip
-zip -r connectmwp-agent.zip connectmwp-agent/
-cp connectmwp-agent.zip connectmwp-server/public/connectmwp-agent.zip
-shasum connectmwp-agent.zip connectmwp-server/public/connectmwp-agent.zip   # must match
+# The zip's top folder must be `connectmwp/` (= the wp.org slug / installed folder),
+# but the source working dir is `connectmwp-agent/`, so stage it first.
+rm -rf /tmp/cmwp_build && mkdir -p /tmp/cmwp_build/connectmwp
+cp connectmwp-agent/connectmwp-agent.php connectmwp-agent/readme.txt /tmp/cmwp_build/connectmwp/
+( cd /tmp/cmwp_build && zip -rqX connectmwp.zip connectmwp/ )
+cp /tmp/cmwp_build/connectmwp.zip ./connectmwp.zip
+cp ./connectmwp.zip connectmwp-server/public/connectmwp.zip
+shasum connectmwp.zip connectmwp-server/public/connectmwp.zip   # must match
 ```
 
 ### Step 5 — Preview the npm tarball
@@ -238,8 +242,8 @@ Clean order: bump → CHANGELOG → publish → commit → push.
 | MCP client source | `connectmwp-mcp/index.js` |
 | MCP client published name | `connectmwp-mcp` (public npm registry) |
 | WP plugin source | `connectmwp-agent/connectmwp-agent.php` |
-| WP plugin zip (master) | `connectmwp-agent.zip` (root) |
-| WP plugin zip (download mirror) | `connectmwp-server/public/connectmwp-agent.zip` (must match master sha) |
+| WP plugin zip (master) | `connectmwp.zip` (root; internal folder `connectmwp/`) |
+| WP plugin zip (download mirror) | `connectmwp-server/public/connectmwp.zip` (must match master sha) |
 | Central web app | `connectmwp-server/` (Next.js 16) |
 | Architecture doc | `_internal/ARCHITECTURE.md` |
 | Changelog (immutable, append at top) | `CHANGELOG.md` |

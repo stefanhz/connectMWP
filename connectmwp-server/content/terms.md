@@ -3,7 +3,7 @@
 Welcome to connectMWP. By using our website, plugin, or command-line client, you agree to these Terms.
 
 ## 1. Description of Service
-connectMWP provides an open-source WordPress Plugin (`connectmwp-agent`) and a local Model Context Protocol client (`connectmwp-mcp`) to link local AI editors directly to your self-hosted WordPress installations.
+connectMWP provides an open-source WordPress Plugin (`connectmwp`) and a local Model Context Protocol client (`connectmwp-mcp`) to link local AI editors directly to your self-hosted WordPress installations.
 
 ## 2. License & Open Source
 * The WordPress plugin and Node.js client package are licensed under GPLv2 or GPL-compatible terms.

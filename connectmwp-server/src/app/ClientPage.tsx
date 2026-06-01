@@ -71,7 +71,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
         </p>
 
         <div className="text-[13.5px] text-amber-400 mb-7 p-3 bg-amber-400/5 rounded-lg border border-dashed border-amber-400/20 leading-normal text-center">
-          ⚡ <strong>Step 1:</strong> Download the <a href="/connectmwp-agent.zip" download className="text-amber-400 underline font-semibold">connectMWP plugin (ZIP)</a> and activate it on your WordPress site.
+          ⚡ <strong>Step 1:</strong> Download the <a href="/connectmwp.zip" download className="text-amber-400 underline font-semibold">connectMWP plugin (ZIP)</a> and activate it on your WordPress site.
         </div>
 
         <h3 className="text-[15px] font-bold text-white mb-3">

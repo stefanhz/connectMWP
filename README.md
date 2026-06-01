@@ -29,7 +29,7 @@ I'm sharing this publicly because experience has taught me that when I hit a wal
 The remainder of this section documents the **source-checkout flow** used when developing against a local clone of the repo. 
 
 ### Step 1: Install & Activate the WordPress Plugin
-1. Download the latest WordPress plugin zip from `connectmwp-agent.zip` (found in the root of this repo, or downloaded from the settings page of an active installation).
+1. Download the latest WordPress plugin zip from `connectmwp.zip` (found in the root of this repo, or downloaded from the settings page of an active installation).
 2. Log into your WordPress site's admin dashboard (e.g. `https://2morrow.ai`).
 3. Go to **Plugins -> Add New -> Upload Plugin**, upload the ZIP, and click **Activate**.
 4. Go to **Settings -> connectMWP** in your WP sidebar.
