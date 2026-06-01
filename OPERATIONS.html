@@ -131,6 +131,8 @@ body.has-toc .md-content { margin-left: 280px; }
 <a href="#fixed-or-added-changed-removed-verified-live" style="padding-left:1.5rem">Fixed   (or ### Added / ### Changed / ### Removed / ### Verified (live))</a>
 <a href="#bumped" style="padding-left:1.5rem">Bumped</a>
 <a href="#step-4-if-the-plugin-changed-repackage-the-zip-two-locations-must-stay-identical" style="padding-left:1.5rem">Step 4 — If the plugin changed, repackage the zip (TWO locations must stay identical)</a>
+<a href="#the-zips-top-folder-must-be-connectmwp-the-wporg-slug-installed-folder" style="padding-left:0rem">The zip's top folder must be connectmwp/ (= the wp.org slug / installed folder),</a>
+<a href="#but-the-source-working-dir-is-connectmwp-agent-so-stage-it-first" style="padding-left:0rem">but the source working dir is connectmwp-agent/, so stage it first.</a>
 <a href="#step-5-preview-the-npm-tarball" style="padding-left:1.5rem">Step 5 — Preview the npm tarball</a>
 <a href="#step-6-publish" style="padding-left:1.5rem">Step 6 — Publish</a>
 <a href="#step-7-verify-its-live-10s-for-registry-propagation" style="padding-left:1.5rem">Step 7 — Verify it's live (10s for registry propagation)</a>
@@ -155,8 +157,8 @@ body.has-toc .md-content { margin-left: 280px; }
 <article class="md-content">
 <h1 id="connectmwp-operations-runbook" node="[object Object]">connectMWP — Operations Runbook</h1>
 <blockquote>
-<p><strong>Verified against:</strong> connectMWP <strong>v2.0.31</strong> (all three components, lockstep).
-<strong>Last reviewed:</strong> 2026-05-29.
+<p><strong>Verified against:</strong> connectMWP <strong>v2.0.33</strong> (all three components, lockstep).
+<strong>Last reviewed:</strong> 2026-05-30.
 <strong>Re-verify when:</strong> the MCP CLI surface changes (<code>add-site</code>/<code>remove-site</code>/<code>set-default</code>/<code>list-sites</code> flags), the plugin auth flow changes, the release/publish process changes, the <code>connectmwp_trust_proxy</code> / <code>CONNECTMWP_TRUST_PROXY</code> trusted-proxy setting changes, or component versions drift out of lockstep.</p>
 </blockquote>
 <p>Project-internal operational guide. <strong>Not user-facing</strong> — for that, see <code>README.md</code>.
@@ -278,18 +280,27 @@ node scripts/sync-version.mjs --check  <span class="hljs-comment"># gate: exits 
 <p>If the agent changed, also note: <code>Plugin re-packaged.</code></p>
 <h3 id="step-4-if-the-plugin-changed-repackage-the-zip-two-locations-must-stay-identical" node="[object Object]">Step 4 — If the plugin changed, repackage the zip (TWO locations must stay identical)</h3>
 <pre><code class="hljs language-bash"><span class="hljs-built_in">cd</span> /Users/stefanhz/Documents/aiSpace/connectMWP
-<span class="hljs-built_in">rm</span> connectmwp-agent.zip connectmwp-server/public/connectmwp-agent.zip
-zip -r connectmwp-agent.zip connectmwp-agent/
-<span class="hljs-built_in">cp</span> connectmwp-agent.zip connectmwp-server/public/connectmwp-agent.zip
-shasum connectmwp-agent.zip connectmwp-server/public/connectmwp-agent.zip   <span class="hljs-comment"># must match</span>
+<span class="hljs-comment"># The zip's top folder must be `connectmwp/` (= the wp.org slug / installed folder),</span>
+<span class="hljs-comment"># but the source working dir is `connectmwp-agent/`, so stage it first.</span>
+<span class="hljs-built_in">rm</span> -rf /tmp/cmwp_build &amp;&amp; <span class="hljs-built_in">mkdir</span> -p /tmp/cmwp_build/connectmwp
+<span class="hljs-built_in">cp</span> connectmwp-agent/connectmwp-agent.php connectmwp-agent/readme.txt /tmp/cmwp_build/connectmwp/
+( <span class="hljs-built_in">cd</span> /tmp/cmwp_build &amp;&amp; zip -rqX connectmwp.zip connectmwp/ )
+<span class="hljs-built_in">cp</span> /tmp/cmwp_build/connectmwp.zip ./connectmwp.zip
+<span class="hljs-built_in">cp</span> ./connectmwp.zip connectmwp-server/public/connectmwp.zip
+shasum connectmwp.zip connectmwp-server/public/connectmwp.zip   <span class="hljs-comment"># must match</span>
 </code></pre>
 <h3 id="step-5-preview-the-npm-tarball" node="[object Object]">Step 5 — Preview the npm tarball</h3>
 <pre><code class="hljs language-bash"><span class="hljs-built_in">cd</span> /Users/stefanhz/Documents/aiSpace/connectMWP/connectmwp-mcp
 npm pack --dry-run
 </code></pre>
-<p>Expect exactly <strong>3 files</strong>: <code>README.md</code>, <code>index.js</code>, <code>package.json</code>. If anything
-else appears (<code>node_modules</code>, <code>*.tmp</code>, <code>package-lock.json</code>) — STOP, fix the
-<code>files</code> field in <code>package.json</code>, re-run.</p>
+<p>Expect exactly <strong>7 files</strong> (as of v2.0.25, after the <code>lib/</code> modularization):
+<code>README.md</code>, <code>index.js</code>, <code>lib/constants.js</code>, <code>lib/crypto.js</code>,
+<code>lib/projections.js</code>, <code>lib/validators.js</code>, <code>package.json</code>. All four <code>lib/*.js</code>
+modules are imported by <code>index.js</code> (lines 27–31) and MUST ship — without them the
+published package crashes on launch with a module-not-found error. The <code>files</code>
+allowlist in <code>package.json</code> (<code>index.js</code>, <code>lib/**</code>, <code>README.md</code>) is what controls
+this. If anything <em>outside</em> that set appears (<code>node_modules</code>, <code>*.tmp</code>,
+<code>package-lock.json</code>, stray <code>*.ed25519</code>) — STOP, fix the <code>files</code> field, re-run.</p>
 <h3 id="step-6-publish" node="[object Object]">Step 6 — Publish</h3>
 <pre><code class="hljs language-bash">npm publish
 </code></pre>
@@ -325,7 +336,7 @@ version is stuck:</p>
 </ul>
 <hr>
 <h2 id="4-reference-file-locations" node="[object Object]">4. Reference — file locations</h2>
-<div class="table-wrap"><table node="[object Object]"><thead><tr><th>What</th><th>Where</th></tr></thead><tbody><tr><td>Local site config (all paired sites)</td><td><code>~/.connectmwp.json</code></td></tr><tr><td>Local Ed25519 private key per site</td><td><code>~/.connectmwp/&lt;hostname&gt;.ed25519</code> (mode 0600)</td></tr><tr><td>MCP client source</td><td><code>connectmwp-mcp/index.js</code></td></tr><tr><td>MCP client published name</td><td><code>connectmwp-mcp</code> (public npm registry)</td></tr><tr><td>WP plugin source</td><td><code>connectmwp-agent/connectmwp-agent.php</code></td></tr><tr><td>WP plugin zip (master)</td><td><code>connectmwp-agent.zip</code> (root)</td></tr><tr><td>WP plugin zip (download mirror)</td><td><code>connectmwp-server/public/connectmwp-agent.zip</code> (must match master sha)</td></tr><tr><td>Central web app</td><td><code>connectmwp-server/</code> (Next.js 16)</td></tr><tr><td>Architecture doc</td><td><code>_internal/ARCHITECTURE.md</code></td></tr><tr><td>Changelog (immutable, append at top)</td><td><code>CHANGELOG.md</code></td></tr><tr><td>Task tracker</td><td><code>_internal/TASKS.md</code></td></tr></tbody></table></div>
+<div class="table-wrap"><table node="[object Object]"><thead><tr><th>What</th><th>Where</th></tr></thead><tbody><tr><td>Local site config (all paired sites)</td><td><code>~/.connectmwp.json</code></td></tr><tr><td>Local Ed25519 private key per site</td><td><code>~/.connectmwp/&lt;hostname&gt;.ed25519</code> (mode 0600)</td></tr><tr><td>MCP client source</td><td><code>connectmwp-mcp/index.js</code></td></tr><tr><td>MCP client published name</td><td><code>connectmwp-mcp</code> (public npm registry)</td></tr><tr><td>WP plugin source</td><td><code>connectmwp-agent/connectmwp-agent.php</code></td></tr><tr><td>WP plugin zip (master)</td><td><code>connectmwp.zip</code> (root; internal folder <code>connectmwp/</code>)</td></tr><tr><td>WP plugin zip (download mirror)</td><td><code>connectmwp-server/public/connectmwp.zip</code> (must match master sha)</td></tr><tr><td>Central web app</td><td><code>connectmwp-server/</code> (Next.js 16)</td></tr><tr><td>Architecture doc</td><td><code>_internal/ARCHITECTURE.md</code></td></tr><tr><td>Changelog (immutable, append at top)</td><td><code>CHANGELOG.md</code></td></tr><tr><td>Task tracker</td><td><code>_internal/TASKS.md</code></td></tr></tbody></table></div>
 <hr>
 <h2 id="5-replay-blocked-verification-t137-v2019" node="[object Object]">5. Replay-blocked verification (T137 / v2.0.19+)</h2>
 <p><strong>Goal:</strong> Prove a captured signed request cannot be replayed against a paired
