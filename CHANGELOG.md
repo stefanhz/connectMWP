@@ -4,6 +4,28 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-05-31 — v2.0.35
+
+Plugin renamed from "connectMWP Agent" to "connectMWP" so the WordPress.org slug resolves to the brand-exact `connectmwp` (`wordpress.org/plugins/connectmwp/`). Display/identity only — no behavioral, auth-path, or logic change. Lockstep bump across all three components per project rule (only the plugin and the server's download-link label actually changed).
+
+### Changed
+
+- **connectmwp-agent — plugin renamed to "connectMWP".** `Plugin Name` header `connectMWP Agent` → `connectMWP`; `Text Domain` `connectmwp-agent` → `connectmwp` (header-only — the plugin has no translation calls against the old domain, so nothing functional changed); the admin settings-page `<h1>` was updated to match. The source filename `connectmwp-agent.php` is intentionally left unchanged (not required for the slug). (`connectmwp-agent/connectmwp-agent.php`, `connectmwp-agent/readme.txt`)
+- **connectmwp-server — download-link label** changed from "WordPress Agent Plugin" to "connectMWP plugin" on the landing page; the `/connectmwp-agent.zip` download path is unchanged. (`connectmwp-server/src/app/ClientPage.tsx`)
+
+## 2026-05-31 — v2.0.34
+
+WordPress.org listing-asset pass on top of the v2.0.33 submission-prep release. No behavioral or auth-path change.
+
+### Changed
+
+- **connectmwp-agent — readme source link filled in.** Replaced the `(your public repository URL)` placeholder in the directory readme with the GPL source-repository URL. (`connectmwp-agent/readme.txt`)
+
+### Added
+
+- **WordPress.org listing artwork — chain-link "connector" mark.** Replaced the initial shield-and-checkmark icon (which read as a *security* plugin) with a chain-link connector icon, after iterating through plug-and-socket and bridge concepts. Rendered the full asset set at exact directory dimensions: `icon.svg`, `icon-128x128.png`, `icon-256x256.png`, `banner-772x250.png`, `banner-1544x500.png`. (in gitignored `_internal/wp-org/assets/`)
+- **`_internal/wp-org/SUBMISSION_GUIDE.md`** — end-to-end WordPress.org submission runbook (account → readme/asset validation → SVN trunk/tags/assets layout → submit) with the resolved `connectmwp` slug decision. The privacy disclosure (`_internal/wp-org/PRIVACY.md`) had its contact filled and version anchor refreshed. (in gitignored `_internal/`)
+
 ## 2026-05-30 — v2.0.33
 
 WordPress.org submission-prep release. No behavioral or auth-path change — packaging and metadata only. The v2.0.32 security items (T064/T065/T066) were live-WP behaviorally verified on 2morrow.ai before this release (4-way concurrent enrollment race → exactly one winner + three rejected; a Page read through the posts endpoint → 404; duplicate-tag create → generic error, no raw `WP_Error`).

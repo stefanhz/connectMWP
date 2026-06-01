@@ -1,10 +1,10 @@
-=== connectMWP Agent ===
+=== connectMWP ===
 Contributors: (your-wordpress-org-username)
 Tags: mcp, rest-api, ai, publishing, automation
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 2.0.33
+Stable tag: 2.0.35
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -12,7 +12,7 @@ Securely let your own AI client (Claude, Cursor) publish to this WordPress site 
 
 == Description ==
 
-connectMWP Agent turns your WordPress site into a secure endpoint that a local AI client on **your own machine** can publish to — drafting posts, uploading media, and managing tags and categories — without ever creating a WordPress login session.
+connectMWP turns your WordPress site into a secure endpoint that a local AI client on **your own machine** can publish to — drafting posts, uploading media, and managing tags and categories — without ever creating a WordPress login session.
 
 Authentication uses per-request **Ed25519 cryptographic signatures**, not passwords or login cookies. Because no login session is ever established, the plugin works alongside 2FA and security plugins that police login state — there is no login state to police.
 
@@ -37,7 +37,7 @@ This plugin does **not** send your site's data to any external server. It is a *
 To set up the connection you install the companion open-source client from the public npm registry (`connectmwp-mcp`) and run a one-time pairing command. The client is configured by you, runs on your machine, and connects directly to this site. The plugin makes no outbound HTTP calls of its own.
 
 Project home and documentation: https://connectmwp.com
-Source code (all components, GPL): (your public repository URL)
+Source code (all components, GPL): https://github.com/stefanhz/connectMWP
 
 No analytics, tracking, or telemetry is collected by this plugin.
 
@@ -66,6 +66,12 @@ Yes. Those tools police login state, and this plugin never establishes one.
 
 == Changelog ==
 
+= 2.0.35 =
+* Renamed the plugin from "connectMWP Agent" to "connectMWP" (text domain `connectmwp`). Display/identity only — no behavioral or auth-path change.
+
+= 2.0.34 =
+* WordPress.org listing assets: replaced the security-style shield icon with a chain-link connector icon and a matching banner, and filled in the source-repository and privacy-contact details. No code-path change.
+
 = 2.0.33 =
 * WordPress.org submission-prep: completed plugin header (Requires/License URI/Text Domain), corrected the description to the session-less Ed25519 model, added this readme and a GPLv2 license file. No behavioral change.
 
@@ -78,6 +84,9 @@ Yes. Those tools police login state, and this plugin never establishes one.
 (Earlier history is maintained in the project CHANGELOG.)
 
 == Upgrade Notice ==
+
+= 2.0.35 =
+Plugin name shortened to "connectMWP". No functional change.
 
 = 2.0.33 =
 Packaging/metadata update for WordPress.org listing. No functional change from 2.0.32.

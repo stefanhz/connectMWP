@@ -1,16 +1,16 @@
 <?php
 /**
- * Plugin Name: connectMWP Agent
+ * Plugin Name: connectMWP
  * Plugin URI: https://connectmwp.com
  * Description: Securely let your own local AI client (Claude, Cursor) publish to this WordPress site over a signed, session-less Ed25519 connection — no login, no central server.
- * Version: 2.0.33
+ * Version: 2.0.35
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Stefan Heinz, 2morrow.ai
  * Author URI: https://2morrow.ai
  * License: GPLv2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
- * Text Domain: connectmwp-agent
+ * Text Domain: connectmwp
  */
 
 defined('ABSPATH') || exit;
@@ -2179,7 +2179,7 @@ class ConnectMWP_Agent {
         <div class="wrap cmwp-wrap">
 
             <header class="cmwp-hero">
-                <h1>🔌 connectMWP Agent <span class="cmwp-ver">v<?php echo esc_html(self::version()); ?></span></h1>
+                <h1>🔌 connectMWP <span class="cmwp-ver">v<?php echo esc_html(self::version()); ?></span></h1>
                 <p>Secure, signature-based direct connector between local AI clients (Claude Desktop, Cursor, ChatGPT Desktop, Antigravity, etc.) and this WordPress site.</p>
             </header>
 
