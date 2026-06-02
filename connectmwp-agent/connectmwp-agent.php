@@ -2169,59 +2169,79 @@ class ConnectMWP_Agent {
             }
         }
 
-        switch ($action) {
-            case 'get_posts':
-                if (!$this->check_read_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
-                $res = $this->get_posts_handler($request);
-                break;
-            case 'get_post':
-                $request->set_param('id', isset($_REQUEST['post_id']) ? intval($_REQUEST['post_id']) : 0);
-                if (!$this->check_read_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
-                $res = $this->get_post_handler($request);
-                break;
-            case 'create_post':
-                if (!$this->check_edit_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
-                $res = $this->create_post_handler($request);
-                break;
-            case 'update_post':
-                $request->set_param('id', isset($_REQUEST['post_id']) ? intval($_REQUEST['post_id']) : 0);
-                if (!$this->check_edit_post_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
-                $res = $this->update_post_handler($request);
-                break;
-            case 'delete_post':
-                $request->set_param('id', isset($_REQUEST['post_id']) ? intval($_REQUEST['post_id']) : 0);
-                if (!$this->check_delete_post_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
-                $res = $this->delete_post_handler($request);
-                break;
-            case 'upload_media':
-                if (!$this->check_upload_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
-                $res = $this->upload_media_handler($request);
-                break;
-            case 'get_tags':
-                if (!$this->check_read_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
-                $res = $this->get_tags_handler($request);
-                break;
-            case 'get_categories':
-                if (!$this->check_read_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
-                $res = $this->get_categories_handler($request);
-                break;
-            case 'create_category':
-                if (!$this->check_taxonomy_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
-                $res = $this->create_category_handler($request);
-                break;
-            case 'create_tag':
-                if (!$this->check_taxonomy_permission($request)) wp_send_json_error(['error' => 'Forbidden'], 403);
-                $res = $this->create_tag_handler($request);
-                break;
-            case 'whoami':
-                // Signature already verified above; no further capability required.
-                $res = $this->whoami_handler($request);
-                break;
-            default:
-                wp_send_json_error(['error' => 'Invalid action'], 400);
+        // Param injection that the dispatcher assumes is already on the request:
+        // map the AJAX `post_id` field onto the canonical `id` param the
+        // *_handler / check_* callbacks read (preserves the prior switch behavior).
+        if (in_array($action, ['get_post', 'update_post', 'delete_post'], true)) {
+            $request->set_param('id', isset($_REQUEST['post_id']) ? intval($_REQUEST['post_id']) : 0);
         }
 
-        wp_send_json($res->get_data(), $res->get_status());
+        $res = $this->dispatch_action($action, $request);
+
+        // Preserve the historical AJAX error-envelope shape byte-for-byte:
+        // forbidden/invalid previously exited via wp_send_json_error(), which
+        // wraps the payload as {success:false,data:{error:...}}. The
+        // transport-agnostic dispatcher returns the flat {success:false,error:...}
+        // shape, so re-emit those two cases through wp_send_json_error() here.
+        $data   = $res->get_data();
+        $status = $res->get_status();
+        if (is_array($data) && empty($data['success']) && isset($data['error'])) {
+            wp_send_json_error(['error' => $data['error']], $status);
+        }
+
+        wp_send_json($data, $status);
+    }
+
+    /**
+     * Transport-agnostic action dispatcher (T2). SSOT mapping of
+     * action name -> capability check -> handler, shared by every transport
+     * (AJAX today; MCP/JSON-RPC later). It does NOT touch $_REQUEST / $_SERVER,
+     * does NOT emit output (no wp_send_json* / echo / exit), and does NOT
+     * authenticate -- the CALLER is responsible for signature verification and
+     * for having populated every handler param (e.g. `id`) on $request.
+     *
+     * @param string          $action  Sanitized action name.
+     * @param WP_REST_Request $request Fully-populated request (params already set).
+     * @return WP_REST_Response Handler result, or a forbidden/invalid envelope.
+     */
+    private function dispatch_action(string $action, WP_REST_Request $request): WP_REST_Response {
+        switch ($action) {
+            case 'get_posts':
+                if (!$this->check_read_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                return $this->get_posts_handler($request);
+            case 'get_post':
+                if (!$this->check_read_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                return $this->get_post_handler($request);
+            case 'create_post':
+                if (!$this->check_edit_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                return $this->create_post_handler($request);
+            case 'update_post':
+                if (!$this->check_edit_post_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                return $this->update_post_handler($request);
+            case 'delete_post':
+                if (!$this->check_delete_post_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                return $this->delete_post_handler($request);
+            case 'upload_media':
+                if (!$this->check_upload_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                return $this->upload_media_handler($request);
+            case 'get_tags':
+                if (!$this->check_read_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                return $this->get_tags_handler($request);
+            case 'get_categories':
+                if (!$this->check_read_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                return $this->get_categories_handler($request);
+            case 'create_category':
+                if (!$this->check_taxonomy_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                return $this->create_category_handler($request);
+            case 'create_tag':
+                if (!$this->check_taxonomy_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                return $this->create_tag_handler($request);
+            case 'whoami':
+                // Signature already verified by the caller; no further capability required.
+                return $this->whoami_handler($request);
+            default:
+                return new WP_REST_Response(['success' => false, 'error' => 'Invalid action'], 400);
+        }
     }
 
     /**
