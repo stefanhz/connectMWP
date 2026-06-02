@@ -865,7 +865,11 @@ class ConnectMWP_Agent {
         if (strpos($token_id, $strip) === 0) {
             $suffix = substr($token_id, strlen($strip));
         } else {
-            // Defensive: any odd id still maps deterministically.
+            // Defensive: any odd id still maps deterministically. UNREACHABLE in
+            // normal operation — mint_cgpt_token() always produces a well-formed
+            // prefixed id. Note that an id reaching this branch would NOT round-trip
+            // through rebuild_cgpt_token_index() (which reconstructs ids from the
+            // prefix), so do NOT rely on this fallback for any persisted token.
             $suffix = substr(hash('sha256', $token_id), 0, 32);
         }
         return self::CGPT_TOKEN_OPTION_PREFIX . $suffix;
@@ -919,12 +923,19 @@ class ConnectMWP_Agent {
      * immediately before writing, so the read-modify-write window is per-token
      * and tiny — two workers racing on the same token's last_used only produce a
      * last-writer-wins timestamp on THAT token, never a cross-token clobber.
+     *
+     * @internal Immutable fields (token_hash, bound_user_id, created) are dropped
+     * from $changes before merging — they define the credential's identity and
+     * binding and must never be mutated through this mutable-field path.
      */
     private function update_cgpt_token_fields($token_id, array $changes) {
         $record = $this->get_cgpt_token($token_id);
         if ($record === false) {
             return false;
         }
+        // Footgun guard: never let a caller mutate the credential's identity or
+        // binding via this path. These keys are silently ignored if present.
+        unset($changes['token_hash'], $changes['bound_user_id'], $changes['created']);
         foreach ($changes as $field => $value) {
             $record[$field] = $value;
         }
@@ -937,9 +948,17 @@ class ConnectMWP_Agent {
      * `cmwp_cgpt_<secret>`, persists ONLY its sha256 hash in a fresh atomic row,
      * and adds the id to the index. The returned `plaintext` is the ONLY moment
      * the token exists in cleartext — it is never stored or logged. Returns
-     * ['token_id'=>..., 'plaintext'=>..., 'record'=>...].
+     * ['token_id'=>..., 'plaintext'=>..., 'record'=>...] on success, or false if
+     * the row could not be stored (id collision or transient DB failure) — in
+     * that case NOTHING is added to the index and NO plaintext is handed back, so
+     * the caller never receives a token that will never resolve.
+     *
+     * @return array|false
      */
     private function mint_cgpt_token($bound_user_id, $label) {
+        // token_id is a NON-secret identifier (its only job is to name the option
+        // row); 8 bytes is intentional and adequate for that. The actual credential
+        // entropy lives entirely in the secret, governed by CGPT_TOKEN_SECRET_BYTES.
         $token_id = self::CGPT_TOKEN_ID_PREFIX . bin2hex(random_bytes(8));
         // Separate high-entropy secret (>= 32 random bytes), hex-encoded.
         $secret    = bin2hex(random_bytes(self::CGPT_TOKEN_SECRET_BYTES));
@@ -955,11 +974,15 @@ class ConnectMWP_Agent {
             'last_ip'       => '',
         ]);
 
-        // Atomic per-token create. add_option fails if the (random) row already
-        // exists, so two concurrent mints of DIFFERENT tokens both succeed on
-        // their own rows. Whether freshly created or already present, ensure the
-        // index lists it.
-        add_option($this->cgpt_token_option_name($token_id), $record, '', 'no');
+        // Atomic per-token create. add_option returns false on an id collision
+        // (the random row already exists) OR a transient DB failure. In either
+        // case the row was NOT stored — so we must NOT index the id and must NOT
+        // hand back a plaintext that would never resolve. Bail with false; the
+        // caller treats that as "minting failed, try again".
+        $stored = add_option($this->cgpt_token_option_name($token_id), $record, '', 'no');
+        if (!$stored) {
+            return false;
+        }
         $this->cgpt_token_index_add($token_id);
 
         return [
@@ -978,7 +1001,19 @@ class ConnectMWP_Agent {
      * (self-healing via get_cgpt_token()).
      */
     private function resolve_cgpt_token($plaintext) {
+        // Fast pre-filter: reject anything that cannot possibly be one of our
+        // tokens BEFORE hashing or scanning the index. A well-formed plaintext is
+        // `cmwp_cgpt_<hex>` where the hex is exactly CGPT_TOKEN_SECRET_BYTES bytes
+        // hex-encoded (so 2 chars per byte). Centralizing the guard here keeps
+        // obviously-invalid input from costing a full index scan.
         if (!is_string($plaintext) || $plaintext === '') {
+            return false;
+        }
+        if (strpos($plaintext, self::CGPT_TOKEN_ID_PREFIX) !== 0) {
+            return false;
+        }
+        $expected_len = strlen(self::CGPT_TOKEN_ID_PREFIX) + (self::CGPT_TOKEN_SECRET_BYTES * 2);
+        if (strlen($plaintext) !== $expected_len) {
             return false;
         }
         $candidate_hash = hash('sha256', $plaintext);
@@ -994,7 +1029,10 @@ class ConnectMWP_Agent {
                 continue;
             }
             $stored_hash = isset($record['token_hash']) ? (string) $record['token_hash'] : '';
-            if ($stored_hash !== '' && hash_equals($stored_hash, $candidate_hash)) {
+            // Skip any candidate whose stored hash isn't a well-formed sha256 hex
+            // (64 chars) — a malformed/blank hash can never be a real match, and
+            // feeding it to hash_equals() against a 64-char candidate is wasted work.
+            if (strlen($stored_hash) === 64 && hash_equals($stored_hash, $candidate_hash)) {
                 return [
                     'token_id' => $token_id,
                     'record'   => $record,
