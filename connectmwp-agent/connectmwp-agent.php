@@ -330,6 +330,15 @@ class ConnectMWP_Agent {
     private $bound_user_id = 0;
     private $matched_key_id = '';
 
+    // True only when the most recent dispatch_action() call short-circuited at a
+    // dispatch GATE (capability-check failure or unknown-action default) before
+    // invoking any handler. Transport-neutral metadata about WHERE the response
+    // originated -- consumed by handle_ajax_request() to reproduce the legacy
+    // wrapped {success:false,data:{error}} envelope for gate errors only, while
+    // emitting every handler response (success AND error alike) flat. Reset at
+    // the top of each dispatch_action() call so a stale value can never leak.
+    private $last_dispatch_gated = false;
+
     // Specific reason the most recent verification failed. Surfaced through
     // central_rest_auth + handle_ajax_request as the WP_Error code so the MCP
     // client (and support) can recognize "pinned-old-client" (missing nonce),
@@ -2178,18 +2187,20 @@ class ConnectMWP_Agent {
 
         $res = $this->dispatch_action($action, $request);
 
-        // Preserve the historical AJAX error-envelope shape byte-for-byte:
-        // forbidden/invalid previously exited via wp_send_json_error(), which
-        // wraps the payload as {success:false,data:{error:...}}. The
-        // transport-agnostic dispatcher returns the flat {success:false,error:...}
-        // shape, so re-emit those two cases through wp_send_json_error() here.
-        $data   = $res->get_data();
-        $status = $res->get_status();
-        if (is_array($data) && empty($data['success']) && isset($data['error'])) {
-            wp_send_json_error(['error' => $data['error']], $status);
+        // Preserve the historical AJAX error-envelope shape byte-for-byte.
+        // The legacy switch wrapped ONLY its two dispatch-GATE errors via
+        // wp_send_json_error() -- a failed capability check (403 Forbidden) and
+        // the unknown-action default (400 Invalid action) -- producing the
+        // {success:false,data:{error:...}} envelope. EVERY handler-produced
+        // response (success AND handler errors like 404/500, the in-handler
+        // IDOR 403, upload/category/tag errors) fell through to wp_send_json()
+        // and was emitted FLAT ({success:false,error:...}). dispatch_action()
+        // flags only the gate path, so re-wrap that case and emit all else flat.
+        if ($this->last_dispatch_gated) {
+            wp_send_json_error(['error' => $res->get_data()['error']], $res->get_status());
         }
 
-        wp_send_json($data, $status);
+        wp_send_json($res->get_data(), $res->get_status());
     }
 
     /**
@@ -2205,41 +2216,46 @@ class ConnectMWP_Agent {
      * @return WP_REST_Response Handler result, or a forbidden/invalid envelope.
      */
     private function dispatch_action(string $action, WP_REST_Request $request): WP_REST_Response {
+        // Reset on every call so a prior gate hit can't leak into this dispatch.
+        // Set true ONLY on a dispatch-GATE early return (capability-check failure
+        // or unknown-action default) -- never for a handler-produced response.
+        $this->last_dispatch_gated = false;
         switch ($action) {
             case 'get_posts':
-                if (!$this->check_read_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                if (!$this->check_read_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->get_posts_handler($request);
             case 'get_post':
-                if (!$this->check_read_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                if (!$this->check_read_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->get_post_handler($request);
             case 'create_post':
-                if (!$this->check_edit_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                if (!$this->check_edit_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->create_post_handler($request);
             case 'update_post':
-                if (!$this->check_edit_post_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                if (!$this->check_edit_post_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->update_post_handler($request);
             case 'delete_post':
-                if (!$this->check_delete_post_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                if (!$this->check_delete_post_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->delete_post_handler($request);
             case 'upload_media':
-                if (!$this->check_upload_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                if (!$this->check_upload_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->upload_media_handler($request);
             case 'get_tags':
-                if (!$this->check_read_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                if (!$this->check_read_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->get_tags_handler($request);
             case 'get_categories':
-                if (!$this->check_read_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                if (!$this->check_read_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->get_categories_handler($request);
             case 'create_category':
-                if (!$this->check_taxonomy_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                if (!$this->check_taxonomy_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->create_category_handler($request);
             case 'create_tag':
-                if (!$this->check_taxonomy_permission($request)) return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403);
+                if (!$this->check_taxonomy_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->create_tag_handler($request);
             case 'whoami':
                 // Signature already verified by the caller; no further capability required.
                 return $this->whoami_handler($request);
             default:
+                $this->last_dispatch_gated = true;
                 return new WP_REST_Response(['success' => false, 'error' => 'Invalid action'], 400);
         }
     }
