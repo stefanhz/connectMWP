@@ -4,6 +4,24 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-06-02 — v2.1.1 (in-development build, NOT a stable release)
+
+This is an **in-development (pre-release) build**, not a stable release — it captures the "OAuth Phase 0 spike" work that was sitting on `main` mislabeled as the prior stable `2.1.0`. It is versioned only so the build is referenceable and gets its own CHANGELOG line. (Intended label was the pre-release `2.2.0-dev.1`, but the version tooling rejects non-`X.Y.Z` strings, so it landed as plain `2.1.1`; the convention will be revisited.)
+
+The spike is **observational only** — it adds OAuth *discovery* surfaces and stub endpoints so we can watch how OAuth clients (e.g. ChatGPT) probe and try to connect. There is **no real OAuth yet**; everything here is a learning instrument to be removed when the real build lands.
+
+### Added
+
+- **connectmwp-agent — OAuth discovery documents at the site root `.well-known`.** Serves RFC 9728 Protected Resource Metadata and RFC 8414 Authorization Server Metadata so OAuth clients can discover the (stub) authorization surface. Observational only. (`connectmwp-agent/connectmwp-agent.php`)
+- **connectmwp-agent — `WWW-Authenticate` discovery challenge on the `/mcp` 401.** Unauthenticated `/mcp` calls now emit the discovery challenge header that points OAuth-capable clients at the metadata docs above, so we can observe whether/how they follow it. (`connectmwp-agent/connectmwp-agent.php`)
+- **connectmwp-agent — stub `/oauth/{authorize,token,register}` endpoints with redacted request logging + an admin viewer.** The endpoints do no real OAuth; they record redacted inbound requests so an admin can inspect what clients send during a connection attempt. Stubs to be removed when the real OAuth build lands. (`connectmwp-agent/connectmwp-agent.php`)
+
+### Unchanged
+
+- **Existing auth paths are untouched.** The Ed25519 signature path (Claude/Cursor) and the per-site header-token path (ChatGPT, shipped in v2.1.0) work exactly as before. The OAuth spike is additive and observational; it does not gate, replace, or alter any existing authentication.
+
+---
+
 ## 2026-06-02 — v2.1.0
 
 ChatGPT can now connect to a WordPress site and publish content — without a central server in the path. A new remote MCP endpoint is hosted *by the plugin itself* on the user's site, so the decentralization thesis is preserved: ChatGPT talks straight to the site, exactly as Claude/Cursor already do over the signature path. Connection is by a per-site API token the admin generates on a new settings card and pastes into ChatGPT's connector setup.
