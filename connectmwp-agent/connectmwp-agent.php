@@ -192,7 +192,386 @@ class ConnectMWP_Agent {
         // The lazy per-entry migration in get_key() covers the window before
         // the first plugins_loaded run on an API-only request.
         add_action('plugins_loaded', [$this, 'maybe_migrate_legacy_keys']);
+
+        // [OAuth Phase 0 spike] Intercept root /.well-known/oauth-* discovery
+        // requests BEFORE WordPress routes them (WP does not natively serve
+        // /.well-known/*). Hook 'parse_request' fires after WP has parsed the URL
+        // but before any template/REST dispatch, which is early enough to emit a
+        // JSON document and exit cleanly. Scoped tightly to /.well-known/oauth-*
+        // inside the handler so it never touches acme/SSL/IndieAuth files.
+        add_action('parse_request', [$this, 'oauth_spike_wellknown_router']);
+
+        // [OAuth Phase 0 spike] Clear the captured spike log (admin-only,
+        // nonce-gated; admin UX, never on the MCP traffic path).
+        add_action('wp_ajax_connectmwp_oauth_spike_clear', [$this, 'oauth_spike_clear_handler']);
     }
+
+    // ========================================================================
+    // [OAuth Phase 0 spike] — THROWAWAY observational code.
+    //
+    // Goal: learn exactly how ChatGPT performs OAuth discovery + (optionally)
+    // dynamic client registration against this site, and prove that root
+    // /.well-known/* routing works on a real managed WP host. This whole block
+    // is intended to be REPLACED by the real OAuth build later. Every member of
+    // it is marked with this comment tag for easy removal.
+    //
+    // It is additive and side-effect-light: it serves valid-LOOKING discovery
+    // documents, emits the WWW-Authenticate discovery challenge on the existing
+    // /mcp 401, exposes STUB /oauth/* endpoints that perform NO real auth, and
+    // records a redacted log of every hit so the flow can be inspected from the
+    // settings page. It does not touch the signature path, the token DAL, or
+    // dispatch_action.
+    // ========================================================================
+
+    const OAUTH_SPIKE_LOG_OPTION = 'connectmwp_oauth_spike_log'; // [OAuth Phase 0 spike]
+    const OAUTH_SPIKE_LOG_MAX    = 50;                            // [OAuth Phase 0 spike] keep last N entries
+    const OAUTH_SPIKE_NONCE      = 'connectmwp_oauth_spike';      // [OAuth Phase 0 spike] admin-ajax nonce action
+
+    /**
+     * [OAuth Phase 0 spike] Param names whose VALUES must never be stored in the
+     * log. We record that the param was present and its length, never the bytes.
+     */
+    private function oauth_spike_secret_params() {
+        // [OAuth Phase 0 spike]
+        return ['code', 'token', 'code_verifier', 'client_secret', 'access_token', 'refresh_token'];
+    }
+
+    /**
+     * [OAuth Phase 0 spike] Site URLs derived ONLY from home_url()/rest_url() so
+     * the advertised documents match whatever this install actually answers on.
+     */
+    private function oauth_spike_urls() {
+        // [OAuth Phase 0 spike]
+        $site_root = untrailingslashit(home_url());          // issuer / authorization server base
+        $mcp_url   = rest_url(self::API_NAMESPACE . '/mcp');  // protected resource
+        return [
+            'site_root' => $site_root,
+            'mcp'       => $mcp_url,
+            'authorize' => rest_url(self::API_NAMESPACE . '/oauth/authorize'),
+            'token'     => rest_url(self::API_NAMESPACE . '/oauth/token'),
+            'register'  => rest_url(self::API_NAMESPACE . '/oauth/register'),
+            'prm'       => $site_root . '/.well-known/oauth-protected-resource',
+        ];
+    }
+
+    /**
+     * [OAuth Phase 0 spike] Root /.well-known/oauth-* router.
+     *
+     * WordPress does NOT serve /.well-known/* via the REST API or rewrite rules,
+     * so OAuth discovery probes would 404 without this. We inspect the RAW
+     * request URI and ONLY act on paths beginning with /.well-known/oauth- — any
+     * other .well-known file (acme-challenge, SSL validation, IndieAuth, etc.)
+     * passes straight through untouched. On a match we emit application/json and
+     * exit immediately (before WP's main query / template). No auth, no secrets.
+     */
+    public function oauth_spike_wellknown_router() {
+        // [OAuth Phase 0 spike]
+        $raw_uri = isset($_SERVER['REQUEST_URI']) ? (string) wp_unslash($_SERVER['REQUEST_URI']) : '';
+        if ($raw_uri === '') {
+            return;
+        }
+
+        // Path only (strip query string), normalized — no decoding tricks needed
+        // because we only ever compare a fixed ASCII prefix.
+        $path = parse_url($raw_uri, PHP_URL_PATH);
+        if (!is_string($path) || $path === '') {
+            return;
+        }
+
+        // Tight scope: only the OAuth discovery family. Never other .well-known.
+        if (strpos($path, '/.well-known/oauth-') !== 0) {
+            return;
+        }
+
+        $urls = $this->oauth_spike_urls();
+
+        // Protected Resource Metadata (PRM). ChatGPT may probe the bare path OR a
+        // sub-path that echoes the resource path; we answer both with the same doc.
+        $is_prm =
+            $path === '/.well-known/oauth-protected-resource'
+            || strpos($path, '/.well-known/oauth-protected-resource/') === 0;
+
+        $is_as = ($path === '/.well-known/oauth-authorization-server');
+
+        if (!$is_prm && !$is_as) {
+            // An oauth-* probe we don't model yet — still log it so we SEE it,
+            // then 404 as JSON (don't hand it to WP's HTML 404).
+            $this->oauth_spike_log_request($path, 'GET', null);
+            $this->oauth_spike_emit_json(['error' => 'not_found', 'note' => 'connectMWP OAuth Phase 0 spike — unmodeled .well-known/oauth-* path'], 404);
+            return; // unreachable: emit_json exits
+        }
+
+        $this->oauth_spike_log_request($path, 'GET', null);
+
+        if ($is_prm) {
+            $this->oauth_spike_emit_json([
+                'resource'                 => $urls['mcp'],
+                'authorization_servers'    => [$urls['site_root']],
+                'scopes_supported'         => ['connectmwp'],
+                'bearer_methods_supported' => ['header'],
+            ], 200);
+            return; // unreachable
+        }
+
+        // Authorization Server (AS) metadata. Advertise BOTH DCR
+        // (registration_endpoint) AND CIMD (client_id_metadata_document_supported)
+        // on purpose, so we can OBSERVE which path ChatGPT actually takes.
+        $this->oauth_spike_emit_json([
+            'issuer'                                              => $urls['site_root'],
+            'authorization_endpoint'                             => $urls['authorize'],
+            'token_endpoint'                                     => $urls['token'],
+            'registration_endpoint'                              => $urls['register'],
+            'response_types_supported'                           => ['code'],
+            'grant_types_supported'                              => ['authorization_code', 'refresh_token'],
+            'code_challenge_methods_supported'                   => ['S256'],
+            'token_endpoint_auth_methods_supported'              => ['none'],
+            'scopes_supported'                                   => ['connectmwp'],
+            'authorization_response_iss_parameter_supported'     => true,
+            'client_id_metadata_document_supported'              => true,
+        ], 200);
+    }
+
+    /**
+     * [OAuth Phase 0 spike] Emit a JSON body with explicit no-store headers and
+     * exit. Discovery docs are public + non-sensitive, but no-store keeps any
+     * edge cache from pinning a stale document while we iterate.
+     */
+    private function oauth_spike_emit_json(array $payload, int $status) {
+        // [OAuth Phase 0 spike]
+        if (!headers_sent()) {
+            status_header($status);
+            header('Content-Type: application/json; charset=utf-8');
+            header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+            header('Pragma: no-cache');
+        }
+        echo wp_json_encode($payload);
+        exit;
+    }
+
+    /**
+     * [OAuth Phase 0 spike] Append a redacted record of one discovery/OAuth hit
+     * to a capped, non-autoloaded WP option. Captures the path, method, and the
+     * SHAPE of query/body/headers — never a full secret. Secret-named param
+     * values become "[redacted len=N]".
+     *
+     * @param string     $path        Request path (already known to the caller).
+     * @param string     $method      HTTP method.
+     * @param array|null $body_source Optional explicit body params (REST/AJAX
+     *                                callers pass these); when null we read $_POST.
+     */
+    private function oauth_spike_log_request($path, $method, $body_source = null) {
+        // [OAuth Phase 0 spike]
+        $secret = $this->oauth_spike_secret_params();
+
+        // ---- Query params (names + redacted values) ----
+        $query = [];
+        if (!empty($_GET)) {
+            foreach ($_GET as $name => $value) {
+                $query[$this->oauth_spike_clean_key($name)] =
+                    $this->oauth_spike_redact_value($name, $value, $secret);
+            }
+        }
+
+        // ---- Body params (names + redacted values) ----
+        $body = [];
+        if (is_array($body_source)) {
+            $src = $body_source;
+        } else {
+            $src = !empty($_POST) ? $_POST : [];
+        }
+        // For JSON bodies (common on /register, /token) $_POST is empty — try the
+        // raw input and decode shallowly so we still capture the param NAMES.
+        if (empty($src)) {
+            $raw = file_get_contents('php://input');
+            if (is_string($raw) && $raw !== '') {
+                $decoded = json_decode($raw, true);
+                if (is_array($decoded)) {
+                    $src = $decoded;
+                }
+            }
+        }
+        foreach ($src as $name => $value) {
+            $body[$this->oauth_spike_clean_key($name)] =
+                $this->oauth_spike_redact_value($name, $value, $secret);
+        }
+
+        // ---- Relevant request headers (presence only; never raw secret bytes) ----
+        $headers = [];
+        $auth_present = false;
+        if (isset($_SERVER['HTTP_AUTHORIZATION']) && $_SERVER['HTTP_AUTHORIZATION'] !== '') {
+            $auth_present = true;
+        }
+        if (function_exists('getallheaders')) {
+            foreach (getallheaders() as $hn => $hv) {
+                if (strcasecmp($hn, 'Authorization') === 0 && $hv !== '') {
+                    $auth_present = true;
+                }
+            }
+        }
+        $headers['Authorization']   = $auth_present ? 'present' : 'absent';
+        $headers['Content-Type']    = isset($_SERVER['CONTENT_TYPE']) ? sanitize_text_field((string) $_SERVER['CONTENT_TYPE']) : '';
+        $headers['Accept']          = isset($_SERVER['HTTP_ACCEPT']) ? sanitize_text_field((string) $_SERVER['HTTP_ACCEPT']) : '';
+        $headers['User-Agent']      = isset($_SERVER['HTTP_USER_AGENT']) ? sanitize_text_field(substr((string) $_SERVER['HTTP_USER_AGENT'], 0, 200)) : '';
+
+        $entry = [
+            'time'    => current_time('mysql'),          // YYYY-MM-DD HH:MM:SS, WP timezone
+            'path'    => sanitize_text_field((string) $path),
+            'method'  => sanitize_text_field((string) $method),
+            'query'   => $query,
+            'body'    => $body,
+            'headers' => $headers,
+        ];
+
+        // Capped, non-autoloaded option. Best-effort under concurrency — this is
+        // a spike, not a ledger; a rare lost entry under a race is acceptable.
+        $log = get_option(self::OAUTH_SPIKE_LOG_OPTION, []);
+        if (!is_array($log)) {
+            $log = [];
+        }
+        $log[] = $entry;
+        if (count($log) > self::OAUTH_SPIKE_LOG_MAX) {
+            $log = array_slice($log, -self::OAUTH_SPIKE_LOG_MAX);
+        }
+        update_option(self::OAUTH_SPIKE_LOG_OPTION, $log, false); // autoload no
+    }
+
+    /** [OAuth Phase 0 spike] Sanitize a param/header key for safe storage. */
+    private function oauth_spike_clean_key($key) {
+        // [OAuth Phase 0 spike]
+        return sanitize_text_field(substr((string) $key, 0, 100));
+    }
+
+    /**
+     * [OAuth Phase 0 spike] Redact a single param value. Secret-named params
+     * become "[redacted len=N]". Arrays are recorded as "[array]". Everything
+     * else is sanitized + length-capped so the log can never store a long secret
+     * verbatim (defense-in-depth even for non-secret-named params).
+     */
+    private function oauth_spike_redact_value($name, $value, array $secret) {
+        // [OAuth Phase 0 spike]
+        $lname = strtolower((string) $name);
+        if (in_array($lname, $secret, true)) {
+            $len = is_scalar($value) ? strlen((string) $value) : 0;
+            return '[redacted len=' . intval($len) . ']';
+        }
+        if (is_array($value)) {
+            return '[array]';
+        }
+        $str = sanitize_text_field((string) $value);
+        if (strlen($str) > 256) {
+            $str = substr($str, 0, 256) . '…';
+        }
+        return $str;
+    }
+
+    /**
+     * [OAuth Phase 0 spike] Attach the RFC 9728 WWW-Authenticate discovery
+     * challenge to the /mcp 401 response. Called from verify_token_request only
+     * on the unauthenticated 401 paths.
+     *
+     * A permission_callback returns a WP_Error that WP turns into the HTTP
+     * response LATER, so setting a header here directly would be lost. Instead we
+     * register a one-shot rest_post_dispatch filter that injects the header onto
+     * the outgoing 401 response object. The header points the client at our PRM
+     * document, which kicks off discovery.
+     */
+    private function oauth_spike_emit_www_authenticate() {
+        // [OAuth Phase 0 spike]
+        if ($this->oauth_spike_www_auth_hooked) {
+            return; // guard: permission_callback can fire twice per request
+        }
+        $this->oauth_spike_www_auth_hooked = true;
+
+        $urls  = $this->oauth_spike_urls();
+        $value = sprintf(
+            'Bearer resource_metadata="%s", scope="connectmwp"',
+            $urls['prm']
+        );
+
+        add_filter('rest_post_dispatch', function ($response) use ($value) {
+            // [OAuth Phase 0 spike] Only stamp genuine 401 responses (the
+            // unauthenticated /mcp path); never a 200.
+            if ($response instanceof WP_REST_Response && (int) $response->get_status() === 401) {
+                $response->header('WWW-Authenticate', $value);
+            }
+            return $response;
+        }, 10, 1);
+    }
+
+    /** [OAuth Phase 0 spike] one-shot guard so the WWW-Authenticate filter is added once. */
+    private $oauth_spike_www_auth_hooked = false;
+
+    /**
+     * [OAuth Phase 0 spike] GET /oauth/authorize stub. Logs the hit, then renders
+     * a plain placeholder page. Deliberately does NOT redirect anywhere — we only
+     * want to observe that ChatGPT reached it and with what query params
+     * (client_id, redirect_uri, scope, response_type, code_challenge, etc.).
+     */
+    public function oauth_spike_authorize_handler($request) {
+        // [OAuth Phase 0 spike]
+        $this->oauth_spike_log_request('/' . self::API_NAMESPACE . '/oauth/authorize', 'GET', []);
+        $html = '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            . '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            . '<title>connectMWP OAuth</title></head><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;color:#1d2327">'
+            . '<h1>connectMWP OAuth (Phase 0 spike)</h1>'
+            . '<p>This authorization endpoint is not yet implemented. This is an observational build used to learn how OAuth clients discover and connect to this site.</p>'
+            . '</body></html>';
+        if (!headers_sent()) {
+            status_header(200);
+            header('Content-Type: text/html; charset=utf-8');
+            header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        }
+        echo $html; // static literal, no user input echoed
+        exit;
+    }
+
+    /**
+     * [OAuth Phase 0 spike] POST /oauth/token stub. Logs the hit, returns a
+     * standard-shaped OAuth error (HTTP 400). Performs NO token exchange.
+     */
+    public function oauth_spike_token_handler($request) {
+        // [OAuth Phase 0 spike]
+        $body = ($request instanceof WP_REST_Request) ? $request->get_body_params() : null;
+        $this->oauth_spike_log_request('/' . self::API_NAMESPACE . '/oauth/token', 'POST', $body);
+        return new WP_REST_Response([
+            'error'             => 'temporarily_unavailable',
+            'error_description' => 'Phase 0 spike',
+        ], 400);
+    }
+
+    /**
+     * [OAuth Phase 0 spike] POST /oauth/register stub (Dynamic Client
+     * Registration). Logs the hit + body SHAPE (so we can see if ChatGPT calls
+     * DCR at all, and what fields it sends), returns a stub. No client is stored.
+     */
+    public function oauth_spike_register_handler($request) {
+        // [OAuth Phase 0 spike]
+        $body = ($request instanceof WP_REST_Request) ? $request->get_json_params() : null;
+        if (empty($body) && $request instanceof WP_REST_Request) {
+            $body = $request->get_body_params();
+        }
+        $this->oauth_spike_log_request('/' . self::API_NAMESPACE . '/oauth/register', 'POST', is_array($body) ? $body : []);
+        return new WP_REST_Response([
+            'client_id' => 'spike-stub',
+            'error'     => 'not_implemented',
+        ], 400);
+    }
+
+    /**
+     * [OAuth Phase 0 spike] Admin-AJAX: clear the captured spike log. Gated by
+     * nonce + manage_options, exactly like the cgpt admin handlers. Admin UX
+     * only — never on the MCP traffic path.
+     */
+    public function oauth_spike_clear_handler() {
+        // [OAuth Phase 0 spike]
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['error' => 'forbidden', 'message' => 'You do not have permission to do this.'], 403);
+        }
+        check_ajax_referer(self::OAUTH_SPIKE_NONCE);
+        delete_option(self::OAUTH_SPIKE_LOG_OPTION);
+        wp_send_json_success(['cleared' => true]);
+    }
+    // ===================== end [OAuth Phase 0 spike] block ==================
 
     /**
      * Register Custom WordPress REST API Routes
@@ -311,6 +690,35 @@ class ConnectMWP_Agent {
                 'permission_callback' => [$this, 'verify_token_request'],
             ]
         ]);
+
+        // [OAuth Phase 0 spike] Stub OAuth endpoints. These perform NO real auth
+        // and store nothing sensitive — they exist purely to (a) be advertised in
+        // the discovery docs and (b) record what ChatGPT sends when it reaches
+        // them. permission_callback is __return_true ONLY because these are
+        // inert observational stubs; they are explicitly exempted from the
+        // signature gate in central_rest_auth (see the [OAuth Phase 0 spike]
+        // bypass there) so they run instead of being 401'd first.
+        register_rest_route(self::API_NAMESPACE, '/oauth/authorize', [
+            [
+                'methods'             => 'GET',
+                'callback'            => [$this, 'oauth_spike_authorize_handler'],
+                'permission_callback' => '__return_true',
+            ]
+        ]);
+        register_rest_route(self::API_NAMESPACE, '/oauth/token', [
+            [
+                'methods'             => 'POST',
+                'callback'            => [$this, 'oauth_spike_token_handler'],
+                'permission_callback' => '__return_true',
+            ]
+        ]);
+        register_rest_route(self::API_NAMESPACE, '/oauth/register', [
+            [
+                'methods'             => 'POST',
+                'callback'            => [$this, 'oauth_spike_register_handler'],
+                'permission_callback' => '__return_true',
+            ]
+        ]);
     }
 
     public function central_rest_auth($result, $server, $request) {
@@ -340,6 +748,17 @@ class ConnectMWP_Agent {
             if ($route === '/' . self::API_NAMESPACE . '/mcp'
                 || strpos($route, '/' . self::API_NAMESPACE . '/mcp/') === 0) {
                 return $result; // token-authenticated path; permission_callback (verify_token_request) handles auth.
+            }
+
+            // [OAuth Phase 0 spike] Exempt the stub /oauth/* endpoints from the
+            // signature gate so the spike handlers run (they self-authorize as
+            // __return_true and perform no real auth — observational only). The
+            // match is a TIGHT, exact list of the three spike routes; it does NOT
+            // loosen the /mcp match above. Remove this when the spike is replaced.
+            if ($route === '/' . self::API_NAMESPACE . '/oauth/authorize'
+                || $route === '/' . self::API_NAMESPACE . '/oauth/token'
+                || $route === '/' . self::API_NAMESPACE . '/oauth/register') {
+                return $result;
             }
 
             if (!$this->verify_request_signature($request)) {
@@ -697,10 +1116,16 @@ class ConnectMWP_Agent {
             }
             // Cached failure: re-emit the original diagnostic + status.
             $code = $this->verification_error_code ?: 'connectmwp_cgpt_invalid_token';
+            $cached_status = $this->cgpt_status_for_code($code);
+            // [OAuth Phase 0 spike] Re-emit the discovery challenge on a cached
+            // 401 too (WP may invoke this permission_callback twice per request).
+            if ($cached_status === 401) {
+                $this->oauth_spike_emit_www_authenticate();
+            }
             return new WP_Error(
                 $code,
                 $this->describe_verification_error($code),
-                array('status' => $this->cgpt_status_for_code($code))
+                array('status' => $cached_status)
             );
         }
 
@@ -767,6 +1192,11 @@ class ConnectMWP_Agent {
         if ($token === '') {
             $this->verification_error_code = 'connectmwp_cgpt_missing_token';
             $this->cgpt_token_verified = false;
+            // [OAuth Phase 0 spike] Emit the RFC 9728 discovery challenge on the
+            // unauthenticated /mcp 401. This is what tells an OAuth-capable client
+            // (ChatGPT) to begin discovery against our .well-known docs. Only on
+            // this no-credentials 401 — a valid token request never reaches here.
+            $this->oauth_spike_emit_www_authenticate();
             return new WP_Error(
                 'connectmwp_cgpt_missing_token',
                 $this->describe_verification_error('connectmwp_cgpt_missing_token'),
@@ -812,6 +1242,9 @@ class ConnectMWP_Agent {
             set_transient($limit_key, $failures + 1, self::CGPT_AUTH_LOCKOUT_SECONDS);
             $this->verification_error_code = 'connectmwp_cgpt_invalid_token';
             $this->cgpt_token_verified = false;
+            // [OAuth Phase 0 spike] Same discovery challenge on the invalid-token
+            // 401 (still unauthenticated). Valid tokens never reach here.
+            $this->oauth_spike_emit_www_authenticate();
             return new WP_Error(
                 'connectmwp_cgpt_invalid_token',
                 $this->describe_verification_error('connectmwp_cgpt_invalid_token'),
@@ -3888,8 +4321,110 @@ class ConnectMWP_Agent {
             </script>
 
             <?php $this->render_cgpt_card(); ?>
+
+            <?php $this->render_oauth_spike_panel(); // [OAuth Phase 0 spike] ?>
         </div>
         <?php
+    }
+
+    /**
+     * [OAuth Phase 0 spike] Render the captured discovery/OAuth request log as a
+     * newest-first table, with a nonce-protected "Clear log" button. Admin-only —
+     * the render path is already inside render_settings_page() which hard-gates on
+     * manage_options; we re-check defensively. All output is escaped. Observational
+     * UI only; nothing here touches the MCP traffic path.
+     */
+    private function render_oauth_spike_panel() {
+        // [OAuth Phase 0 spike]
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        $log = get_option(self::OAUTH_SPIKE_LOG_OPTION, []);
+        if (!is_array($log)) {
+            $log = [];
+        }
+        $entries = array_reverse($log); // newest first
+        $count   = count($entries);
+        $nonce   = wp_create_nonce(self::OAUTH_SPIKE_NONCE);
+        $ajax    = admin_url('admin-ajax.php');
+        ?>
+        <div class="cmwp-card" style="margin-top:2rem;border:1px solid #c3c4c7;border-radius:8px;padding:1.25rem;background:#fff">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+                <h2 style="margin:0">🧪 OAuth Spike Log <span style="font-size:.7em;background:#dba617;color:#1d2327;padding:.1em .5em;border-radius:4px;vertical-align:middle">PHASE 0</span></h2>
+                <button type="button" class="button" id="cmwp-oauth-spike-clear" <?php disabled($count === 0); ?>>Clear log</button>
+            </div>
+            <p style="color:#646970;margin:.5em 0 1em">
+                <?php echo esc_html__('Observational capture of discovery / OAuth requests (e.g. from ChatGPT). Secret values are redacted; only the last 50 entries are kept. Newest first.', 'connectmwp'); ?>
+            </p>
+
+            <?php if ($count === 0): ?>
+                <p style="color:#646970"><em><?php echo esc_html__('No requests captured yet. Add a ChatGPT connector in OAuth mode pointing at this site, then refresh this page.', 'connectmwp'); ?></em></p>
+            <?php else: ?>
+                <table class="widefat striped" style="margin-top:.5em">
+                    <thead>
+                        <tr>
+                            <th style="width:9.5rem"><?php echo esc_html__('Time', 'connectmwp'); ?></th>
+                            <th style="width:4rem"><?php echo esc_html__('Method', 'connectmwp'); ?></th>
+                            <th><?php echo esc_html__('Path', 'connectmwp'); ?></th>
+                            <th><?php echo esc_html__('Query', 'connectmwp'); ?></th>
+                            <th><?php echo esc_html__('Body', 'connectmwp'); ?></th>
+                            <th><?php echo esc_html__('Headers', 'connectmwp'); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($entries as $e): ?>
+                            <tr>
+                                <td><code><?php echo esc_html($e['time'] ?? ''); ?></code></td>
+                                <td><code><?php echo esc_html($e['method'] ?? ''); ?></code></td>
+                                <td style="word-break:break-all"><code><?php echo esc_html($e['path'] ?? ''); ?></code></td>
+                                <td><?php echo $this->oauth_spike_render_kv($e['query'] ?? []); // escaped inside ?></td>
+                                <td><?php echo $this->oauth_spike_render_kv($e['body'] ?? []); // escaped inside ?></td>
+                                <td><?php echo $this->oauth_spike_render_kv($e['headers'] ?? []); // escaped inside ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            <?php endif; ?>
+        </div>
+        <script>
+        (function () {
+            var btn = document.getElementById('cmwp-oauth-spike-clear');
+            if (!btn) { return; }
+            btn.addEventListener('click', function () {
+                if (!window.confirm('Clear the OAuth spike log?')) { return; }
+                btn.disabled = true;
+                var body = new URLSearchParams();
+                body.set('action', 'connectmwp_oauth_spike_clear');
+                body.set('_wpnonce', <?php echo wp_json_encode($nonce); ?>);
+                fetch(<?php echo wp_json_encode($ajax); ?>, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: body.toString()
+                }).then(function (r) { return r.json(); })
+                  .then(function () { window.location.reload(); })
+                  .catch(function () { btn.disabled = false; window.alert('Could not clear the log.'); });
+            });
+        })();
+        </script>
+        <?php
+    }
+
+    /**
+     * [OAuth Phase 0 spike] Render a name=>value map as escaped, line-broken
+     * <code> pairs for a log table cell. Returns '—' for an empty map.
+     */
+    private function oauth_spike_render_kv($map) {
+        // [OAuth Phase 0 spike]
+        if (!is_array($map) || empty($map)) {
+            return '<span style="color:#646970">—</span>';
+        }
+        $rows = [];
+        foreach ($map as $k => $v) {
+            $rows[] = '<code>' . esc_html((string) $k) . '</code>=<code>' . esc_html((string) $v) . '</code>';
+        }
+        return implode('<br>', $rows);
     }
 
     /**
