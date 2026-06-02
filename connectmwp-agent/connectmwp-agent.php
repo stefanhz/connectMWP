@@ -320,6 +320,8 @@ class ConnectMWP_Agent {
                 return 'ChatGPT API token does not match any active token on this site.';
             case 'connectmwp_cgpt_rate_limited':
                 return 'Too many failed token attempts from this IP. Please try again later.';
+            case 'connectmwp_cgpt_unbound_token':
+                return 'ChatGPT API token is not bound to a valid user; regenerate it from the connectMWP settings page.';
             default:
                 return 'Unauthorized request signature verification failed.';
         }
@@ -357,6 +359,14 @@ class ConnectMWP_Agent {
     // $this->bound_user_id so the existing check_* callbacks authorize via the
     // bound user exactly as they do on the signature path.
     private $cgpt_token_verified = null;
+
+    // The bound user id resolved by the most recent SUCCESSFUL token
+    // verification. Stored separately from $this->bound_user_id because the
+    // latter is reset to 0 at the top of every verify_token_request() call
+    // (I-1 defensive reset); on a cached PASS we restore it from here so a
+    // second permission_callback invocation never returns true with
+    // bound_user_id == 0.
+    private $cgpt_bound_user_id = 0;
 
     // True only when the most recent dispatch_action() call short-circuited at a
     // dispatch GATE (capability-check failure or unknown-action default) before
@@ -577,22 +587,53 @@ class ConnectMWP_Agent {
      *   VR-5 HTTPS gate → VR-1 per-request verdict cache → token extraction
      *   → VR-1 IP rate-limit (failed resolves only) → resolve → VR-6 bind user
      *   + VR-4 touch-on-success.
+     *
+     * Returns true on success; on every failure path returns a WP_Error whose
+     * 'status' data drives the HTTP response code (WP honors a WP_Error
+     * returned from a permission_callback) and whose code carries the
+     * connectmwp_cgpt_* diagnostic that a plain `return false` would otherwise
+     * collapse into a generic 403.
+     *
+     * @param WP_REST_Request|null $request
+     * @return bool|WP_Error true on success, WP_Error on failure.
      */
     public function verify_token_request($request = null) {
+        // I-1: Defensive state reset. bound_user_id is shared with the signature
+        // path; clear it at entry (BEFORE the cache check) so no stale bound user
+        // from any prior code path can bleed into a token request. The
+        // cached-PASS branch below re-establishes it from $this->cgpt_bound_user_id
+        // so a cache hit never returns true with bound_user_id == 0.
+        $this->bound_user_id = 0;
+
         // VR-5: Enforce HTTPS first.
         if (!is_ssl()) {
             $this->verification_error_code = 'connectmwp_cgpt_insecure_transport';
             $this->cgpt_token_verified = false;
-            return false;
+            return new WP_Error(
+                'connectmwp_cgpt_insecure_transport',
+                $this->describe_verification_error('connectmwp_cgpt_insecure_transport'),
+                array('status' => 403)
+            );
         }
 
         // VR-1: Per-request verdict cache. WP may invoke a permission_callback
         // multiple times; on the second invocation return the cached verdict
         // without re-scanning the token index or re-touching the failure
-        // counter. A cached PASS keeps $this->bound_user_id (set below) intact,
-        // which is what the check_* callbacks read.
+        // counter. On a cached PASS, restore the resolved bound user (the entry
+        // reset above zeroed it) so the check_* callbacks read the right id —
+        // a cached pass NEVER returns true with bound_user_id == 0.
         if ($this->cgpt_token_verified !== null) {
-            return $this->cgpt_token_verified;
+            if ($this->cgpt_token_verified === true) {
+                $this->bound_user_id = $this->cgpt_bound_user_id;
+                return true;
+            }
+            // Cached failure: re-emit the original diagnostic + status.
+            $code = $this->verification_error_code ?: 'connectmwp_cgpt_invalid_token';
+            return new WP_Error(
+                $code,
+                $this->describe_verification_error($code),
+                array('status' => $this->cgpt_status_for_code($code))
+            );
         }
 
         // Extract the presented token in precedence order:
@@ -627,6 +668,11 @@ class ConnectMWP_Agent {
         $token = '';
         if ($authorization !== '') {
             // Strip a leading "Bearer " (case-insensitive) if present.
+            // M-2: an Authorization value WITHOUT a recognized "Bearer " prefix
+            // is intentionally accepted verbatim as the token. resolve_cgpt_token's
+            // prefix/length prefilter rejects anything malformed, so accepting the
+            // raw value here means non-standard or absent schemes don't silently
+            // break paste-the-token setups.
             if (stripos($authorization, 'Bearer ') === 0) {
                 $token = trim(substr($authorization, 7));
             } else {
@@ -646,19 +692,39 @@ class ConnectMWP_Agent {
         if ($token === '') {
             $this->verification_error_code = 'connectmwp_cgpt_missing_token';
             $this->cgpt_token_verified = false;
-            return false;
+            return new WP_Error(
+                'connectmwp_cgpt_missing_token',
+                $this->describe_verification_error('connectmwp_cgpt_missing_token'),
+                array('status' => 401)
+            );
         }
 
         // VR-1: IP rate-limit BEFORE the (relatively expensive) index-scanning
         // resolve. Only FAILED resolves count toward the limit (see below), so
         // a legitimate client making many authenticated calls is never locked.
+        //
+        // I-3: the IP is hashed (defense-in-depth — the transient key never
+        // exposes a raw client IP at rest) using md5(), matching the enroll
+        // limiter's cmwp_enroll_limit_<md5(ip)> for cross-limiter consistency.
+        // The counter is a best-effort transient: NOT strictly atomic under
+        // heavy concurrency, which is acceptable here because this is a
+        // guessing-throttle on a 256-bit secret (a couple of races at the
+        // boundary can't meaningfully help an attacker brute-force it).
+        // CGPT_AUTH_MAX_FAILURES may differ from the enroll limiter's budget on
+        // purpose: these are different credential classes — an enrollment code
+        // is short-lived and single-use, whereas an API token is long-lived, so
+        // each gets a failure budget tuned to its own risk profile.
         $ip = $this->get_client_ip();
-        $limit_key = 'cmwp_cgpt_limit_' . sha1($ip);
+        $limit_key = 'cmwp_cgpt_limit_' . md5($ip);
         $failures  = intval(get_transient($limit_key));
         if ($failures >= self::CGPT_AUTH_MAX_FAILURES) {
             $this->verification_error_code = 'connectmwp_cgpt_rate_limited';
             $this->cgpt_token_verified = false;
-            return false;
+            return new WP_Error(
+                'connectmwp_cgpt_rate_limited',
+                $this->describe_verification_error('connectmwp_cgpt_rate_limited'),
+                array('status' => 429)
+            );
         }
 
         // Resolve. The DAL pre-filters bad prefix/length cheaply and only
@@ -671,19 +737,63 @@ class ConnectMWP_Agent {
             set_transient($limit_key, $failures + 1, self::CGPT_AUTH_LOCKOUT_SECONDS);
             $this->verification_error_code = 'connectmwp_cgpt_invalid_token';
             $this->cgpt_token_verified = false;
-            return false;
+            return new WP_Error(
+                'connectmwp_cgpt_invalid_token',
+                $this->describe_verification_error('connectmwp_cgpt_invalid_token'),
+                array('status' => 401)
+            );
+        }
+
+        // Fail-closed guard: a resolved token with no valid bound user is
+        // misconfigured (orphaned by a deleted user, or minted without a bind).
+        // user_can(0, ...) already denies, but returning a generic Forbidden
+        // would be confusing; surface an actionable diagnostic instead. Do NOT
+        // touch the token and do NOT mark the verdict as a PASS.
+        $record = $resolved['record'];
+        if ((int) ($record['bound_user_id'] ?? 0) <= 0) {
+            $this->verification_error_code = 'connectmwp_cgpt_unbound_token';
+            $this->cgpt_token_verified = false;
+            return new WP_Error(
+                'connectmwp_cgpt_unbound_token',
+                $this->describe_verification_error('connectmwp_cgpt_unbound_token'),
+                array('status' => 403)
+            );
         }
 
         // VR-6 / success: bind the user so check_* callbacks authorize via
         // user_can($this->bound_user_id, ...). No login session is created.
-        $record = $resolved['record'];
-        $this->bound_user_id = (int) ($record['bound_user_id'] ?? 0);
+        // ($record was already fetched + bound-user-validated above.) Store the
+        // resolved id in $cgpt_bound_user_id too, so a cached PASS on a second
+        // permission_callback invocation can restore bound_user_id after the
+        // I-1 entry reset.
+        $this->bound_user_id      = (int) $record['bound_user_id'];
+        $this->cgpt_bound_user_id = $this->bound_user_id;
         $this->cgpt_token_verified = true;
 
         // VR-4: touch last_used / last_ip ONLY after a successful resolve.
         $this->touch_cgpt_token($resolved['token_id'], $ip);
 
         return true;
+    }
+
+    /**
+     * SSOT for the HTTP status that accompanies each connectmwp_cgpt_* failure
+     * code. Used by verify_token_request()'s cached-failure branch to re-emit
+     * the original status on a repeat permission_callback invocation; the
+     * first-time failure paths pass the same status literals inline.
+     */
+    private function cgpt_status_for_code($code) {
+        switch ($code) {
+            case 'connectmwp_cgpt_missing_token':
+            case 'connectmwp_cgpt_invalid_token':
+                return 401;
+            case 'connectmwp_cgpt_rate_limited':
+                return 429;
+            case 'connectmwp_cgpt_insecure_transport':
+            case 'connectmwp_cgpt_unbound_token':
+            default:
+                return 403;
+        }
     }
 
     private function is_replay_signature($sig_hash) {
