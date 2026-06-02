@@ -3502,7 +3502,7 @@ class ConnectMWP_Agent {
 
             <header class="cmwp-hero">
                 <h1>🔌 connectMWP <span class="cmwp-ver">v<?php echo esc_html(self::version()); ?></span></h1>
-                <p>Secure, signature-based direct connector between local AI clients (Claude Desktop, Cursor, ChatGPT Desktop, Antigravity, etc.) and this WordPress site.</p>
+                <p>Secure, signature-based direct connector between local AI clients (Claude Desktop, Cursor, Antigravity, etc.) and this WordPress site.</p>
             </header>
 
             <?php if ($page_state === 'mid-pair'):
@@ -3667,7 +3667,7 @@ class ConnectMWP_Agent {
                         <li>Your AI client can now read &amp; write <strong><?php echo $site_title_safe; ?></strong> as <strong><?php echo $recent_user; ?></strong> (<code><?php echo $recent_login; ?></code>, role: <?php echo $recent_roles; ?>).</li>
                         <li><strong>Test the connection:</strong> ask your AI <em>"list the tags on this site using connectMWP"</em>. The first time it uses each tool, your AI may ask for one-time permission — that's normal.</li>
                         <li><strong>If your AI doesn't see the connection</strong>, fully quit and relaunch the AI client (⌘Q on macOS, not just close the window).</li>
-                        <li><strong>Want to use this site from another AI client on the same Mac?</strong> (Claude Desktop, Cursor, ChatGPT Desktop, Antigravity, etc.) Register the same MCP server in each — <code>npx -y connectmwp-mcp</code>. They share this pairing; no new code needed.</li>
+                        <li><strong>Want to use this site from another AI client on the same Mac?</strong> (Claude Desktop, Cursor, Antigravity, etc.) Register the same MCP server in each — <code>npx -y connectmwp-mcp</code>. They share this pairing; no new code needed.</li>
                     </ol>
                 </section>
             <?php endif; ?>
@@ -3734,13 +3734,14 @@ class ConnectMWP_Agent {
                     <div>
                         <h2 class="cmwp-card-title">Configure an AI client</h2>
                         <p class="cmwp-card-sub">Drop this MCP server registration into your AI app's settings. The pairing above gives every AI client on this Mac the same access.</p>
+                        <p class="cmwp-card-sub"><?php echo esc_html__('Using ChatGPT? It connects differently — see the "Connect ChatGPT (beta)" section below.', 'connectmwp'); ?></p>
                     </div>
                 </div>
 
                 <div class="cmwp-tabs" id="cmwp-config-tabs" role="tablist" aria-label="AI client configuration">
                     <button type="button" class="cmwp-tab active" data-target="claude" role="tab" aria-selected="true">Claude Desktop</button>
                     <button type="button" class="cmwp-tab" data-target="cursor" role="tab" aria-selected="false">Cursor</button>
-                    <button type="button" class="cmwp-tab" data-target="other" role="tab" aria-selected="false">Other (ChatGPT Desktop, Cline, Continue…)</button>
+                    <button type="button" class="cmwp-tab" data-target="other" role="tab" aria-selected="false">Other (Cline, Continue, …)</button>
                 </div>
 
                 <div class="cmwp-tab-tip" data-tip="claude">
@@ -3768,7 +3769,7 @@ class ConnectMWP_Agent {
 }</span></pre>
 
                 <div class="cmwp-tab-tip" data-tip="other" style="display:none">
-                    For ChatGPT Desktop, Cline, Continue, or any other MCP-capable client: register a stdio MCP server named <code>connectmwp</code> with command <code>npx</code> and args <code>["-y", "connectmwp-mcp"]</code>. Exact menu paths vary by app.
+                    For Cline, Continue, or any other MCP-capable client: register a stdio MCP server named <code>connectmwp</code> with command <code>npx</code> and args <code>["-y", "connectmwp-mcp"]</code>. Exact menu paths vary by app.
                 </div>
 <pre class="cmwp-config-json" data-pane="other" style="display:none"><span class="cmwp-dim">Command:</span>  npx
 <span class="cmwp-dim">Args:</span>     -y connectmwp-mcp

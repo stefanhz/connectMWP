@@ -423,11 +423,13 @@ function printPairingSummary(identity, ctx) {
     console.log('  but signing did not validate end-to-end. If subsequent tools fail, re-pair.');
   }
   console.log('');
-  console.log('Test it in your AI client (Claude / ChatGPT / Cursor / Antigravity):');
+  // ChatGPT uses a separate token-based connector — see the WP Admin "Connect ChatGPT" card.
+  console.log('Test it in your AI client (Claude / Cursor / Antigravity):');
   console.log(`  "List the tags on ${new URL(ctx.siteUrl).hostname} using connectMWP"`);
   console.log('');
   console.log('Adding another AI client on this Mac? Register the same MCP server: `npx -y connectmwp-mcp`.');
   console.log('All AI clients on this user account share this pairing — no extra code needed.');
+  console.log('(ChatGPT connects via a token from the WP Admin "Connect ChatGPT" card, not this command.)');
 }
 
 // ============================================================================
