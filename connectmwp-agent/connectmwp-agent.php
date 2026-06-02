@@ -65,6 +65,21 @@ class ConnectMWP_Agent {
     // mistake it for a key row.
     const LATEST_CLIENT_OPTION = 'connectmwp_latest_client';
 
+    // ---- ChatGPT API-token storage DAL constants (T1) ----------------------
+    // ChatGPT cannot perform device-key Ed25519 signing, so it authenticates
+    // with a per-site bearer-style API token instead. Tokens use the SAME atomic
+    // per-row + self-healing-index design as the key DAL above (one option row
+    // per token, autoload `no`, plus a non-authoritative rebuildable index) so a
+    // write to one token can never clobber another (TOCTOU-safe). The store is a
+    // SEPARATE namespace (`connectmwp_cgpt_token_*`) so it can never collide with
+    // the `connectmwp_key_*` rows or the index-rebuild LIKE scan. Only the
+    // sha256 hash of a token is ever persisted — the plaintext exists exactly
+    // once, at mint time, and is never stored or logged.
+    const CGPT_TOKEN_OPTION_PREFIX = 'connectmwp_cgpt_token_'; // + bare hex suffix => per-token option name
+    const CGPT_TOKEN_INDEX_OPTION  = 'connectmwp_cgpt_token_index'; // array of token_id (hint, self-healing)
+    const CGPT_TOKEN_ID_PREFIX     = 'cmwp_cgpt_';            // token_id prefix (also the plaintext prefix)
+    const CGPT_TOKEN_SECRET_BYTES  = 32;                      // entropy of the token secret (>= 32 random bytes)
+
     // Wire-format length of an enrollment code: bin2hex(random_bytes(16)) yields
     // exactly 32 lowercase hex chars (see generate_enrollment_code()). Declared
     // once so the mint side and the structural validator cannot drift (T041).
@@ -823,6 +838,322 @@ class ConnectMWP_Agent {
             }
         }
         $this->write_key_index($ids);
+        return $ids;
+    }
+
+    // ========================================================================
+    // ChatGPT API-token DAL (T1)
+    //
+    // A parallel store for ChatGPT bearer tokens, mirroring the key DAL's atomic
+    // per-row + self-healing-index design under the `connectmwp_cgpt_token_*`
+    // namespace. ONLY the sha256 hash of a token is persisted; the plaintext is
+    // produced once by mint_cgpt_token() and never stored or logged. Like the
+    // key DAL, none of these establish a login session or call
+    // get_current_user_id().
+    // ========================================================================
+
+    /**
+     * Map a token_id to its per-token option name. SSOT for the naming
+     * convention. Strips the `cmwp_cgpt_` id prefix so the option is
+     * `connectmwp_cgpt_token_<hex>` (avoids a confusing doubled prefix and any
+     * collision with the `connectmwp_key_` family). Ids without the expected
+     * prefix fall back to a deterministic hash so they still map stably.
+     */
+    private function cgpt_token_option_name($token_id) {
+        $token_id = (string) $token_id;
+        $strip = self::CGPT_TOKEN_ID_PREFIX;
+        if (strpos($token_id, $strip) === 0) {
+            $suffix = substr($token_id, strlen($strip));
+        } else {
+            // Defensive: any odd id still maps deterministically.
+            $suffix = substr(hash('sha256', $token_id), 0, 32);
+        }
+        return self::CGPT_TOKEN_OPTION_PREFIX . $suffix;
+    }
+
+    /**
+     * Normalize a raw token record to the canonical six-field shape so every
+     * consumer sees a stable structure regardless of source. SSOT for the on-WP
+     * ChatGPT-token schema. NOTE: only `token_hash` (sha256 hex) is stored —
+     * never the plaintext token.
+     */
+    private function normalize_cgpt_token_record($raw) {
+        if (!is_array($raw)) {
+            $raw = [];
+        }
+        return [
+            'token_hash'    => isset($raw['token_hash']) ? (string) $raw['token_hash'] : '',
+            'bound_user_id' => isset($raw['bound_user_id']) ? intval($raw['bound_user_id']) : 0,
+            'label'         => isset($raw['label']) ? (string) $raw['label'] : '',
+            'created'       => isset($raw['created']) ? (string) $raw['created'] : '',
+            'last_used'     => isset($raw['last_used']) ? (string) $raw['last_used'] : '',
+            'last_ip'       => isset($raw['last_ip']) ? (string) $raw['last_ip'] : '',
+        ];
+    }
+
+    /**
+     * Read a single ChatGPT token record by id. Source of truth is the per-token
+     * option row. Returns the normalized record, or false if it does not exist.
+     */
+    private function get_cgpt_token($token_id) {
+        $row = get_option($this->cgpt_token_option_name($token_id), null);
+        if (is_array($row)) {
+            return $this->normalize_cgpt_token_record($row);
+        }
+        return false;
+    }
+
+    /**
+     * Atomic upsert of a single token row (touches only this token). Ensures the
+     * id is present in the index.
+     */
+    private function save_cgpt_token($token_id, array $record) {
+        $record = $this->normalize_cgpt_token_record($record);
+        update_option($this->cgpt_token_option_name($token_id), $record, 'no');
+        $this->cgpt_token_index_add($token_id);
+        return true;
+    }
+
+    /**
+     * Update specific fields on a single token. Reads the freshest record
+     * immediately before writing, so the read-modify-write window is per-token
+     * and tiny — two workers racing on the same token's last_used only produce a
+     * last-writer-wins timestamp on THAT token, never a cross-token clobber.
+     */
+    private function update_cgpt_token_fields($token_id, array $changes) {
+        $record = $this->get_cgpt_token($token_id);
+        if ($record === false) {
+            return false;
+        }
+        foreach ($changes as $field => $value) {
+            $record[$field] = $value;
+        }
+        return $this->save_cgpt_token($token_id, $record);
+    }
+
+    /**
+     * Mint a new ChatGPT API token. Generates a token_id and a SEPARATE
+     * high-entropy secret, assembles the self-identifying plaintext
+     * `cmwp_cgpt_<secret>`, persists ONLY its sha256 hash in a fresh atomic row,
+     * and adds the id to the index. The returned `plaintext` is the ONLY moment
+     * the token exists in cleartext — it is never stored or logged. Returns
+     * ['token_id'=>..., 'plaintext'=>..., 'record'=>...].
+     */
+    private function mint_cgpt_token($bound_user_id, $label) {
+        $token_id = self::CGPT_TOKEN_ID_PREFIX . bin2hex(random_bytes(8));
+        // Separate high-entropy secret (>= 32 random bytes), hex-encoded.
+        $secret    = bin2hex(random_bytes(self::CGPT_TOKEN_SECRET_BYTES));
+        // Self-identifying plaintext so it's recognizable in a connector UI.
+        $plaintext = self::CGPT_TOKEN_ID_PREFIX . $secret;
+
+        $record = $this->normalize_cgpt_token_record([
+            'token_hash'    => hash('sha256', $plaintext),
+            'bound_user_id' => intval($bound_user_id),
+            'label'         => (string) $label,
+            'created'       => current_time('mysql'),
+            'last_used'     => '',
+            'last_ip'       => '',
+        ]);
+
+        // Atomic per-token create. add_option fails if the (random) row already
+        // exists, so two concurrent mints of DIFFERENT tokens both succeed on
+        // their own rows. Whether freshly created or already present, ensure the
+        // index lists it.
+        add_option($this->cgpt_token_option_name($token_id), $record, '', 'no');
+        $this->cgpt_token_index_add($token_id);
+
+        return [
+            'token_id'  => $token_id,
+            'plaintext' => $plaintext,
+            'record'    => $record,
+        ];
+    }
+
+    /**
+     * Resolve a presented plaintext token to its record. Hashes the input once
+     * and walks the candidate token rows comparing the stored hash with
+     * hash_equals() (constant-time), so a match leaks no timing about WHICH token
+     * matched beyond the unavoidable per-row lookup. Returns
+     * ['token_id'=>..., 'record'=>...] on match, or false. Reads from the index
+     * (self-healing via get_cgpt_token()).
+     */
+    private function resolve_cgpt_token($plaintext) {
+        if (!is_string($plaintext) || $plaintext === '') {
+            return false;
+        }
+        $candidate_hash = hash('sha256', $plaintext);
+
+        $index = get_option(self::CGPT_TOKEN_INDEX_OPTION, []);
+        if (!is_array($index)) {
+            return false;
+        }
+
+        foreach ($index as $token_id) {
+            $record = $this->get_cgpt_token($token_id);
+            if ($record === false) {
+                continue;
+            }
+            $stored_hash = isset($record['token_hash']) ? (string) $record['token_hash'] : '';
+            if ($stored_hash !== '' && hash_equals($stored_hash, $candidate_hash)) {
+                return [
+                    'token_id' => $token_id,
+                    'record'   => $record,
+                ];
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Enumerate all ChatGPT tokens as token_id => normalized_record. Reads the
+     * index, resolves each via get_cgpt_token(), and self-heals (drops index
+     * entries whose row is gone), mirroring list_keys(). There is no legacy
+     * fallback — this store is new in T1.
+     */
+    private function list_cgpt_tokens() {
+        $out = [];
+
+        $index = get_option(self::CGPT_TOKEN_INDEX_OPTION, []);
+        if (is_array($index)) {
+            $healed = [];
+            foreach ($index as $token_id) {
+                $rec = $this->get_cgpt_token($token_id);
+                if ($rec !== false) {
+                    $out[$token_id] = $rec;
+                    $healed[] = $token_id;
+                }
+            }
+            // Self-heal: if the index referenced dead rows, prune them.
+            if (count($healed) !== count($index)) {
+                $this->write_cgpt_token_index(array_values(array_unique($healed)));
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Delete a single token: immediate revoke. Removes the per-token row and
+     * drops it from the index. Returns true if a row was removed.
+     */
+    private function delete_cgpt_token($token_id) {
+        $removed = delete_option($this->cgpt_token_option_name($token_id));
+        $this->cgpt_token_index_remove($token_id);
+        return (bool) $removed;
+    }
+
+    /**
+     * Throttled (~60s) last-used / last-ip touch for a token. Mutates ONLY this
+     * token's row (atomic), throttled exactly like update_key_last_used().
+     */
+    private function touch_cgpt_token($token_id, $ip) {
+        $record = $this->get_cgpt_token($token_id);
+        if ($record === false) {
+            return;
+        }
+        $last_used_str = $record['last_used'] ?? '';
+        $last_used_time = !empty($last_used_str) && $last_used_str !== 'Never' ? strtotime($last_used_str) : 0;
+        if (time() - $last_used_time > self::LAST_USED_THROTTLE_SECONDS) {
+            $this->update_cgpt_token_fields($token_id, [
+                'last_used' => current_time('mysql'),
+                'last_ip'   => (string) $ip,
+            ]);
+        }
+    }
+
+    /**
+     * Append a token_id to the index with a bounded optimistic retry. The index
+     * is a non-authoritative hint; worst case it is briefly stale, which never
+     * deletes a token because the per-token rows are independent. Mirrors
+     * index_add().
+     */
+    private function cgpt_token_index_add($token_id) {
+        for ($i = 0; $i < self::KEY_INDEX_MAX_RETRY; $i++) {
+            $index = get_option(self::CGPT_TOKEN_INDEX_OPTION, []);
+            if (!is_array($index)) {
+                $index = [];
+            }
+            if (in_array($token_id, $index, true)) {
+                return true; // already present
+            }
+            $next = $index;
+            $next[] = $token_id;
+            // update_option returns false when the stored value is unchanged;
+            // since we appended, a false here means a concurrent writer changed
+            // the row out from under us — re-read and retry.
+            if (update_option(self::CGPT_TOKEN_INDEX_OPTION, $next, 'no')) {
+                return true;
+            }
+            // Re-read on next iteration to merge the concurrent change.
+        }
+        return false;
+    }
+
+    /**
+     * Remove a token_id from the index with a bounded optimistic retry. Mirrors
+     * index_remove().
+     */
+    private function cgpt_token_index_remove($token_id) {
+        for ($i = 0; $i < self::KEY_INDEX_MAX_RETRY; $i++) {
+            $index = get_option(self::CGPT_TOKEN_INDEX_OPTION, []);
+            if (!is_array($index)) {
+                return true; // nothing to remove
+            }
+            if (!in_array($token_id, $index, true)) {
+                return true; // already absent
+            }
+            $next = array_values(array_filter($index, function ($id) use ($token_id) {
+                return $id !== $token_id;
+            }));
+            if (update_option(self::CGPT_TOKEN_INDEX_OPTION, $next, 'no')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Overwrite the token index option wholesale. Used by self-heal and rebuild.
+     * Mirrors write_key_index().
+     */
+    private function write_cgpt_token_index(array $ids) {
+        update_option(self::CGPT_TOKEN_INDEX_OPTION, array_values(array_unique($ids)), 'no');
+    }
+
+    /**
+     * Recovery path: rebuild the token index from the authoritative per-token
+     * rows by scanning wp_options for `connectmwp_cgpt_token_%` (excluding the
+     * index option itself). Mirrors rebuild_key_index(). The `_` in the prefix is
+     * escaped so it matches a literal underscore, not the LIKE single-char
+     * wildcard.
+     */
+    private function rebuild_cgpt_token_index() {
+        global $wpdb;
+        $prefix = self::CGPT_TOKEN_OPTION_PREFIX;
+        // Escape LIKE metacharacters in the prefix (notably `_`).
+        $like = $wpdb->esc_like($prefix) . '%';
+        $names = $wpdb->get_col(
+            $wpdb->prepare(
+                "SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s AND option_name != %s",
+                $like,
+                self::CGPT_TOKEN_INDEX_OPTION
+            )
+        );
+
+        // Reconstruct token_ids from option names. The per-token suffix is the
+        // bare hex of a `cmwp_cgpt_<hex>` id, so the id is
+        // CGPT_TOKEN_ID_PREFIX . suffix.
+        $ids = [];
+        if (is_array($names)) {
+            foreach ($names as $name) {
+                $suffix = substr($name, strlen($prefix));
+                if ($suffix !== '' && $suffix !== false) {
+                    $ids[] = self::CGPT_TOKEN_ID_PREFIX . $suffix;
+                }
+            }
+        }
+        $this->write_cgpt_token_index($ids);
         return $ids;
     }
 
