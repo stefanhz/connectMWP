@@ -1763,6 +1763,10 @@ class ConnectMWP_Agent {
      * signer. Looks up the current key in stored options to also surface its label.
      */
     public function whoami_handler(?WP_REST_Request $request = null) {
+        // matched_key_id is set only by the Ed25519 signature path. On the
+        // ChatGPT/token transport (connectmwp_status) there is no key, so
+        // key_id is '' here by design — the bound-user + capability payload
+        // below is still fully populated from $this->bound_user_id.
         $key_id = $this->matched_key_id;
         $label = null;
         if (!empty($key_id)) {
@@ -2861,7 +2865,7 @@ class ConnectMWP_Agent {
                         'site'           => $site_prop,
                         'title'          => ['type' => 'string', 'description' => 'Title of the post'],
                         'content'        => ['type' => 'string', 'description' => 'Content of the post in clean HTML or Gutenberg block markup'],
-                        'status'         => ['type' => 'string', 'enum' => ['draft', 'publish', 'trash'], 'description' => 'Post status: draft (default for review), publish (direct), or trash (move to trash)'],
+                        'status'         => ['type' => 'string', 'enum' => ['draft', 'publish', 'trash', 'pending'], 'description' => 'Post status: draft (default for review), publish (direct; requires publish capability, else auto-downgraded to pending), pending (submit for review), or trash'],
                         'categories'     => ['type' => 'array', 'items' => ['type' => 'integer'], 'description' => 'List of category IDs to assign'],
                         'tags'           => ['type' => 'array', 'items' => ['type' => 'integer'], 'description' => 'List of tag IDs to assign (e.g. 1-5 tags)'],
                         'featured_media' => ['type' => 'integer', 'description' => 'ID of the uploaded media file to set as the Featured Image'],
@@ -2879,7 +2883,7 @@ class ConnectMWP_Agent {
                         'id'             => ['type' => 'integer', 'description' => 'WordPress Post ID to update'],
                         'title'          => ['type' => 'string', 'description' => 'New title'],
                         'content'        => ['type' => 'string', 'description' => 'New content body'],
-                        'status'         => ['type' => 'string', 'enum' => ['draft', 'publish', 'trash']],
+                        'status'         => ['type' => 'string', 'enum' => ['draft', 'publish', 'trash', 'pending']],
                         'categories'     => ['type' => 'array', 'items' => ['type' => 'integer']],
                         'tags'           => ['type' => 'array', 'items' => ['type' => 'integer']],
                         'featured_media' => ['type' => 'integer'],
