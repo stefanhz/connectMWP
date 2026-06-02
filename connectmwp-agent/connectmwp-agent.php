@@ -257,6 +257,35 @@ class ConnectMWP_Agent {
                 'permission_callback' => [$this, 'check_taxonomy_permission'],
             ]
         ]);
+
+        // Remote MCP (JSON-RPC 2.0) endpoint for ChatGPT and other HTTP MCP
+        // clients. Authenticated by a bearer TOKEN via verify_token_request (NOT
+        // the Ed25519 signature path — see the C-1 bypass in central_rest_auth).
+        // The permission_callback is the auth boundary; it MUST NOT be
+        // '__return_true'. Tool execution flows through dispatch_action so the
+        // per-action capability checks and handlers are shared with the
+        // signature/AJAX transports (SSOT — no duplicated publish/capability logic).
+        register_rest_route(self::API_NAMESPACE, '/mcp', [
+            [
+                'methods'             => 'POST',
+                'callback'            => [$this, 'mcp_handler'],
+                'permission_callback' => [$this, 'verify_token_request'],
+            ]
+        ]);
+
+        // Path-token variant: managed hosts (SiteGround, Kinsta, WP Engine) strip
+        // the standard Authorization header at the edge proxy. Carrying the token
+        // as a URL path segment survives that. verify_token_request reads the
+        // `token` route param as its 3rd-precedence source. Regex is constrained to
+        // the token alphabet ([A-Za-z0-9_-]) — no slashes or encoded chars — so the
+        // segment can never smuggle additional path structure.
+        register_rest_route(self::API_NAMESPACE, '/mcp/(?P<token>[A-Za-z0-9_\-]+)', [
+            [
+                'methods'             => 'POST',
+                'callback'            => [$this, 'mcp_handler'],
+                'permission_callback' => [$this, 'verify_token_request'],
+            ]
+        ]);
     }
 
     public function central_rest_auth($result, $server, $request) {
@@ -272,6 +301,19 @@ class ConnectMWP_Agent {
 
             if ($route === '/' . self::API_NAMESPACE . '/enroll') {
                 return $result;
+            }
+
+            // C-1 bypass (the ONLY signature-gate exception besides /enroll):
+            // the MCP/JSON-RPC endpoint is authenticated by a bearer TOKEN, not an
+            // Ed25519 signature, so the signature gate would always reject it. Auth
+            // is NOT bypassed here — it is enforced one layer down by the route's
+            // permission_callback (verify_token_request), which sets the bound user
+            // exactly as the signature path does. The no-cache headers above ALREADY
+            // fired for /mcp, so cache-poisoning protection is preserved. This block
+            // must run AFTER send_rest_nocache_headers() and BEFORE
+            // verify_request_signature(). Do NOT remove.
+            if (strpos($route, '/' . self::API_NAMESPACE . '/mcp') === 0) {
+                return $result; // token-authenticated path; permission_callback (verify_token_request) handles auth.
             }
 
             if (!$this->verify_request_signature($request)) {
@@ -2519,6 +2561,391 @@ class ConnectMWP_Agent {
                 $this->last_dispatch_gated = true;
                 return new WP_REST_Response(['success' => false, 'error' => 'Invalid action'], 400);
         }
+    }
+
+    // ========================================================================
+    // REMOTE MCP (JSON-RPC 2.0) ENDPOINT — for ChatGPT and other HTTP MCP clients
+    // ========================================================================
+    // Single-response JSON-RPC over HTTP POST (NO SSE / streaming). Auth is the
+    // bearer token enforced by verify_token_request (the route's
+    // permission_callback); this handler never re-authenticates. Every tool call
+    // runs through dispatch_action so capability checks + handlers are shared with
+    // the signature/AJAX transports — there is NO duplicated publish/capability
+    // logic here. The tools/list schema below is a SECOND definition of the tool
+    // surface (the canonical first copy lives in connectmwp-mcp/index.js
+    // setRequestHandler(ListToolsRequestSchema)); tool `name`s and inputSchema
+    // field names MUST stay byte-aligned with that file so ChatGPT sees the SAME
+    // tool surface Claude/Cursor see (a later task documents this contract).
+
+    // Wire protocol version this server advertises when a client omits a usable
+    // one. Matches a version negotiated by the @modelcontextprotocol/sdk used by
+    // the stdio client and accepted by ChatGPT's MCP connector. The handler echoes
+    // the client's requested version when present (per the MCP initialize spec),
+    // falling back to this only when absent/non-string.
+    const MCP_PROTOCOL_VERSION = '2025-06-18';
+
+    /**
+     * MCP tool-name -> internal dispatch_action name. SSOT for the mapping; both
+     * tools/list (to expose the surface) and tools/call (to route execution) read
+     * it so they can never drift from each other.
+     */
+    private function mcp_tool_action_map() {
+        return [
+            'connectmwp_get_posts'        => 'get_posts',
+            'connectmwp_get_post'         => 'get_post',
+            'connectmwp_create_post'      => 'create_post',
+            'connectmwp_update_post'      => 'update_post',
+            'connectmwp_delete_post'      => 'delete_post',
+            'connectmwp_upload_media'     => 'upload_media',
+            'connectmwp_list_tags'        => 'get_tags',
+            'connectmwp_list_categories'  => 'get_categories',
+            'connectmwp_create_tag'       => 'create_tag',
+            'connectmwp_create_category'  => 'create_category',
+            'connectmwp_status'           => 'whoami',
+        ];
+    }
+
+    /**
+     * The MCP tool definitions advertised via tools/list. Mirrors
+     * connectmwp-mcp/index.js EXACTLY (names + inputSchema field names). Kept as a
+     * method (not inlined) so the shape is greppable and testable.
+     */
+    private function mcp_tool_definitions() {
+        $site_prop = [
+            'type'        => 'string',
+            'description' => 'Optional domain or site URL of the target WordPress site (e.g. "2morrow.ai"). Uses the default site if omitted.',
+        ];
+
+        return [
+            [
+                'name'        => 'connectmwp_get_posts',
+                'description' => 'Retrieve titles, content, URLs, and IDs of existing posts from the WordPress site.',
+                'inputSchema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'site'   => $site_prop,
+                        'limit'  => ['type' => 'integer', 'description' => 'Maximum number of posts to retrieve (default 50)'],
+                        'offset' => ['type' => 'integer', 'description' => 'Number of posts to offset (for pagination, default 0)'],
+                        'fields' => ['type' => 'string', 'description' => 'Optional comma-separated list of fields to return (e.g. "id,title,content"). Defaults to excluding content to save bandwidth.'],
+                    ],
+                ],
+            ],
+            [
+                'name'        => 'connectmwp_create_post',
+                'description' => 'Create a new post draft or publish directly on a WordPress site.',
+                'inputSchema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'site'           => $site_prop,
+                        'title'          => ['type' => 'string', 'description' => 'Title of the post'],
+                        'content'        => ['type' => 'string', 'description' => 'Content of the post in clean HTML or Gutenberg block markup'],
+                        'status'         => ['type' => 'string', 'enum' => ['draft', 'publish', 'trash'], 'description' => 'Post status: draft (default for review), publish (direct), or trash (move to trash)'],
+                        'categories'     => ['type' => 'array', 'items' => ['type' => 'integer'], 'description' => 'List of category IDs to assign'],
+                        'tags'           => ['type' => 'array', 'items' => ['type' => 'integer'], 'description' => 'List of tag IDs to assign (e.g. 1-5 tags)'],
+                        'featured_media' => ['type' => 'integer', 'description' => 'ID of the uploaded media file to set as the Featured Image'],
+                    ],
+                    'required'   => ['title'],
+                ],
+            ],
+            [
+                'name'        => 'connectmwp_update_post',
+                'description' => 'Update an existing post (e.g., to insert SEO internal links).',
+                'inputSchema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'site'           => $site_prop,
+                        'id'             => ['type' => 'integer', 'description' => 'WordPress Post ID to update'],
+                        'title'          => ['type' => 'string', 'description' => 'New title'],
+                        'content'        => ['type' => 'string', 'description' => 'New content body'],
+                        'status'         => ['type' => 'string', 'enum' => ['draft', 'publish', 'trash']],
+                        'categories'     => ['type' => 'array', 'items' => ['type' => 'integer']],
+                        'tags'           => ['type' => 'array', 'items' => ['type' => 'integer']],
+                        'featured_media' => ['type' => 'integer'],
+                    ],
+                    'required'   => ['id'],
+                ],
+            ],
+            [
+                'name'        => 'connectmwp_upload_media',
+                'description' => 'Upload a featured or inline image/graph to the WordPress media library.',
+                'inputSchema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'site'      => $site_prop,
+                        'file_path' => ['type' => 'string', 'description' => 'Absolute path to the image file on your local machine'],
+                        'image_url' => ['type' => 'string', 'description' => 'URL of the remote image to download and upload'],
+                        'filename'  => ['type' => 'string', 'description' => 'Optional name for the file (default image.png)'],
+                    ],
+                ],
+            ],
+            [
+                'name'        => 'connectmwp_list_tags',
+                'description' => 'List all tags on the WordPress site to select the 1-5 most relevant ones.',
+                'inputSchema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'site'   => $site_prop,
+                        'limit'  => ['type' => 'integer', 'description' => 'Maximum number of tags to retrieve (default 50, max 200)'],
+                        'offset' => ['type' => 'integer', 'description' => 'Number of tags to offset (default 0)'],
+                        'search' => ['type' => 'string', 'description' => 'Optional search term to filter tags by name'],
+                    ],
+                ],
+            ],
+            [
+                'name'        => 'connectmwp_list_categories',
+                'description' => 'List all categories on the WordPress site.',
+                'inputSchema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'site'   => $site_prop,
+                        'limit'  => ['type' => 'integer', 'description' => 'Maximum number of categories to retrieve (default 50, max 200)'],
+                        'offset' => ['type' => 'integer', 'description' => 'Number of categories to offset (default 0)'],
+                        'search' => ['type' => 'string', 'description' => 'Optional search term to filter categories by name'],
+                    ],
+                ],
+            ],
+            [
+                'name'        => 'connectmwp_get_post',
+                'description' => 'Retrieve full details of a single post by ID (to analyze link opportunities).',
+                'inputSchema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'site'   => $site_prop,
+                        'id'     => ['type' => 'integer', 'description' => 'WordPress Post ID to retrieve'],
+                        'fields' => ['type' => 'string', 'description' => 'Optional comma-separated list of fields to return (e.g. "id,title,content,url").'],
+                    ],
+                    'required'   => ['id'],
+                ],
+            ],
+            [
+                'name'        => 'connectmwp_create_category',
+                'description' => 'Create a new category on the WordPress site.',
+                'inputSchema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'site'   => $site_prop,
+                        'name'   => ['type' => 'string', 'description' => 'Category name'],
+                        'slug'   => ['type' => 'string', 'description' => 'Optional URL-friendly slug for the category'],
+                        'parent' => ['type' => 'integer', 'description' => 'Optional parent category ID'],
+                    ],
+                    'required'   => ['name'],
+                ],
+            ],
+            [
+                'name'        => 'connectmwp_create_tag',
+                'description' => 'Create a new tag on the WordPress site.',
+                'inputSchema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'site' => $site_prop,
+                        'name' => ['type' => 'string', 'description' => 'Tag name'],
+                        'slug' => ['type' => 'string', 'description' => 'Optional URL-friendly slug for the tag'],
+                    ],
+                    'required'   => ['name'],
+                ],
+            ],
+            [
+                'name'        => 'connectmwp_delete_post',
+                'description' => 'Trash or permanently delete a post by ID from the WordPress site.',
+                'inputSchema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'site'  => $site_prop,
+                        'id'    => ['type' => 'integer', 'description' => 'WordPress Post ID to delete'],
+                        'force' => ['type' => 'boolean', 'description' => 'Optional. If true, bypasses trash and permanently deletes the post. Default false.'],
+                    ],
+                    'required'   => ['id'],
+                ],
+            ],
+            [
+                'name'        => 'connectmwp_status',
+                'description' => 'Show connectMWP version and connection status: the running local MCP client version, the paired sites, the default site, and — via a live signed round-trip — the connectMWP plugin version installed on the target WordPress site. Use to confirm which versions are running and that end-to-end signing works.',
+                'inputSchema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'site' => $site_prop,
+                    ],
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * Build a JSON-RPC 2.0 error envelope as a WP_REST_Response (HTTP 200 — the
+     * error rides in-band per JSON-RPC). $id may be null for pre-parse failures.
+     */
+    private function mcp_jsonrpc_error($id, $code, $message) {
+        return new WP_REST_Response([
+            'jsonrpc' => '2.0',
+            'id'      => $id,
+            'error'   => ['code' => $code, 'message' => $message],
+        ], 200);
+    }
+
+    /**
+     * Build a JSON-RPC 2.0 success envelope as a WP_REST_Response (HTTP 200).
+     */
+    private function mcp_jsonrpc_result($id, $result) {
+        return new WP_REST_Response([
+            'jsonrpc' => '2.0',
+            'id'      => $id,
+            'result'  => $result,
+        ], 200);
+    }
+
+    /**
+     * Remote MCP JSON-RPC 2.0 endpoint handler. Auth already enforced by
+     * verify_token_request (permission_callback) which set $this->bound_user_id.
+     */
+    public function mcp_handler(WP_REST_Request $request): WP_REST_Response {
+        // Belt-and-suspenders: central_rest_auth already emitted no-cache for the
+        // namespace, but re-assert here so a future refactor of the filter can't
+        // silently let an edge cache store a token-authenticated MCP response.
+        $this->send_rest_nocache_headers();
+
+        $body = $request->get_json_params();
+
+        // Batch arrays are not supported — reject with a clear JSON-RPC error
+        // rather than silently processing the first element. (A JSON array decodes
+        // to a list; a single request object decodes to an associative array.)
+        if (is_array($body) && array_key_exists(0, $body)) {
+            return $this->mcp_jsonrpc_error(null, -32600, 'Batch requests are not supported. Send a single JSON-RPC request object.');
+        }
+
+        // Parse failure / non-object envelope.
+        if (!is_array($body) || empty($body)) {
+            return $this->mcp_jsonrpc_error(null, -32700, 'Parse error: request body is not a valid JSON-RPC object.');
+        }
+
+        // id may legitimately be null (notification) — only absent for notifications.
+        $id     = array_key_exists('id', $body) ? $body['id'] : null;
+        $method = isset($body['method']) && is_string($body['method']) ? $body['method'] : '';
+        $params = isset($body['params']) && is_array($body['params']) ? $body['params'] : [];
+
+        if (!isset($body['jsonrpc']) || $body['jsonrpc'] !== '2.0') {
+            return $this->mcp_jsonrpc_error($id, -32600, 'Invalid Request: "jsonrpc" must be "2.0".');
+        }
+
+        if ($method === '') {
+            return $this->mcp_jsonrpc_error($id, -32600, 'Invalid Request: missing "method".');
+        }
+
+        switch ($method) {
+            case 'initialize':
+                // Echo the client's requested protocol version when it's a usable
+                // string (per the MCP initialize spec), else advertise our default.
+                $requested = isset($params['protocolVersion']) && is_string($params['protocolVersion']) && $params['protocolVersion'] !== ''
+                    ? $params['protocolVersion']
+                    : self::MCP_PROTOCOL_VERSION;
+                return $this->mcp_jsonrpc_result($id, [
+                    'protocolVersion' => $requested,
+                    'capabilities'    => ['tools' => (object) []],
+                    'serverInfo'      => [
+                        'name'    => 'connectmwp',
+                        'version' => self::version(),
+                    ],
+                ]);
+
+            case 'notifications/initialized':
+                // A notification carries no id and per JSON-RPC gets NO response
+                // body. Return an empty 200 so HTTP clients see a clean ack without
+                // a JSON-RPC envelope they'd try (and fail) to correlate to an id.
+                $resp = new WP_REST_Response(null, 200);
+                return $resp;
+
+            case 'ping':
+                return $this->mcp_jsonrpc_result($id, (object) []);
+
+            case 'tools/list':
+                return $this->mcp_jsonrpc_result($id, ['tools' => $this->mcp_tool_definitions()]);
+
+            case 'tools/call':
+                return $this->mcp_handle_tools_call($id, $params);
+
+            default:
+                return $this->mcp_jsonrpc_error($id, -32601, 'Method not found: ' . $method);
+        }
+    }
+
+    /**
+     * Execute an MCP tools/call: map the tool name to an internal action, marshal
+     * arguments onto a fresh WP_REST_Request, run dispatch_action (which performs
+     * the per-action capability check using the token-bound user), and convert the
+     * WP_REST_Response into an MCP tool result. Capability/handler errors are
+     * conveyed via isError=true at the JSON-RPC RESULT layer (HTTP+JSON-RPC stay
+     * 200) per MCP convention — only protocol-level faults use JSON-RPC `error`.
+     */
+    private function mcp_handle_tools_call($id, $params): WP_REST_Response {
+        $name = isset($params['name']) && is_string($params['name']) ? $params['name'] : '';
+        $arguments = isset($params['arguments']) && is_array($params['arguments']) ? $params['arguments'] : [];
+
+        $map = $this->mcp_tool_action_map();
+        if ($name === '' || !isset($map[$name])) {
+            // Unknown / missing tool name is an invalid-params protocol fault.
+            return $this->mcp_jsonrpc_error($id, -32602, 'Unknown tool: ' . ($name !== '' ? $name : '(missing)'));
+        }
+        $action = $map[$name];
+
+        // Marshal the MCP arguments onto a fresh request. The mutating handlers
+        // (create/update/delete_post, create_category, create_tag) read params via
+        // get_json_params()->get_body_params(); set both the JSON body+header (so
+        // get_json_params() parses it) AND set_param for each key (so id-style
+        // ArrayAccess reads and the read/list handlers' get_param() resolve too).
+        // The `site` argument is client-side routing only — it never reaches a
+        // handler, so dropping it here is harmless.
+        $req = new WP_REST_Request('POST', '/' . self::API_NAMESPACE . '/mcp');
+        $json_payload = [];
+        foreach ($arguments as $k => $v) {
+            if ($k === 'site') {
+                continue;
+            }
+            $json_payload[$k] = $v;
+            $req->set_param($k, $v);
+        }
+        $req->set_header('Content-Type', 'application/json');
+        $req->set_body(wp_json_encode($json_payload));
+
+        // get/update/delete_post read intval($request['id']); dispatch_action's
+        // contract is that `id` is already on the request. set_param above covers
+        // it, but be explicit so an absent id still lands as a param the handler
+        // can read (it'll 404 cleanly rather than mis-resolving).
+        if (in_array($action, ['get_post', 'update_post', 'delete_post'], true)) {
+            $req->set_param('id', isset($arguments['id']) ? intval($arguments['id']) : 0);
+        }
+
+        // upload_media reads $_FILES, which an HTTP JSON-RPC call cannot carry.
+        // Fail clearly instead of letting the handler emit a generic "No file"
+        // error that looks like a transport bug.
+        if ($action === 'upload_media') {
+            return $this->mcp_tool_error_result($id, 'Media upload is not supported over the remote MCP (ChatGPT) endpoint — it requires local file access. Use a local MCP client (Claude/Cursor) for connectmwp_upload_media.');
+        }
+
+        $response = $this->dispatch_action($action, $req);
+        $data     = $response->get_data();
+        $status   = $response->get_status();
+
+        if ($status >= 200 && $status < 300) {
+            return $this->mcp_jsonrpc_result($id, [
+                'content' => [['type' => 'text', 'text' => wp_json_encode($data)]],
+                'isError' => false,
+            ]);
+        }
+
+        // Non-2xx: surface the handler/capability error text the handlers already
+        // produce (they never embed internals — see the T066 sanitization notes).
+        $message = is_array($data) && isset($data['error']) ? $data['error'] : 'Tool execution failed.';
+        return $this->mcp_tool_error_result($id, $message);
+    }
+
+    /**
+     * MCP tool-error result: isError=true with the message as text content. Stays
+     * a JSON-RPC SUCCESS envelope (HTTP 200) — the error is in-band per MCP spec.
+     */
+    private function mcp_tool_error_result($id, $message): WP_REST_Response {
+        return $this->mcp_jsonrpc_result($id, [
+            'content' => [['type' => 'text', 'text' => is_string($message) ? $message : wp_json_encode($message)]],
+            'isError' => true,
+        ]);
     }
 
     /**
