@@ -1,8 +1,8 @@
 # connectMWP — Operations Runbook
 
-> **Verified against:** connectMWP **v2.0.33** (all three components, lockstep).
-> **Last reviewed:** 2026-05-30.
-> **Re-verify when:** the MCP CLI surface changes (`add-site`/`remove-site`/`set-default`/`list-sites` flags), the plugin auth flow changes, the release/publish process changes, the `connectmwp_trust_proxy` / `CONNECTMWP_TRUST_PROXY` trusted-proxy setting changes, or component versions drift out of lockstep.
+> **Verified against:** connectMWP **v2.1.0** (all three components, lockstep).
+> **Last reviewed:** 2026-06-02.
+> **Re-verify when:** the MCP CLI surface changes (`add-site`/`remove-site`/`set-default`/`list-sites` flags), the plugin auth flow changes, the release/publish process changes, the `connectmwp_trust_proxy` / `CONNECTMWP_TRUST_PROXY` trusted-proxy setting changes, the ChatGPT token flow (`/mcp` endpoint, settings card, per-site cap) changes, or component versions drift out of lockstep.
 
 Project-internal operational guide. **Not user-facing** — for that, see `README.md`.
 This file is the Stefan-and-Claude reference for the recurring operational moves:
@@ -18,6 +18,7 @@ pairing sites, re-pairing after a key revoke, and shipping a new npm release.
 6. [Local Node↔PHP interop verification (signing-canonical proof)](#6-local-nodephp-interop-verification-signing-canonical-proof)
 7. [Local error-sanitization verification (T138)](#7-local-error-sanitization-verification-t138)
 8. [Security hardening — edge rate-limiting & trusted proxy](#8-security-hardening--edge-rate-limiting--trusted-proxy)
+9. [Connect ChatGPT to a site (token flow, v2.1.0+)](#9-connect-chatgpt-to-a-site-token-flow-v210)
 
 ---
 
@@ -491,3 +492,64 @@ disabled, reflecting the forced value).
 **Warning:** enabling this while the site is **not** actually behind a controlled
 proxy lets a caller spoof their IP via `X-Forwarded-For`, evading the per-IP
 limiter. When in doubt, leave it OFF and rely on the edge rate-limit in §8.1.
+
+---
+
+## 9. Connect ChatGPT to a site (token flow, v2.1.0+)
+
+ChatGPT connects to a site over the plugin-hosted remote MCP endpoint
+(`POST {site}/wp-json/connectmwp/v1/mcp`), authenticated by a per-site API
+**token** instead of an Ed25519 device key. No central server is involved — the
+endpoint runs on the user's own site, same as the signature path. This flow is
+entirely admin-side on WordPress + a paste into ChatGPT; there is no
+`connectmwp-mcp` CLI step.
+
+**On the WordPress site:**
+
+1. Log in → **Settings → connectMWP** → find the **Connect ChatGPT (beta)** card.
+2. Pick the **WP user the token binds to** — ChatGPT will act with exactly that
+   user's capabilities (post author = that user, caps checked via
+   `user_can(bound_user, …)`). Choose a user with no more than the access ChatGPT
+   needs (e.g. an Author/Editor, not necessarily an Administrator).
+3. Optionally set a **label** (shown in the token list so you can tell connectors
+   apart), then click **Generate**.
+4. The plaintext token (`cmwp_cgpt_<hex>`) is shown **once** — it is stored only
+   as a sha256 hash and can never be re-displayed. Copy it now along with the
+   **connector URL** the card displays.
+
+**In ChatGPT:**
+
+5. **Settings → Apps (Connectors) → enable Developer mode → Create / Add a
+   connector.** (OpenAI relabels these surfaces periodically — the exact menu
+   names may differ; look for "developer mode" + "add a custom connector / MCP
+   server.")
+6. Connector / MCP server **URL:** the connector URL from the card
+   (`https://yoursite.com/wp-json/connectmwp/v1/mcp`).
+7. **Auth: API key / Bearer token** → paste the `cmwp_cgpt_<hex>` token.
+8. **If your host strips the `Authorization` header** (some managed hosts do, the
+   same edge behavior that forced custom headers on the signature path), use the
+   **path-token URL** instead — append the token as a path segment:
+   `https://yoursite.com/wp-json/connectmwp/v1/mcp/cmwp_cgpt_<hex>` — and leave
+   the connector's auth field empty. The card shows this variant too.
+9. Save. ChatGPT runs `initialize` → `tools/list`; you should see the connectMWP
+   tools (create/update/publish posts, tags, categories).
+
+**What ChatGPT can and cannot do:**
+
+- CAN: create / update / publish posts, manage tags and categories, set a post's
+  featured image by **media id** (`featured_media`).
+- CANNOT: **upload media.** `connectmwp_upload_media` is multipart-only and isn't
+  exposed over the MCP/JSON-RPC path, so it's absent from `tools/list`. To add
+  images, upload them via a local client (Claude/Cursor over the stdio signature
+  path) or the WP media library, then reference the resulting id from ChatGPT.
+
+**Limits & lifecycle:**
+
+- **Per-site cap: 20 live tokens.** To mint a 21st you must revoke an existing one
+  first.
+- **Revoke** from the same card — find the token row (by label / last-used) and
+  click **Revoke**. Revocation is immediate and irreversible; ChatGPT will get a
+  401 on the next call. Treat a token like a WordPress Application Password: if it
+  leaks, revoke it.
+- HTTPS is enforced; the endpoint is per-IP rate-limited. Tokens record a
+  last-used timestamp so you can spot stale ones.

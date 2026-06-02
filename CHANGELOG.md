@@ -4,6 +4,28 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-06-02 — v2.1.0
+
+ChatGPT can now connect to a WordPress site and publish content — without a central server in the path. A new remote MCP endpoint is hosted *by the plugin itself* on the user's site, so the decentralization thesis is preserved: ChatGPT talks straight to the site, exactly as Claude/Cursor already do over the signature path. Connection is by a per-site API token the admin generates on a new settings card and pastes into ChatGPT's connector setup.
+
+### Added
+
+- **connectmwp-agent — new remote MCP transport.** `POST /wp-json/connectmwp/v1/mcp` (plus a path-token variant `/mcp/<token>` for hosts that strip the `Authorization` header) speaks MCP JSON-RPC 2.0 with single `application/json` responses (no SSE). Handles `initialize` / `tools/list` / `tools/call` / `ping`. `tools/call` routes through the shared `dispatch_action()`, so it reuses the same handlers and capability checks as the existing REST + AJAX paths. (`connectmwp-agent/connectmwp-agent.php`)
+- **connectmwp-agent — second auth method: per-site API token.** A `cmwp_cgpt_<hex>` bearer token (stored only as a sha256 hash, never in plaintext), bound to a chosen WP user and capability-checked via the existing `user_can($bound_user_id, …)` model. HTTPS-enforced, IP rate-limited, revocable, with NO login session established — same session-less thesis as the signature path. Verified by a new `verify_token_request` route `permission_callback`. (`connectmwp-agent/connectmwp-agent.php`)
+- **connectmwp-agent — "Connect ChatGPT (beta)" admin card.** Generate, list, and revoke tokens; per-site hard cap of 20 live tokens; copy-paste connector URL + token and paste-into-ChatGPT instructions. (`connectmwp-agent/connectmwp-agent.php`)
+
+### Changed
+
+- **connectmwp-agent — signature-gate exceptions are now two.** The `rest_pre_dispatch` central filter (`central_rest_auth`) now bypasses the Ed25519 signature gate for `/mcp` (and `/mcp/<token>`) in addition to `/enroll` — but auth is NOT removed: it moves down to the route's `verify_token_request` permission_callback, and the no-cache headers still fire first. Authorization was split from authentication into reusable `cap_can_*` helpers plus a defense-in-depth auth guard in `dispatch_action()`. (`connectmwp-agent/connectmwp-agent.php`)
+
+### Known limitation
+
+- **No media upload over the ChatGPT/MCP path.** `connectmwp_upload_media` is multipart-only and ChatGPT can't send multipart over JSON-RPC, so it is omitted from the MCP `tools/list` (a direct call returns a clear error). ChatGPT can still create / update / publish posts, manage tags and categories, and set `featured_media` by id. Media upload remains available via Claude/Cursor over the stdio signature path. A JSON-native upload path is a possible fast-follow.
+
+### Bumped
+
+- All three components → 2.1.0 (lockstep). The signature path for Claude/Cursor/Cline is UNCHANGED. Plugin re-packaged (both zip locations, sha-identical).
+
 ## 2026-06-02 — v2.0.37
 
 Added a way to see, at a glance, which connectMWP version is actually running — both the local client and the plugin deployed on a site. This directly addresses the "which version is Claude Code vs Claude Desktop running?" confusion: ask the assistant to "check connectmwp status" and it reports the client version, the paired sites, and (via a live signed round-trip) the plugin version installed on the target site.
