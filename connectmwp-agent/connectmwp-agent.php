@@ -79,6 +79,7 @@ class ConnectMWP_Agent {
     const CGPT_TOKEN_INDEX_OPTION  = 'connectmwp_cgpt_token_index'; // array of token_id (hint, self-healing)
     const CGPT_TOKEN_ID_PREFIX     = 'cmwp_cgpt_';            // token_id prefix (also the plaintext prefix)
     const CGPT_TOKEN_SECRET_BYTES  = 32;                      // entropy of the token secret (>= 32 random bytes)
+    const MAX_CGPT_TOKENS_PER_SITE = 20;                      // (VR-2) hard cap on live ChatGPT tokens per site; admin must revoke before minting #21
 
     // ChatGPT bearer-token verifier IP throttle (T3). Mirrors the enroll
     // limiter (cmwp_enroll_limit_*): only FAILED resolves count toward the
@@ -160,6 +161,14 @@ class ConnectMWP_Agent {
         // completion (so the page can self-update without manual refresh).
         // No nopriv variant — only logged-in admins call this.
         add_action('wp_ajax_connectmwp_pairing_status', [$this, 'pairing_status_handler']);
+
+        // Admin-only AJAX actions backing the "Connect ChatGPT (beta)" settings
+        // card (T5): mint and revoke ChatGPT bearer tokens. Both are gated by a
+        // nonce + current_user_can('manage_options') inside the handler, exactly
+        // like pairing_status_handler. No nopriv variant — these are admin UX
+        // only and MUST NEVER sit on the MCP traffic path.
+        add_action('wp_ajax_connectmwp_cgpt_generate', [$this, 'cgpt_generate_handler']);
+        add_action('wp_ajax_connectmwp_cgpt_revoke', [$this, 'cgpt_revoke_handler']);
 
         // Admin settings page hook
         add_action('admin_menu', [$this, 'add_settings_page']);
@@ -1837,6 +1846,144 @@ class ConnectMWP_Agent {
             'latest_created' => $latest_created,
             'latest_label'   => $latest_label,
         ]);
+    }
+
+    /**
+     * Build the two MCP connector URLs an admin pastes into ChatGPT's connector
+     * settings, derived from this site's REST base (single source of truth via
+     * rest_url()) — NOT hand-concatenated. Returns:
+     *   - 'header': the canonical endpoint; the token travels as
+     *     `Authorization: Bearer <token>` / API key.
+     *   - 'path'  : the fallback that embeds the token in the path, for hosts
+     *     that strip the Authorization header at the edge proxy.
+     * The plaintext token is interpolated into the path form ONLY when a
+     * freshly-minted plaintext is supplied (i.e. immediately after generate);
+     * the listing UI never calls this with a plaintext.
+     */
+    private function cgpt_connector_urls($plaintext = null) {
+        $base = rest_url(self::API_NAMESPACE . '/mcp');
+        $base = rtrim($base, '/');
+        $path = $base;
+        if (is_string($plaintext) && $plaintext !== '') {
+            $path = $base . '/' . rawurlencode($plaintext);
+        }
+        return [
+            'header' => $base,
+            'path'   => $path,
+        ];
+    }
+
+    /**
+     * Format a `current_time('mysql')` string (no timezone marker) into the
+     * repo-standard `YYYY-MM-DD HH:MM` display string, interpreted in the
+     * WP-configured timezone. Mirrors the per-key enrichment in
+     * render_settings_page(). Returns '' for blank/unparseable input so the
+     * caller can substitute its own placeholder.
+     */
+    private function format_cgpt_timestamp($mysql) {
+        if (!is_string($mysql) || $mysql === '') {
+            return '';
+        }
+        if (function_exists('wp_timezone')) {
+            $dt = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $mysql, wp_timezone());
+            if ($dt instanceof DateTimeImmutable) {
+                return $dt->format('Y-m-d H:i');
+            }
+        }
+        return $mysql;
+    }
+
+    /**
+     * Admin-AJAX: mint a new ChatGPT bearer token (T5). Gated by nonce +
+     * manage_options exactly like pairing_status_handler. The plaintext token is
+     * returned to the requesting admin's OWN authenticated browser session and
+     * is never logged or stored — the only place the plaintext ever exists.
+     */
+    public function cgpt_generate_handler() {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['error' => 'forbidden', 'message' => 'You do not have permission to do this.'], 403);
+        }
+        check_ajax_referer('connectmwp_cgpt');
+
+        // Enforce the per-site cap BEFORE doing any work. Revocation is the only
+        // way past it — never silently evict an existing token.
+        $existing = $this->list_cgpt_tokens();
+        if (count($existing) >= self::MAX_CGPT_TOKENS_PER_SITE) {
+            wp_send_json_error([
+                'message' => sprintf(
+                    'You have reached the limit of %d ChatGPT tokens for this site. Revoke an existing token below before generating a new one.',
+                    self::MAX_CGPT_TOKENS_PER_SITE
+                ),
+            ], 409);
+        }
+
+        $bound_user_id = isset($_POST['bound_user_id']) ? intval($_POST['bound_user_id']) : 0;
+        $label         = isset($_POST['label']) ? sanitize_text_field(wp_unslash($_POST['label'])) : '';
+        if ($label === '') {
+            $label = 'ChatGPT';
+        }
+
+        // Validate the delegation target: the user must exist AND be able to
+        // edit posts (the minimum capability any token-driven write needs).
+        // Binding to a non-author would mint a token that can never publish.
+        if ($bound_user_id <= 0) {
+            wp_send_json_error(['message' => 'Please choose a WordPress user to connect ChatGPT as.'], 400);
+        }
+        $target = get_userdata($bound_user_id);
+        if (!$target) {
+            wp_send_json_error(['message' => 'That WordPress user no longer exists.'], 400);
+        }
+        if (!user_can($bound_user_id, 'edit_posts')) {
+            wp_send_json_error(['message' => 'That user cannot edit posts, so a ChatGPT token bound to them could not publish. Choose a user with at least author-level access.'], 400);
+        }
+
+        $result = $this->mint_cgpt_token($bound_user_id, $label);
+        // mint_cgpt_token() returns false on a storage failure (id collision or a
+        // transient DB error) — the row was NOT written, so surface a retryable
+        // error rather than handing back an unusable plaintext.
+        if ($result === false) {
+            wp_send_json_error(['message' => 'Could not generate token, please try again.'], 500);
+        }
+
+        $urls = $this->cgpt_connector_urls($result['plaintext']);
+
+        // NOTE: the plaintext is returned exactly once, here, to the admin's own
+        // browser. It is intentionally NOT logged anywhere.
+        wp_send_json_success([
+            'token'         => $result['plaintext'],
+            'token_id'      => $result['token_id'],
+            'label'         => $label,
+            'bound_user_id' => $bound_user_id,
+            'user_display'  => $target->display_name ?: $target->user_login,
+            'user_login'    => $target->user_login,
+            'created'       => $this->format_cgpt_timestamp($result['record']['created'] ?? ''),
+            'connector_url' => $urls['header'],
+            'connector_url_path' => $urls['path'],
+        ]);
+    }
+
+    /**
+     * Admin-AJAX: revoke (delete) a single ChatGPT token by id (T5). Gated by
+     * nonce + manage_options. delete_cgpt_token() is idempotent; we report
+     * whether a live row was actually removed.
+     */
+    public function cgpt_revoke_handler() {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['error' => 'forbidden', 'message' => 'You do not have permission to do this.'], 403);
+        }
+        check_ajax_referer('connectmwp_cgpt');
+
+        $token_id = isset($_POST['token_id']) ? sanitize_text_field(wp_unslash($_POST['token_id'])) : '';
+        if ($token_id === '') {
+            wp_send_json_error(['message' => 'Missing token id.'], 400);
+        }
+
+        $removed = $this->delete_cgpt_token($token_id);
+        if (!$removed) {
+            wp_send_json_error(['message' => 'That token was already revoked or no longer exists.'], 404);
+        }
+
+        wp_send_json_success(['token_id' => $token_id]);
     }
 
     /**
@@ -3672,7 +3819,332 @@ class ConnectMWP_Agent {
                 });
             })();
             </script>
+
+            <?php $this->render_cgpt_card(); ?>
         </div>
+        <?php
+    }
+
+    /**
+     * "Connect ChatGPT (beta)" settings card (T5). Admin-only — render path is
+     * already inside render_settings_page() which hard-gates on manage_options.
+     * Lets an admin mint a ChatGPT bearer token bound to a chosen WP user, shows
+     * the plaintext exactly once, lists existing tokens (metadata only — the
+     * plaintext is never recoverable), and revokes per-row. All mutating calls go
+     * through the nonce + manage_options-gated cgpt_generate/cgpt_revoke AJAX
+     * actions. This card is admin UX only; it is NOT on the MCP traffic path.
+     */
+    private function render_cgpt_card() {
+        // Eligible delegation targets: users who can edit posts. Default the
+        // <select> to the current admin if they qualify. Batched query (no N+1).
+        $eligible = get_users([
+            'capability' => 'edit_posts',
+            'orderby'    => 'display_name',
+            'order'      => 'ASC',
+            'number'     => 200,
+        ]);
+        $current_id = get_current_user_id();
+
+        // Existing tokens, newest first, with bound-user display resolved via one
+        // batched get_users() (mirrors the key-table N+1 fix above).
+        $tokens   = $this->list_cgpt_tokens();
+        $user_ids = array_values(array_unique(array_filter(array_map(function ($t) {
+            return intval($t['bound_user_id']);
+        }, $tokens))));
+        $user_map = [];
+        if (!empty($user_ids)) {
+            foreach (get_users(['include' => $user_ids]) as $u) {
+                $user_map[intval($u->ID)] = $u;
+            }
+        }
+        $rows = [];
+        foreach ($tokens as $token_id => $t) {
+            $u = $user_map[intval($t['bound_user_id'])] ?? null;
+            $rows[] = [
+                'token_id'     => $token_id,
+                'label'        => $t['label'],
+                'user_display' => $u ? ($u->display_name ?: $u->user_login) : 'Unknown user',
+                'user_login'   => $u ? $u->user_login : '',
+                'created'      => $this->format_cgpt_timestamp($t['created']),
+                'last_used'    => $this->format_cgpt_timestamp($t['last_used']),
+                'last_ip'      => $t['last_ip'],
+            ];
+        }
+        // Newest first by created string (mysql datetime sorts lexicographically).
+        usort($rows, function ($a, $b) {
+            return strcmp($b['created'], $a['created']);
+        });
+
+        $at_cap = count($tokens) >= self::MAX_CGPT_TOKENS_PER_SITE;
+        ?>
+        <section class="cmwp-card" id="cmwp-cgpt-card">
+            <div class="cmwp-card-header">
+                <div>
+                    <h2 class="cmwp-card-title">🤖 Connect ChatGPT <span class="cmwp-badge-new">BETA</span></h2>
+                    <p class="cmwp-card-sub">ChatGPT connects directly to <strong>this site</strong> using a token you generate here. The token lives inside your ChatGPT connector settings — it never passes through any third-party server. Revoke it anytime below.</p>
+                </div>
+            </div>
+
+            <div class="cmwp-cgpt-gen">
+                <label class="cmwp-cgpt-field">
+                    <span class="cmwp-cgpt-flabel">Connect as</span>
+                    <select id="cmwp-cgpt-user">
+                        <?php foreach ($eligible as $u):
+                            $display = $u->display_name ?: $u->user_login; ?>
+                            <option value="<?php echo intval($u->ID); ?>" <?php selected($u->ID, $current_id); ?>>
+                                <?php echo esc_html($display . ' (' . $u->user_login . ')'); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </label>
+                <label class="cmwp-cgpt-field">
+                    <span class="cmwp-cgpt-flabel">Label (optional)</span>
+                    <input type="text" id="cmwp-cgpt-label" placeholder="ChatGPT" maxlength="120" />
+                </label>
+                <button type="button" class="cmwp-btn-pair-another" id="cmwp-cgpt-generate" <?php echo $at_cap ? 'disabled' : ''; ?>>Generate token</button>
+            </div>
+            <?php if ($at_cap): ?>
+                <p class="cmwp-tz-note" style="color:#c0392b;">You've reached the limit of <?php echo intval(self::MAX_CGPT_TOKENS_PER_SITE); ?> ChatGPT tokens. Revoke one below to generate a new one.</p>
+            <?php endif; ?>
+
+            <!-- One-time reveal panel (hidden until a token is minted) -->
+            <div id="cmwp-cgpt-reveal" class="cmwp-cgpt-reveal" style="display:none;">
+                <div class="cmwp-cgpt-warn">⚠️ <strong>Copy this token now — you won't be able to see it again.</strong> If you lose it, revoke it and generate a new one.</div>
+                <div class="cmwp-pc-cmd">
+                    <textarea readonly class="cmwp-pc-textarea" id="cmwp-cgpt-token"></textarea>
+                    <button type="button" class="cmwp-btn-copy" id="cmwp-cgpt-copy-token">Copy</button>
+                </div>
+
+                <div class="cmwp-pc-instructions">
+                    <strong>👉 Add it to ChatGPT:</strong>
+                    <ol>
+                        <li>In ChatGPT, open <b>Settings → Apps → Advanced → Developer mode</b>, then <b>Create app</b> (a custom connector).</li>
+                        <li>Paste the <b>connector URL</b> below.</li>
+                        <li>For authentication choose <b>API key</b> and paste the token you just copied.</li>
+                        <li>Save, then enable the connector in a new chat.</li>
+                    </ol>
+                    <p style="margin:8px 0 4px;font-size:12.5px;color:#7f8c8d;">ChatGPT moves these menus around — if the labels differ, look for "developer mode" / "create connector" / "API key auth".</p>
+                </div>
+
+                <p class="cmwp-cgpt-urllabel">Connector URL <span class="cmwp-cgpt-urltag">recommended</span></p>
+                <div class="cmwp-pc-cmd">
+                    <textarea readonly class="cmwp-pc-textarea cmwp-cgpt-url" id="cmwp-cgpt-url"></textarea>
+                    <button type="button" class="cmwp-btn-copy" id="cmwp-cgpt-copy-url">Copy</button>
+                </div>
+                <p class="cmwp-cgpt-urllabel">If your host strips Authorization headers, use this URL instead <span class="cmwp-cgpt-urltag fallback">fallback</span></p>
+                <div class="cmwp-pc-cmd">
+                    <textarea readonly class="cmwp-pc-textarea cmwp-cgpt-url" id="cmwp-cgpt-url-path"></textarea>
+                    <button type="button" class="cmwp-btn-copy" id="cmwp-cgpt-copy-url-path">Copy</button>
+                </div>
+            </div>
+
+            <!-- Existing tokens table -->
+            <div id="cmwp-cgpt-table-wrap" style="<?php echo empty($rows) ? 'display:none;' : ''; ?>margin-top:18px;">
+                <h3 class="cmwp-card-title" style="font-size:14px;margin-bottom:8px;">Existing ChatGPT tokens</h3>
+                <table class="cmwp-cgpt-table" id="cmwp-cgpt-table">
+                    <thead>
+                        <tr>
+                            <th>Label</th><th>Bound user</th><th>Created</th><th>Last used</th><th>Last IP</th><th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($rows as $r): ?>
+                            <tr data-token-row="<?php echo esc_attr($r['token_id']); ?>">
+                                <td><?php echo esc_html($r['label'] !== '' ? $r['label'] : 'ChatGPT'); ?></td>
+                                <td><?php echo esc_html($r['user_display']); ?><?php echo $r['user_login'] !== '' ? ' <span style="color:#abb2b9;">(' . esc_html($r['user_login']) . ')</span>' : ''; ?></td>
+                                <td><?php echo esc_html($r['created'] !== '' ? $r['created'] : '—'); ?></td>
+                                <td><?php echo esc_html($r['last_used'] !== '' ? $r['last_used'] : 'never'); ?></td>
+                                <td><?php echo esc_html($r['last_ip'] !== '' ? $r['last_ip'] : '—'); ?></td>
+                                <td><button type="button" class="cmwp-btn-revoke cmwp-cgpt-revoke" data-token-id="<?php echo esc_attr($r['token_id']); ?>" data-label="<?php echo esc_attr($r['label'] !== '' ? $r['label'] : 'ChatGPT'); ?>">Revoke</button></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+                <p class="cmwp-tz-note">Times shown in the site's configured timezone. The token value itself is never stored and cannot be shown again — only revoked.</p>
+            </div>
+        </section>
+
+        <style>
+            .cmwp-cgpt-gen { display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap; margin-top: 4px; }
+            .cmwp-cgpt-field { display: flex; flex-direction: column; gap: 4px; }
+            .cmwp-cgpt-flabel { font-size: 12px; font-weight: 600; color: #7f8c8d; }
+            .cmwp-cgpt-field select, .cmwp-cgpt-field input[type=text] { min-width: 220px; padding: 7px 10px; border: 1px solid #dbe5ed; border-radius: 6px; font-size: 13px; color: #2c3e50; background: #fff; }
+            .cmwp-cgpt-reveal { margin-top: 16px; background: #fafbfc; border: 1px solid #eef2f4; border-left: 4px solid #16a085; border-radius: 8px; padding: 16px 18px; }
+            .cmwp-cgpt-warn { font-size: 13px; color: #b9770e; background: #fef3e0; border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; line-height: 1.5; }
+            .cmwp-wrap textarea.cmwp-cgpt-url { height: 44px; font-size: 11.5px; }
+            .cmwp-cgpt-urllabel { font-size: 12.5px; font-weight: 600; color: #34495e; margin: 12px 0 4px; }
+            .cmwp-cgpt-urltag { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #16a085; background: #d8f1ea; padding: 2px 7px; border-radius: 999px; }
+            .cmwp-cgpt-urltag.fallback { color: #7f8c8d; background: #ecf0f1; }
+            .cmwp-cgpt-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+            .cmwp-cgpt-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: #7f8c8d; padding: 6px 10px; border-bottom: 1px solid #eef2f4; }
+            .cmwp-cgpt-table td { padding: 9px 10px; border-bottom: 1px solid #f4f7f9; color: #34495e; vertical-align: middle; }
+        </style>
+
+        <script>
+        (function() {
+            const ajaxUrl = '<?php echo esc_js(admin_url('admin-ajax.php')); ?>';
+            const nonce = '<?php echo esc_js(wp_create_nonce('connectmwp_cgpt')); ?>';
+            const maxTokens = <?php echo intval(self::MAX_CGPT_TOKENS_PER_SITE); ?>;
+
+            const genBtn   = document.getElementById('cmwp-cgpt-generate');
+            const userSel  = document.getElementById('cmwp-cgpt-user');
+            const labelInp = document.getElementById('cmwp-cgpt-label');
+            const reveal   = document.getElementById('cmwp-cgpt-reveal');
+            const tokenTa  = document.getElementById('cmwp-cgpt-token');
+            const urlTa    = document.getElementById('cmwp-cgpt-url');
+            const urlPathTa= document.getElementById('cmwp-cgpt-url-path');
+            const tableWrap= document.getElementById('cmwp-cgpt-table-wrap');
+            const tableBody= document.querySelector('#cmwp-cgpt-table tbody');
+
+            function wireCopy(btnId, srcEl) {
+                const btn = document.getElementById(btnId);
+                if (!btn) return;
+                btn.addEventListener('click', function() {
+                    navigator.clipboard.writeText(srcEl.value)
+                        .then(function() { showConnectMWPToast(btn, 'Copied'); })
+                        .catch(function() { showConnectMWPToast(btn, 'Copy failed — select & ⌘C'); });
+                });
+            }
+            wireCopy('cmwp-cgpt-copy-token', tokenTa);
+            wireCopy('cmwp-cgpt-copy-url', urlTa);
+            wireCopy('cmwp-cgpt-copy-url-path', urlPathTa);
+
+            if (genBtn) {
+                genBtn.addEventListener('click', async function() {
+                    genBtn.disabled = true;
+                    const original = genBtn.textContent;
+                    genBtn.textContent = 'Generating…';
+                    try {
+                        const body = new URLSearchParams({
+                            action: 'connectmwp_cgpt_generate',
+                            _wpnonce: nonce,
+                            bound_user_id: userSel ? userSel.value : '',
+                            label: labelInp ? labelInp.value : ''
+                        });
+                        const res = await fetch(ajaxUrl, {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: body.toString()
+                        });
+                        const data = await res.json();
+                        if (!res.ok || !data || !data.success) {
+                            const msg = (data && data.data && data.data.message) ? data.data.message : 'Could not generate token, please try again.';
+                            window.alert(msg);
+                            genBtn.disabled = false;
+                            genBtn.textContent = original;
+                            return;
+                        }
+                        const d = data.data;
+                        tokenTa.value   = d.token;
+                        urlTa.value     = d.connector_url;
+                        urlPathTa.value = d.connector_url_path;
+                        reveal.style.display = 'block';
+                        reveal.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                        // Insert the new token row at the top of the table (DOM-built,
+                        // no innerHTML, so server-supplied strings are XSS-safe).
+                        addRow({
+                            token_id: d.token_id,
+                            label: d.label || 'ChatGPT',
+                            user_display: d.user_display,
+                            user_login: d.user_login,
+                            created: d.created || '—',
+                            last_used: 'never',
+                            last_ip: '—'
+                        });
+                        genBtn.textContent = original;
+                        labelInp && (labelInp.value = '');
+                        refreshCapState();
+                    } catch (e) {
+                        window.alert('Could not generate token, please try again.');
+                        genBtn.disabled = false;
+                        genBtn.textContent = original;
+                    }
+                });
+            }
+
+            function cell(text, mutedSuffix) {
+                const td = document.createElement('td');
+                td.appendChild(document.createTextNode(text == null ? '' : String(text)));
+                if (mutedSuffix) {
+                    const span = document.createElement('span');
+                    span.style.color = '#abb2b9';
+                    span.appendChild(document.createTextNode(' (' + mutedSuffix + ')'));
+                    td.appendChild(span);
+                }
+                return td;
+            }
+
+            function addRow(r) {
+                if (!tableBody) return;
+                const tr = document.createElement('tr');
+                tr.setAttribute('data-token-row', r.token_id);
+                tr.appendChild(cell(r.label));
+                tr.appendChild(cell(r.user_display, r.user_login || null));
+                tr.appendChild(cell(r.created));
+                tr.appendChild(cell(r.last_used));
+                tr.appendChild(cell(r.last_ip));
+                const actionTd = document.createElement('td');
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'cmwp-btn-revoke cmwp-cgpt-revoke';
+                btn.setAttribute('data-token-id', r.token_id);
+                btn.setAttribute('data-label', r.label);
+                btn.textContent = 'Revoke';
+                actionTd.appendChild(btn);
+                tr.appendChild(actionTd);
+                tableBody.insertBefore(tr, tableBody.firstChild);
+                if (tableWrap) tableWrap.style.display = '';
+            }
+
+            function refreshCapState() {
+                const count = tableBody ? tableBody.querySelectorAll('tr').length : 0;
+                if (genBtn) genBtn.disabled = count >= maxTokens;
+            }
+
+            // Delegated revoke handler (covers both server-rendered and JS-added rows).
+            if (tableBody) {
+                tableBody.addEventListener('click', async function(e) {
+                    const btn = e.target.closest('.cmwp-cgpt-revoke');
+                    if (!btn) return;
+                    const tokenId = btn.getAttribute('data-token-id');
+                    const label = btn.getAttribute('data-label') || 'this token';
+                    if (!window.confirm('Revoke "' + label + '"? ChatGPT will immediately lose access. This cannot be undone.')) return;
+                    btn.disabled = true;
+                    btn.textContent = 'Revoking…';
+                    try {
+                        const body = new URLSearchParams({
+                            action: 'connectmwp_cgpt_revoke',
+                            _wpnonce: nonce,
+                            token_id: tokenId
+                        });
+                        const res = await fetch(ajaxUrl, {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: body.toString()
+                        });
+                        const data = await res.json();
+                        if (!res.ok || !data || !data.success) {
+                            const msg = (data && data.data && data.data.message) ? data.data.message : 'Could not revoke token.';
+                            window.alert(msg);
+                            btn.disabled = false;
+                            btn.textContent = 'Revoke';
+                            return;
+                        }
+                        const row = tableBody.querySelector('tr[data-token-row="' + (window.CSS && CSS.escape ? CSS.escape(tokenId) : tokenId) + '"]');
+                        if (row) row.remove();
+                        if (tableWrap && tableBody.querySelectorAll('tr').length === 0) tableWrap.style.display = 'none';
+                        refreshCapState();
+                    } catch (err) {
+                        window.alert('Could not revoke token.');
+                        btn.disabled = false;
+                        btn.textContent = 'Revoke';
+                    }
+                });
+            }
+        })();
+        </script>
         <?php
     }
 }
