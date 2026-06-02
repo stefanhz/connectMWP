@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP
  * Plugin URI: https://connectmwp.com
  * Description: Securely let your own local AI client (Claude, Cursor) publish to this WordPress site over a signed, session-less Ed25519 connection — no login, no central server.
- * Version: 2.0.36
+ * Version: 2.0.37
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Stefan Heinz, 2morrow.ai
@@ -1014,8 +1014,9 @@ class ConnectMWP_Agent {
             'success' => true,
             'key_id'  => $key_id,
             'site'    => [
-                'title' => html_entity_decode(get_bloginfo('name'), ENT_QUOTES, 'UTF-8'),
-                'url'   => home_url(),
+                'title'          => html_entity_decode(get_bloginfo('name'), ENT_QUOTES, 'UTF-8'),
+                'url'            => home_url(),
+                'plugin_version' => self::version(),
             ],
             'user'         => $user_payload,
             'capabilities' => $caps,

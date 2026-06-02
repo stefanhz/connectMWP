@@ -1211,6 +1211,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           required: ['id']
         }
+      },
+      {
+        name: 'connectmwp_status',
+        description: 'Show connectMWP version and connection status: the running local MCP client version, the paired sites, the default site, and — via a live signed round-trip — the connectMWP plugin version installed on the target WordPress site. Use to confirm which versions are running and that end-to-end signing works.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            site: {
+              type: 'string',
+              description: 'Optional domain or site URL to probe for the live plugin version (e.g. "2morrow.ai"). Uses the default site if omitted.'
+            }
+          }
+        }
       }
     ],
   };
@@ -1387,6 +1400,57 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
         const res = await callWordPress(siteUrl, keyId, privateKeyPath, 'tags', 'POST', tagParams);
         return { content: [{ type: 'text', text: JSON.stringify(projectCreateTaxonomy(res)) }] };
+      }
+
+      case 'connectmwp_status': {
+        const { site } = args;
+        const config = await readConfig();
+        const siteKeys = Object.keys(config.sites || {});
+        const sites = siteKeys.map((url) => ({
+          url,
+          label: config.sites[url].label || null,
+          key_id: config.sites[url].key_id || null,
+          is_default: url === config.defaultSite,
+        }));
+
+        const status = {
+          success: true,
+          mcp_client_version: version,
+          default_site: config.defaultSite || null,
+          sites,
+        };
+
+        // No sites paired yet — report cleanly instead of erroring.
+        if (siteKeys.length === 0) {
+          status.note = 'No WordPress sites paired yet. Run "npx -y connectmwp-mcp add-site --enroll <enrollment_string>" to pair one.';
+          return { content: [{ type: 'text', text: JSON.stringify(status) }] };
+        }
+
+        // Live signed round-trip to read the plugin version on the target site.
+        // Network/signing failure degrades gracefully — local facts stay accurate.
+        try {
+          const { siteUrl, keyId, privateKeyPath } = await getCredentials(site);
+          const whoami = await callWordPress(siteUrl, keyId, privateKeyPath, 'whoami', 'GET');
+          if (whoami && whoami.success) {
+            status.checked_site = siteUrl;
+            status.plugin_version = (whoami.site && whoami.site.plugin_version) || 'unknown';
+            status.site_title = whoami.site ? whoami.site.title : null;
+            status.user = whoami.user ? whoami.user.login : null;
+            status.signed_roundtrip = 'ok';
+            if (status.plugin_version === 'unknown') {
+              status.note = 'Signing works, but the site is running a plugin build older than 2.0.37 that does not report its version. Update the connectMWP plugin on the site to surface it.';
+            }
+          } else {
+            status.signed_roundtrip = 'failed';
+            status.note = 'Signed round-trip did not succeed; plugin version unavailable. Client version and sites are still accurate.';
+          }
+        } catch (err) {
+          logDiag(`status-whoami-error message=${err && err.message ? err.message : String(err)}`);
+          status.signed_roundtrip = 'failed';
+          status.note = 'Could not reach the site for a live plugin-version check; client version and sites are still accurate.';
+        }
+
+        return { content: [{ type: 'text', text: JSON.stringify(status) }] };
       }
 
       default:

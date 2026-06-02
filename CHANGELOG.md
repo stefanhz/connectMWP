@@ -4,6 +4,19 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-06-02 — v2.0.37
+
+Added a way to see, at a glance, which connectMWP version is actually running — both the local client and the plugin deployed on a site. This directly addresses the "which version is Claude Code vs Claude Desktop running?" confusion: ask the assistant to "check connectmwp status" and it reports the client version, the paired sites, and (via a live signed round-trip) the plugin version installed on the target site.
+
+### Added
+
+- **connectmwp-mcp — new `connectmwp_status` tool.** Returns the running MCP client version, the paired sites + which is default, and — through a live signed `/whoami` round-trip — the target site's installed plugin version, site title, and bound user. Degrades gracefully: with no sites paired, or if the round-trip fails, it still reports accurate local facts and an explanatory note. If signing works but the site runs a pre-2.0.37 plugin (no version field), it says so explicitly. (`connectmwp-mcp/index.js`)
+- **connectmwp-agent — `/whoami` and `/enroll` identity payload now includes `site.plugin_version`.** Read at runtime from the plugin header via the existing cached `version()` helper; additive, so the `/enroll` ⇄ `/whoami` shape parity is preserved. (`connectmwp-agent/connectmwp-agent.php`)
+
+### Bumped
+
+- All three components → 2.0.37 (lockstep). Plugin re-packaged (both zip locations, sha-identical).
+
 ## 2026-05-31 — v2.0.36
 
 Completed the rename on the distribution side: the plugin is now shipped as `connectmwp.zip` and installs into a `connectmwp/` folder (matching the WordPress.org slug), replacing the old `connectmwp-agent.zip` / `connectmwp-agent/` install folder. No code, behavior, or auth-path change. The source working directory remains `connectmwp-agent/` (build stages it into a `connectmwp/` folder); the v2.0.35 note that the source filename is unchanged still holds.
