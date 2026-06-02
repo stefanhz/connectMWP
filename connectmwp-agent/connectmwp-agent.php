@@ -1616,49 +1616,82 @@ class ConnectMWP_Agent {
         return (bool) get_option('connectmwp_trust_proxy', false);
     }
 
-    // Permission callbacks
+    // ------------------------------------------------------------------------
+    // Authorization (capability) helpers — SSOT for "may $this->bound_user_id do
+    // X?". These perform NO authentication: they assume the caller has already
+    // verified a signature (verify_request_signature) or a bearer token
+    // (verify_token_request) and populated $this->bound_user_id. The two concerns
+    // are deliberately split so dispatch_action can authorize the token path
+    // (which has no signature) against the already-set bound user. The public
+    // check_* permission_callbacks below layer signature verification on top of
+    // these for the REST transport.
+    private function cap_can_read(): bool {
+        return user_can($this->bound_user_id, 'edit_posts');
+    }
+
+    private function cap_can_edit(): bool {
+        return user_can($this->bound_user_id, 'edit_posts');
+    }
+
+    private function cap_can_edit_post($request): bool {
+        return user_can($this->bound_user_id, 'edit_post', intval($request['id']));
+    }
+
+    private function cap_can_delete_post($request): bool {
+        return user_can($this->bound_user_id, 'delete_post', intval($request['id']));
+    }
+
+    private function cap_can_upload(): bool {
+        return user_can($this->bound_user_id, 'upload_files');
+    }
+
+    private function cap_can_taxonomy(): bool {
+        return user_can($this->bound_user_id, 'manage_categories');
+    }
+
+    // Permission callbacks (REST transport): authenticate via signature, THEN
+    // authorize via the cap_* helpers. Observable behavior is identical to the
+    // pre-split callbacks — verify signature first, fail closed, then user_can.
     public function check_read_permission($request = null) {
         if (!$this->verify_request_signature($request)) {
             return false;
         }
-        return user_can($this->bound_user_id, 'edit_posts');
+        return $this->cap_can_read();
     }
 
     public function check_edit_permission($request = null) {
         if (!$this->verify_request_signature($request)) {
             return false;
         }
-        return user_can($this->bound_user_id, 'edit_posts');
+        return $this->cap_can_edit();
     }
 
     public function check_edit_post_permission($request) {
         if (!$this->verify_request_signature($request)) {
             return false;
         }
-        $post_id = intval($request['id']);
-        return user_can($this->bound_user_id, 'edit_post', $post_id);
+        return $this->cap_can_edit_post($request);
     }
 
     public function check_delete_post_permission($request) {
         if (!$this->verify_request_signature($request)) {
             return false;
         }
-        $post_id = intval($request['id']);
-        return user_can($this->bound_user_id, 'delete_post', $post_id);
+        return $this->cap_can_delete_post($request);
     }
 
     public function check_upload_permission($request = null) {
         if (!$this->verify_request_signature($request)) {
             return false;
         }
-        return user_can($this->bound_user_id, 'upload_files');
+        return $this->cap_can_upload();
     }
 
     public function check_taxonomy_permission($request = null) {
         if (!$this->verify_request_signature($request)) {
             return false;
         }
-        return user_can($this->bound_user_id, 'manage_categories');
+        return $this->cap_can_taxonomy();
     }
 
     // Signature-only gate — used by /whoami. Any valid signature passes; the
@@ -2523,36 +2556,54 @@ class ConnectMWP_Agent {
         // Set true ONLY on a dispatch-GATE early return (capability-check failure
         // or unknown-action default) -- never for a handler-produced response.
         $this->last_dispatch_gated = false;
+
+        // Defense-in-depth auth guard: dispatch_action performs AUTHORIZATION
+        // ONLY against $this->bound_user_id. Authentication is the caller's job
+        // (handle_ajax_request -> verify_request_signature; the /mcp route's
+        // permission_callback -> verify_token_request). If NEITHER auth path ran
+        // for this request, or no real user got bound, refuse here so a future
+        // caller that forgets to authenticate can never have us authorize against
+        // a stale/zero user. Both existing callers authenticate first, so this
+        // never trips in normal flow.
+        if ($this->signature_verified !== true && $this->cgpt_token_verified !== true) {
+            $this->last_dispatch_gated = true;
+            return new WP_REST_Response(['success' => false, 'error' => 'Unauthorized'], 401);
+        }
+        if ($this->bound_user_id <= 0) {
+            $this->last_dispatch_gated = true;
+            return new WP_REST_Response(['success' => false, 'error' => 'Unauthorized'], 401);
+        }
+
         switch ($action) {
             case 'get_posts':
-                if (!$this->check_read_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
+                if (!$this->cap_can_read()) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->get_posts_handler($request);
             case 'get_post':
-                if (!$this->check_read_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
+                if (!$this->cap_can_read()) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->get_post_handler($request);
             case 'create_post':
-                if (!$this->check_edit_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
+                if (!$this->cap_can_edit()) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->create_post_handler($request);
             case 'update_post':
-                if (!$this->check_edit_post_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
+                if (!$this->cap_can_edit_post($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->update_post_handler($request);
             case 'delete_post':
-                if (!$this->check_delete_post_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
+                if (!$this->cap_can_delete_post($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->delete_post_handler($request);
             case 'upload_media':
-                if (!$this->check_upload_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
+                if (!$this->cap_can_upload()) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->upload_media_handler($request);
             case 'get_tags':
-                if (!$this->check_read_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
+                if (!$this->cap_can_read()) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->get_tags_handler($request);
             case 'get_categories':
-                if (!$this->check_read_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
+                if (!$this->cap_can_read()) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->get_categories_handler($request);
             case 'create_category':
-                if (!$this->check_taxonomy_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
+                if (!$this->cap_can_taxonomy()) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->create_category_handler($request);
             case 'create_tag':
-                if (!$this->check_taxonomy_permission($request)) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
+                if (!$this->cap_can_taxonomy()) { $this->last_dispatch_gated = true; return new WP_REST_Response(['success' => false, 'error' => 'Forbidden'], 403); }
                 return $this->create_tag_handler($request);
             case 'whoami':
                 // Signature already verified by the caller; no further capability required.
