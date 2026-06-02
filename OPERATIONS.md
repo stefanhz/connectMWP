@@ -527,10 +527,18 @@ entirely admin-side on WordPress + a paste into ChatGPT; there is no
    (`https://yoursite.com/wp-json/connectmwp/v1/mcp`).
 7. **Auth: API key / Bearer token** → paste the `cmwp_cgpt_<hex>` token.
 8. **If your host strips the `Authorization` header** (some managed hosts do, the
-   same edge behavior that forced custom headers on the signature path), use the
-   **path-token URL** instead — append the token as a path segment:
-   `https://yoursite.com/wp-json/connectmwp/v1/mcp/cmwp_cgpt_<hex>` — and leave
-   the connector's auth field empty. The card shows this variant too.
+   same edge behavior that forced custom headers on the signature path), you can
+   fall back to the **path-token URL** — the token embedded as a path segment:
+   `https://yoursite.com/wp-json/connectmwp/v1/mcp/cmwp_cgpt_<hex>` — with the
+   connector's auth field left empty. **This fallback is OFF by default and must
+   be explicitly enabled.** On the card, tick **"Enable URL-embedded token
+   fallback"**; only then does the card surface the path-token URL and only then
+   does the plugin honor a token presented in the URL. ⚠ **Log-exposure warning:**
+   the URL-embedded form puts your token in the address, so it can appear in
+   server/CDN access logs. Use it only if the header method genuinely fails, and
+   **rotate the token periodically** (revoke + regenerate). The two header
+   methods (`Authorization: Bearer` and `X-ConnectMWP-Token`) always work and do
+   not require this opt-in.
 9. Save. ChatGPT runs `initialize` → `tools/list`; you should see the connectMWP
    tools (create/update/publish posts, tags, categories).
 

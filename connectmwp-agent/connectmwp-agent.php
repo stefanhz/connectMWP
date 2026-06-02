@@ -81,6 +81,14 @@ class ConnectMWP_Agent {
     const CGPT_TOKEN_SECRET_BYTES  = 32;                      // entropy of the token secret (>= 32 random bytes)
     const MAX_CGPT_TOKENS_PER_SITE = 20;                      // (VR-2) hard cap on live ChatGPT tokens per site; admin must revoke before minting #21
 
+    // Path-token fallback opt-in. The `/mcp/<token>` route embeds the live bearer
+    // token in the URL, which lands in server/CDN access logs (sec review MEDIUM).
+    // It is therefore OFF by default: the route param is only honored as an auth
+    // source, and the path-token connector URL is only surfaced in the admin UI,
+    // when an admin has explicitly enabled this option after reading the
+    // log-exposure warning. The two HEADER sources always work regardless.
+    const CGPT_ALLOW_PATH_TOKEN_OPTION = 'connectmwp_cgpt_allow_path_token'; // boolean WP option, DEFAULT false
+
     // ChatGPT bearer-token verifier IP throttle (T3). Mirrors the enroll
     // limiter (cmwp_enroll_limit_*): only FAILED resolves count toward the
     // limit, so a legitimate client making many authenticated calls is never
@@ -169,6 +177,9 @@ class ConnectMWP_Agent {
         // only and MUST NEVER sit on the MCP traffic path.
         add_action('wp_ajax_connectmwp_cgpt_generate', [$this, 'cgpt_generate_handler']);
         add_action('wp_ajax_connectmwp_cgpt_revoke', [$this, 'cgpt_revoke_handler']);
+        // Toggle the URL-embedded (path) token fallback on/off. Same nonce +
+        // manage_options gating; admin UX only, never on the MCP traffic path.
+        add_action('wp_ajax_connectmwp_cgpt_set_path_token', [$this, 'cgpt_set_path_token_handler']);
 
         // Admin settings page hook
         add_action('admin_menu', [$this, 'add_settings_page']);
@@ -739,7 +750,14 @@ class ConnectMWP_Agent {
         if ($token === '' && $custom_token !== '') {
             $token = trim($custom_token);
         }
-        if ($token === '' && $request instanceof WP_REST_Request) {
+        // Source (c): the `token` route param of the /mcp/<token> path-token
+        // route is ONLY honored when the admin has explicitly opted in to the
+        // URL-embedded fallback (OFF by default — sec review MEDIUM: a path token
+        // lands in server/CDN access logs). When disabled, a request that carries
+        // only a path token (no header token) falls through to the
+        // connectmwp_cgpt_missing_token 401 below. The HEADER sources above are
+        // never gated. The route stays registered; it is simply inert here.
+        if ($token === '' && $this->cgpt_path_token_enabled() && $request instanceof WP_REST_Request) {
             $route_token = $request->get_param('token');
             if (is_string($route_token)) {
                 $token = trim($route_token);
@@ -1864,6 +1882,16 @@ class ConnectMWP_Agent {
      * freshly-minted plaintext is supplied (i.e. immediately after generate);
      * the listing UI never calls this with a plaintext.
      */
+    /**
+     * SSOT for whether the URL-embedded (path) token fallback is enabled. OFF by
+     * default. Gates BOTH the auth source (#3, the route param in
+     * verify_token_request) and the surfacing of the path-token connector URL in
+     * the admin UI. The two HEADER auth sources are never gated by this.
+     */
+    private function cgpt_path_token_enabled(): bool {
+        return (bool) get_option(self::CGPT_ALLOW_PATH_TOKEN_OPTION, false);
+    }
+
     private function cgpt_connector_urls($plaintext = null) {
         $base = rest_url(self::API_NAMESPACE . '/mcp');
         $base = rtrim($base, '/');
@@ -1951,9 +1979,13 @@ class ConnectMWP_Agent {
 
         $urls = $this->cgpt_connector_urls($result['plaintext']);
 
-        // NOTE: the plaintext is returned exactly once, here, to the admin's own
-        // browser. It is intentionally NOT logged anywhere.
-        wp_send_json_success([
+        // The default response presents the header-form connector URL + the bare
+        // token as SEPARATE fields (admin pastes the bare token into ChatGPT's
+        // API-key field; nothing forces copying a URL that contains the secret).
+        // The path-token URL — which embeds the secret in the URL and would land
+        // in access logs — is ONLY included when the fallback is explicitly
+        // enabled (sec review MEDIUM, reviewer point d).
+        $response = [
             'token'         => $result['plaintext'],
             'token_id'      => $result['token_id'],
             'label'         => $label,
@@ -1962,8 +1994,14 @@ class ConnectMWP_Agent {
             'user_login'    => $target->user_login,
             'created'       => $this->format_cgpt_timestamp($result['record']['created'] ?? ''),
             'connector_url' => $urls['header'],
-            'connector_url_path' => $urls['path'],
-        ]);
+        ];
+        if ($this->cgpt_path_token_enabled()) {
+            $response['connector_url_path'] = $urls['path'];
+        }
+
+        // NOTE: the plaintext is returned exactly once, here, to the admin's own
+        // browser. It is intentionally NOT logged anywhere.
+        wp_send_json_success($response);
     }
 
     /**
@@ -1988,6 +2026,30 @@ class ConnectMWP_Agent {
         }
 
         wp_send_json_success(['token_id' => $token_id]);
+    }
+
+    /**
+     * Admin-AJAX: toggle the URL-embedded (path) token fallback on/off. Gated by
+     * nonce + manage_options, exactly like the generate/revoke handlers. This is
+     * the ONLY way to flip connectmwp_cgpt_allow_path_token, which is OFF by
+     * default (sec review MEDIUM: a path token lands in access logs). Enabling it
+     * starts honoring the /mcp/<token> route param as an auth source and reveals
+     * the path-token connector URL in the admin UI. The token value is never read
+     * or logged here.
+     */
+    public function cgpt_set_path_token_handler() {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['error' => 'forbidden', 'message' => 'You do not have permission to do this.'], 403);
+        }
+        check_ajax_referer('connectmwp_cgpt');
+
+        // Coerce the posted flag to a strict boolean. Accept "1"/"true"/"on".
+        $raw     = isset($_POST['enabled']) ? sanitize_text_field(wp_unslash($_POST['enabled'])) : '';
+        $enabled = in_array(strtolower($raw), ['1', 'true', 'on', 'yes'], true);
+
+        update_option(self::CGPT_ALLOW_PATH_TOKEN_OPTION, $enabled ? true : false, false);
+
+        wp_send_json_success(['enabled' => $enabled]);
     }
 
     /**
@@ -3881,6 +3943,7 @@ class ConnectMWP_Agent {
         });
 
         $at_cap = count($tokens) >= self::MAX_CGPT_TOKENS_PER_SITE;
+        $path_token_enabled = $this->cgpt_path_token_enabled();
         ?>
         <section class="cmwp-card" id="cmwp-cgpt-card">
             <div class="cmwp-card-header">
@@ -3936,11 +3999,24 @@ class ConnectMWP_Agent {
                     <textarea readonly class="cmwp-pc-textarea cmwp-cgpt-url" id="cmwp-cgpt-url"></textarea>
                     <button type="button" class="cmwp-btn-copy" id="cmwp-cgpt-copy-url">Copy</button>
                 </div>
-                <p class="cmwp-cgpt-urllabel">If your host strips Authorization headers, use this URL instead <span class="cmwp-cgpt-urltag fallback">fallback</span></p>
-                <div class="cmwp-pc-cmd">
-                    <textarea readonly class="cmwp-pc-textarea cmwp-cgpt-url" id="cmwp-cgpt-url-path"></textarea>
-                    <button type="button" class="cmwp-btn-copy" id="cmwp-cgpt-copy-url-path">Copy</button>
+                <!-- Path-token (URL-embedded) fallback URL — only revealed when the
+                     admin has opted in via the toggle below. Hidden by default. -->
+                <div id="cmwp-cgpt-url-path-block" style="<?php echo $path_token_enabled ? '' : 'display:none;'; ?>">
+                    <p class="cmwp-cgpt-urllabel">If your host strips Authorization headers, use this URL instead <span class="cmwp-cgpt-urltag fallback">fallback</span></p>
+                    <div class="cmwp-pc-cmd">
+                        <textarea readonly class="cmwp-pc-textarea cmwp-cgpt-url" id="cmwp-cgpt-url-path"></textarea>
+                        <button type="button" class="cmwp-btn-copy" id="cmwp-cgpt-copy-url-path">Copy</button>
+                    </div>
                 </div>
+            </div>
+
+            <!-- URL-embedded token fallback opt-in (OFF by default) -->
+            <div class="cmwp-cgpt-pathtoggle">
+                <label class="cmwp-cgpt-pathtoggle-row">
+                    <input type="checkbox" id="cmwp-cgpt-path-toggle" <?php checked($path_token_enabled); ?> />
+                    <span>Enable URL-embedded token fallback (only if your host strips Authorization headers)</span>
+                </label>
+                <p class="cmwp-cgpt-pathwarn">⚠ The URL-embedded form puts your token in the address, so it can appear in server/CDN access logs. Use it only if the normal (header) method fails, and revoke + regenerate the token periodically.</p>
             </div>
 
             <!-- Existing tokens table -->
@@ -3980,6 +4056,10 @@ class ConnectMWP_Agent {
             .cmwp-cgpt-urllabel { font-size: 12.5px; font-weight: 600; color: #34495e; margin: 12px 0 4px; }
             .cmwp-cgpt-urltag { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #16a085; background: #d8f1ea; padding: 2px 7px; border-radius: 999px; }
             .cmwp-cgpt-urltag.fallback { color: #7f8c8d; background: #ecf0f1; }
+            .cmwp-cgpt-pathtoggle { margin-top: 16px; padding: 12px 14px; background: #fdf6ec; border: 1px solid #f3e2c7; border-radius: 8px; }
+            .cmwp-cgpt-pathtoggle-row { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; font-weight: 600; color: #34495e; cursor: pointer; }
+            .cmwp-cgpt-pathtoggle-row input[type=checkbox] { margin-top: 2px; }
+            .cmwp-cgpt-pathwarn { margin: 8px 0 0; font-size: 12.5px; line-height: 1.5; color: #b9770e; }
             .cmwp-cgpt-table { width: 100%; border-collapse: collapse; font-size: 13px; }
             .cmwp-cgpt-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: #7f8c8d; padding: 6px 10px; border-bottom: 1px solid #eef2f4; }
             .cmwp-cgpt-table td { padding: 9px 10px; border-bottom: 1px solid #f4f7f9; color: #34495e; vertical-align: middle; }
@@ -3998,6 +4078,8 @@ class ConnectMWP_Agent {
             const tokenTa  = document.getElementById('cmwp-cgpt-token');
             const urlTa    = document.getElementById('cmwp-cgpt-url');
             const urlPathTa= document.getElementById('cmwp-cgpt-url-path');
+            const urlPathBlock = document.getElementById('cmwp-cgpt-url-path-block');
+            const pathToggle = document.getElementById('cmwp-cgpt-path-toggle');
             const tableWrap= document.getElementById('cmwp-cgpt-table-wrap');
             const tableBody= document.querySelector('#cmwp-cgpt-table tbody');
 
@@ -4043,7 +4125,9 @@ class ConnectMWP_Agent {
                         const d = data.data;
                         tokenTa.value   = d.token;
                         urlTa.value     = d.connector_url;
-                        urlPathTa.value = d.connector_url_path;
+                        // The path-token URL is only present when the fallback is
+                        // enabled; otherwise leave the (hidden) field blank.
+                        if (urlPathTa) urlPathTa.value = d.connector_url_path || '';
                         reveal.style.display = 'block';
                         reveal.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
                         // Insert the new token row at the top of the table (DOM-built,
@@ -4064,6 +4148,45 @@ class ConnectMWP_Agent {
                         window.alert('Could not generate token, please try again.');
                         genBtn.disabled = false;
                         genBtn.textContent = original;
+                    }
+                });
+            }
+
+            // URL-embedded fallback opt-in toggle. Persists the boolean via the
+            // manage_options + nonce-gated ajax action, then reveals/hides the
+            // path-token URL block. On failure, revert the checkbox to its prior
+            // state so the UI never claims a setting that didn't persist.
+            if (pathToggle) {
+                pathToggle.addEventListener('change', async function() {
+                    const desired = pathToggle.checked;
+                    pathToggle.disabled = true;
+                    try {
+                        const body = new URLSearchParams({
+                            action: 'connectmwp_cgpt_set_path_token',
+                            _wpnonce: nonce,
+                            enabled: desired ? '1' : '0'
+                        });
+                        const res = await fetch(ajaxUrl, {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: body.toString()
+                        });
+                        const data = await res.json();
+                        if (!res.ok || !data || !data.success) {
+                            const msg = (data && data.data && data.data.message) ? data.data.message : 'Could not update this setting.';
+                            window.alert(msg);
+                            pathToggle.checked = !desired;
+                        } else {
+                            const on = !!(data.data && data.data.enabled);
+                            pathToggle.checked = on;
+                            if (urlPathBlock) urlPathBlock.style.display = on ? '' : 'none';
+                        }
+                    } catch (e) {
+                        window.alert('Could not update this setting.');
+                        pathToggle.checked = !desired;
+                    } finally {
+                        pathToggle.disabled = false;
                     }
                 });
             }
