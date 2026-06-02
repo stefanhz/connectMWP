@@ -112,6 +112,11 @@ class ConnectMWP_Agent {
     const MEDIA_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
     const MEDIA_MAX_MB    = 10;
 
+    // MCP/JSON-RPC request body ceiling. The /mcp endpoint carries only JSON-RPC
+    // envelopes (tool args, post content) — never file bytes — so 2 MB comfortably
+    // covers any real post while bounding parse cost on a token-authenticated route.
+    const MCP_MAX_BODY_BYTES = 2 * 1024 * 1024; // 2 MB
+
     // Signature-verification timing, seconds (T060). INVARIANT:
     // REPLAY_TTL_SECONDS MUST exceed TIMESTAMP_SKEW_SECONDS — otherwise a
     // signature can age out of the replay cache while still inside the accepted
@@ -279,7 +284,7 @@ class ConnectMWP_Agent {
         // `token` route param as its 3rd-precedence source. Regex is constrained to
         // the token alphabet ([A-Za-z0-9_-]) — no slashes or encoded chars — so the
         // segment can never smuggle additional path structure.
-        register_rest_route(self::API_NAMESPACE, '/mcp/(?P<token>[A-Za-z0-9_\-]+)', [
+        register_rest_route(self::API_NAMESPACE, '/mcp/(?P<token>[A-Za-z0-9_-]+)', [
             [
                 'methods'             => 'POST',
                 'callback'            => [$this, 'mcp_handler'],
@@ -312,7 +317,8 @@ class ConnectMWP_Agent {
             // fired for /mcp, so cache-poisoning protection is preserved. This block
             // must run AFTER send_rest_nocache_headers() and BEFORE
             // verify_request_signature(). Do NOT remove.
-            if (strpos($route, '/' . self::API_NAMESPACE . '/mcp') === 0) {
+            if ($route === '/' . self::API_NAMESPACE . '/mcp'
+                || strpos($route, '/' . self::API_NAMESPACE . '/mcp/') === 0) {
                 return $result; // token-authenticated path; permission_callback (verify_token_request) handles auth.
             }
 
@@ -2140,6 +2146,12 @@ class ConnectMWP_Agent {
         $title = !empty($params['title']) ? sanitize_text_field($params['title']) : '';
         $content = !empty($params['content']) ? wp_kses_post($params['content']) : '';
         $status = !empty($params['status']) ? sanitize_key($params['status']) : 'draft';
+        // Constrain to a known-safe status allowlist so a low-priv token can't set
+        // unexpected statuses (future, inherit, private, etc.). Orthogonal to the
+        // publish capability gate below — publish still requires publish_posts.
+        if (!in_array($status, ['draft', 'publish', 'trash', 'pending'], true)) {
+            $status = 'draft';
+        }
         $categories = !empty($params['categories']) ? array_map('intval', (array) $params['categories']) : [];
         $tags = !empty($params['tags']) ? array_map('intval', (array) $params['tags']) : [];
         $featured_media = !empty($params['featured_media']) ? intval($params['featured_media']) : 0;
@@ -2209,6 +2221,13 @@ class ConnectMWP_Agent {
         }
         if (isset($params['status'])) {
             $status = sanitize_key($params['status']);
+            // Constrain to a known-safe status allowlist so a low-priv token can't
+            // set unexpected statuses (future, inherit, private, etc.). Orthogonal
+            // to the publish capability gate below — publish still requires
+            // publish_posts.
+            if (!in_array($status, ['draft', 'publish', 'trash', 'pending'], true)) {
+                $status = 'draft';
+            }
             if ($status === 'publish' && !user_can($this->bound_user_id, 'publish_posts')) {
                 $current_post = get_post($post_id);
                 if ($current_post && $current_post->post_status !== 'publish') {
@@ -2647,7 +2666,12 @@ class ConnectMWP_Agent {
             'connectmwp_create_post'      => 'create_post',
             'connectmwp_update_post'      => 'update_post',
             'connectmwp_delete_post'      => 'delete_post',
-            'connectmwp_upload_media'     => 'upload_media',
+            // NOTE: connectmwp_upload_media is intentionally NOT exposed over the
+            // remote MCP (ChatGPT) transport — it requires local file access that
+            // JSON-RPC can't carry. Omitted from both this map and
+            // mcp_tool_definitions(); a direct tools/call for it falls through to
+            // the unknown-tool -32602 path. The upload_media action itself stays
+            // reachable via the AJAX/signature transport (dispatch_action).
             'connectmwp_list_tags'        => 'get_tags',
             'connectmwp_list_categories'  => 'get_categories',
             'connectmwp_create_tag'       => 'create_tag',
@@ -2716,19 +2740,10 @@ class ConnectMWP_Agent {
                     'required'   => ['id'],
                 ],
             ],
-            [
-                'name'        => 'connectmwp_upload_media',
-                'description' => 'Upload a featured or inline image/graph to the WordPress media library.',
-                'inputSchema' => [
-                    'type'       => 'object',
-                    'properties' => [
-                        'site'      => $site_prop,
-                        'file_path' => ['type' => 'string', 'description' => 'Absolute path to the image file on your local machine'],
-                        'image_url' => ['type' => 'string', 'description' => 'URL of the remote image to download and upload'],
-                        'filename'  => ['type' => 'string', 'description' => 'Optional name for the file (default image.png)'],
-                    ],
-                ],
-            ],
+            // connectmwp_upload_media is deliberately omitted from tools/list — it
+            // needs local file access and can't function over the remote MCP
+            // (ChatGPT) JSON-RPC transport. It remains available via the local
+            // MCP client (Claude/Cursor) over the AJAX/signature path.
             [
                 'name'        => 'connectmwp_list_tags',
                 'description' => 'List all tags on the WordPress site to select the 1-5 most relevant ones.',
@@ -2854,6 +2869,13 @@ class ConnectMWP_Agent {
         // silently let an edge cache store a token-authenticated MCP response.
         $this->send_rest_nocache_headers();
 
+        // Bound parse cost on this token-authenticated route: reject oversized
+        // bodies before JSON decoding. JSON-RPC envelopes carry text only (no file
+        // bytes), so MCP_MAX_BODY_BYTES (2 MB) comfortably covers any real post.
+        if (strlen($request->get_body()) > self::MCP_MAX_BODY_BYTES) {
+            return $this->mcp_jsonrpc_error(null, -32700, 'Request body too large.');
+        }
+
         $body = $request->get_json_params();
 
         // Batch arrays are not supported — reject with a clear JSON-RPC error
@@ -2914,7 +2936,10 @@ class ConnectMWP_Agent {
                 return $this->mcp_handle_tools_call($id, $params);
 
             default:
-                return $this->mcp_jsonrpc_error($id, -32601, 'Method not found: ' . $method);
+                // Sanitize+truncate the caller-supplied method before echoing it
+                // (hygiene — JSON, not HTML, so this is not XSS).
+                $safe_method = substr(preg_replace('/[^a-zA-Z0-9_\/]/', '', $method), 0, 64);
+                return $this->mcp_jsonrpc_error($id, -32601, 'Method not found: ' . $safe_method);
         }
     }
 
@@ -2933,7 +2958,10 @@ class ConnectMWP_Agent {
         $map = $this->mcp_tool_action_map();
         if ($name === '' || !isset($map[$name])) {
             // Unknown / missing tool name is an invalid-params protocol fault.
-            return $this->mcp_jsonrpc_error($id, -32602, 'Unknown tool: ' . ($name !== '' ? $name : '(missing)'));
+            // Sanitize+truncate the caller-supplied name before echoing it
+            // (hygiene — JSON, not HTML, so this is not XSS).
+            $safe_name = $name !== '' ? substr(preg_replace('/[^a-zA-Z0-9_]/', '', $name), 0, 64) : '(missing)';
+            return $this->mcp_jsonrpc_error($id, -32602, 'Unknown tool: ' . $safe_name);
         }
         $action = $map[$name];
 
@@ -2964,9 +2992,11 @@ class ConnectMWP_Agent {
             $req->set_param('id', isset($arguments['id']) ? intval($arguments['id']) : 0);
         }
 
-        // upload_media reads $_FILES, which an HTTP JSON-RPC call cannot carry.
-        // Fail clearly instead of letting the handler emit a generic "No file"
-        // error that looks like a transport bug.
+        // Defense-in-depth: upload_media is no longer in mcp_tool_action_map(), so
+        // it can't be reached here (a tools/call for it falls through to the
+        // unknown-tool -32602 path above). This guard stays as a belt-and-suspenders
+        // catch in case the mapping is ever re-added — upload_media reads $_FILES,
+        // which an HTTP JSON-RPC call cannot carry.
         if ($action === 'upload_media') {
             return $this->mcp_tool_error_result($id, 'Media upload is not supported over the remote MCP (ChatGPT) endpoint — it requires local file access. Use a local MCP client (Claude/Cursor) for connectmwp_upload_media.');
         }
