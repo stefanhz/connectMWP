@@ -190,6 +190,10 @@ class ConnectMWP_Agent {
         // Toggle the URL-embedded (path) token fallback on/off. Same nonce +
         // manage_options gating; admin UX only, never on the MCP traffic path.
         add_action('wp_ajax_connectmwp_cgpt_set_path_token', [$this, 'cgpt_set_path_token_handler']);
+        // Revoke an entire connected OAuth app (one token family = access +
+        // refresh + rotations). Same nonce + manage_options gating; admin UX
+        // only, never on the MCP traffic path.
+        add_action('wp_ajax_connectmwp_oauth_revoke', [$this, 'oauth_revoke_handler']);
 
         // Admin settings page hook
         add_action('admin_menu', [$this, 'add_settings_page']);
@@ -4403,6 +4407,73 @@ class ConnectMWP_Agent {
     }
 
     /**
+     * Format an absolute unix timestamp (as stored on OAuth token records via
+     * time()) into the repo-standard `YYYY-MM-DD HH:MM` display string in the
+     * WP-configured timezone. Mirrors format_cgpt_timestamp() but for the
+     * integer-unix schema the OAuth DAL uses. Returns '' for non-positive input
+     * so the caller can substitute its own placeholder.
+     */
+    private function format_oauth_timestamp($unix) {
+        $unix = intval($unix);
+        if ($unix <= 0) {
+            return '';
+        }
+        if (function_exists('wp_timezone')) {
+            $dt = (new DateTimeImmutable('@' . $unix))->setTimezone(wp_timezone());
+            return $dt->format('Y-m-d H:i');
+        }
+        return gmdate('Y-m-d H:i', $unix);
+    }
+
+    /**
+     * Revoke an ENTIRE OAuth connection: delete every token row (access +
+     * refresh + any rotations) that shares the given `family` id. Iterates the
+     * live token list and revoke_oauth_token()s each match. Returns the number
+     * of rows removed. Empty / blank family matches nothing and returns 0.
+     */
+    private function revoke_oauth_family($family) {
+        $family = (string) $family;
+        if ($family === '') {
+            return 0;
+        }
+        $removed = 0;
+        foreach ($this->list_oauth_tokens() as $token_id => $record) {
+            if ((string) $record['family'] === $family) {
+                if ($this->revoke_oauth_token($token_id)) {
+                    $removed++;
+                }
+            }
+        }
+        return $removed;
+    }
+
+    /**
+     * Admin-AJAX: revoke a whole connected OAuth app by token-family id. Gated by
+     * nonce + manage_options exactly like cgpt_revoke_handler. Deletes BOTH the
+     * access and refresh tokens (and any rotations) so the app is fully
+     * disconnected. Admin UX only — NEVER on the MCP traffic path. No token
+     * plaintext is ever read or returned (only sha256 hashes are stored anyway).
+     */
+    public function oauth_revoke_handler() {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['error' => 'forbidden', 'message' => 'You do not have permission to do this.'], 403);
+        }
+        check_ajax_referer('connectmwp_oauth_manage');
+
+        $family = isset($_POST['family']) ? sanitize_text_field(wp_unslash($_POST['family'])) : '';
+        if ($family === '') {
+            wp_send_json_error(['message' => 'Missing connection id.'], 400);
+        }
+
+        $removed = $this->revoke_oauth_family($family);
+        if ($removed === 0) {
+            wp_send_json_error(['message' => 'That connection was already revoked or no longer exists.'], 404);
+        }
+
+        wp_send_json_success(['family' => $family, 'removed' => $removed]);
+    }
+
+    /**
      * Admin-AJAX: toggle the URL-embedded (path) token fallback on/off. Gated by
      * nonce + manage_options, exactly like the generate/revoke handlers. This is
      * the ONLY way to flip connectmwp_cgpt_allow_path_token, which is OFF by
@@ -6262,6 +6333,8 @@ class ConnectMWP_Agent {
             </script>
 
             <?php $this->render_cgpt_card(); ?>
+
+            <?php $this->render_oauth_connections_card(); ?>
         </div>
         <?php
     }
@@ -6648,6 +6721,216 @@ class ConnectMWP_Agent {
         })();
         </script>
         <?php
+    }
+
+    /**
+     * "Connected apps (OAuth)" settings card. Admin-only — render path is already
+     * inside render_settings_page() which hard-gates on manage_options. Lists the
+     * apps connected via the OAuth flow, ONE row per connection (= one token
+     * `family`: access + refresh + any rotations all share a family id), with the
+     * derived app name, bound user, scope, connect/last-used times, status, and a
+     * Revoke button that disconnects the whole family. Read/metadata only — no
+     * token plaintext is ever shown (only sha256 hashes are stored anyway). The
+     * single mutating call goes through the nonce + manage_options-gated
+     * connectmwp_oauth_revoke AJAX action. NOT on the MCP traffic path.
+     */
+    private function render_oauth_connections_card() {
+        // All OAuth token rows, grouped into connections by `family`. One
+        // connection = the access token + its refresh token + any later
+        // rotations, all sharing a single family id.
+        $tokens = $this->list_oauth_tokens();
+
+        $families = [];
+        foreach ($tokens as $token_id => $t) {
+            $family = (string) $t['family'];
+            if ($family === '') {
+                // A row with no family cannot be grouped/revoked-as-a-unit; skip
+                // it from the connection view (defensive — mint always sets one).
+                continue;
+            }
+            if (!isset($families[$family])) {
+                $families[$family] = [
+                    'family'         => $family,
+                    'bound_user_id'  => intval($t['bound_user_id']),
+                    'scope'          => (string) $t['scope'],
+                    'client_id'      => (string) $t['client_id'],
+                    'created'        => intval($t['created']),
+                    'last_used'      => intval($t['last_used']),
+                    'has_live_refresh' => false,
+                ];
+            }
+            $grp =& $families[$family];
+            // Earliest created across the family = when the app first connected.
+            $c = intval($t['created']);
+            if ($c > 0 && ($grp['created'] === 0 || $c < $grp['created'])) {
+                $grp['created'] = $c;
+            }
+            // Latest last_used across the family.
+            $lu = intval($t['last_used']);
+            if ($lu > $grp['last_used']) {
+                $grp['last_used'] = $lu;
+            }
+            // A connection is "Active" iff it still has an unexpired refresh
+            // token (the long-lived credential that keeps the app connected).
+            if ($t['type'] === 'refresh' && intval($t['expires']) > 0 && time() < intval($t['expires'])) {
+                $grp['has_live_refresh'] = true;
+            }
+            // Prefer a non-empty client_id / scope if the first-seen row lacked one.
+            if ($grp['client_id'] === '' && (string) $t['client_id'] !== '') {
+                $grp['client_id'] = (string) $t['client_id'];
+            }
+            if ($grp['scope'] === '' && (string) $t['scope'] !== '') {
+                $grp['scope'] = (string) $t['scope'];
+            }
+            unset($grp);
+        }
+
+        // Resolve bound-user display names in one batched query (no N+1).
+        $user_ids = array_values(array_unique(array_filter(array_map(function ($g) {
+            return intval($g['bound_user_id']);
+        }, $families))));
+        $user_map = [];
+        if (!empty($user_ids)) {
+            foreach (get_users(['include' => $user_ids]) as $u) {
+                $user_map[intval($u->ID)] = $u;
+            }
+        }
+
+        $rows = [];
+        foreach ($families as $g) {
+            $u = $user_map[intval($g['bound_user_id'])] ?? null;
+            $rows[] = [
+                'family'       => $g['family'],
+                'app'          => $this->oauth_app_display_name($g['client_id']),
+                'user_display' => $u ? ($u->display_name ?: $u->user_login) : 'Unknown user',
+                'user_login'   => $u ? $u->user_login : '',
+                'scope'        => $g['scope'],
+                'created'      => $this->format_oauth_timestamp($g['created']),
+                'last_used'    => $this->format_oauth_timestamp($g['last_used']),
+                'status'       => $g['has_live_refresh'] ? 'Active' : 'Expired',
+            ];
+        }
+        // Newest connection first (created string; YYYY-MM-DD HH:MM sorts lexicographically).
+        usort($rows, function ($a, $b) {
+            return strcmp($b['created'], $a['created']);
+        });
+        ?>
+        <section class="cmwp-card" id="cmwp-oauth-card">
+            <div class="cmwp-card-header">
+                <div>
+                    <h2 class="cmwp-card-title">🔗 Connected apps (OAuth)</h2>
+                    <p class="cmwp-card-sub">Apps that connected to <strong>this site</strong> through the OAuth sign-in flow. Each row is one connected app; revoking it disconnects that app completely (both its access and refresh tokens).</p>
+                </div>
+            </div>
+
+            <div id="cmwp-oauth-table-wrap" style="<?php echo empty($rows) ? 'display:none;' : ''; ?>margin-top:6px;">
+                <table class="cmwp-oauth-table" id="cmwp-oauth-table">
+                    <thead>
+                        <tr>
+                            <th>App</th><th>Bound user</th><th>Scope</th><th>Connected</th><th>Last used</th><th>Status</th><th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($rows as $r): ?>
+                            <tr data-family-row="<?php echo esc_attr($r['family']); ?>">
+                                <td><?php echo esc_html($r['app']); ?></td>
+                                <td><?php echo esc_html($r['user_display']); ?><?php echo $r['user_login'] !== '' ? ' <span style="color:#abb2b9;">(' . esc_html($r['user_login']) . ')</span>' : ''; ?></td>
+                                <td><?php echo esc_html($r['scope'] !== '' ? $r['scope'] : '—'); ?></td>
+                                <td><?php echo esc_html($r['created'] !== '' ? $r['created'] : '—'); ?></td>
+                                <td><?php echo esc_html($r['last_used'] !== '' ? $r['last_used'] : 'Never'); ?></td>
+                                <td><span class="cmwp-oauth-status cmwp-oauth-status-<?php echo $r['status'] === 'Active' ? 'active' : 'expired'; ?>"><?php echo esc_html($r['status']); ?></span></td>
+                                <td><button type="button" class="cmwp-btn-revoke cmwp-oauth-revoke" data-family="<?php echo esc_attr($r['family']); ?>" data-app="<?php echo esc_attr($r['app']); ?>">Revoke</button></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+                <p class="cmwp-tz-note">Times shown in the site's configured timezone (Settings → General → Timezone). Tokens themselves are never stored and cannot be shown — connections can only be revoked.</p>
+            </div>
+            <p id="cmwp-oauth-empty" class="cmwp-tz-note" style="<?php echo empty($rows) ? '' : 'display:none;'; ?>">No apps are connected via OAuth.</p>
+        </section>
+
+        <style>
+            .cmwp-oauth-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+            .cmwp-oauth-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: #7f8c8d; padding: 6px 10px; border-bottom: 1px solid #eef2f4; }
+            .cmwp-oauth-table td { padding: 9px 10px; border-bottom: 1px solid #f4f7f9; color: #34495e; vertical-align: middle; }
+            .cmwp-oauth-status { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 0.3px; padding: 2px 8px; border-radius: 999px; }
+            .cmwp-oauth-status-active { color: #16a085; background: #d8f1ea; }
+            .cmwp-oauth-status-expired { color: #7f8c8d; background: #ecf0f1; }
+        </style>
+
+        <script>
+        (function() {
+            const ajaxUrl = '<?php echo esc_js(admin_url('admin-ajax.php')); ?>';
+            const nonce = '<?php echo esc_js(wp_create_nonce('connectmwp_oauth_manage')); ?>';
+
+            const tableWrap = document.getElementById('cmwp-oauth-table-wrap');
+            const tableBody = document.querySelector('#cmwp-oauth-table tbody');
+            const emptyMsg  = document.getElementById('cmwp-oauth-empty');
+
+            if (!tableBody) return;
+
+            tableBody.addEventListener('click', async function(e) {
+                const btn = e.target.closest('.cmwp-oauth-revoke');
+                if (!btn) return;
+                const family = btn.getAttribute('data-family');
+                const app = btn.getAttribute('data-app') || 'this app';
+                if (!window.confirm('Disconnect "' + app + '"? It will immediately lose access to this site. This cannot be undone.')) return;
+                btn.disabled = true;
+                btn.textContent = 'Revoking…';
+                try {
+                    const body = new URLSearchParams({
+                        action: 'connectmwp_oauth_revoke',
+                        _wpnonce: nonce,
+                        family: family
+                    });
+                    const res = await fetch(ajaxUrl, {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: body.toString()
+                    });
+                    const data = await res.json();
+                    if (!res.ok || !data || !data.success) {
+                        const msg = (data && data.data && data.data.message) ? data.data.message : 'Could not revoke connection.';
+                        window.alert(msg);
+                        btn.disabled = false;
+                        btn.textContent = 'Revoke';
+                        return;
+                    }
+                    const row = tableBody.querySelector('tr[data-family-row="' + (window.CSS && CSS.escape ? CSS.escape(family) : family) + '"]');
+                    if (row) row.remove();
+                    if (tableBody.querySelectorAll('tr').length === 0) {
+                        if (tableWrap) tableWrap.style.display = 'none';
+                        if (emptyMsg) emptyMsg.style.display = '';
+                    }
+                } catch (err) {
+                    window.alert('Could not revoke connection.');
+                    btn.disabled = false;
+                    btn.textContent = 'Revoke';
+                }
+            });
+        })();
+        </script>
+        <?php
+    }
+
+    /**
+     * Derive a human-readable app name from a stored OAuth client_id. The
+     * client_id is typically a URL (dynamic-registration redirect/issuer), so we
+     * surface its host (e.g. "chatgpt.com"). No client_name is stored today, so
+     * the host is the honest, available identifier. Falls back to the raw
+     * client_id when the host can't be parsed, and to "Unknown app" when empty.
+     */
+    private function oauth_app_display_name($client_id) {
+        $client_id = (string) $client_id;
+        if ($client_id === '') {
+            return 'Unknown app';
+        }
+        $host = wp_parse_url($client_id, PHP_URL_HOST);
+        if (is_string($host) && $host !== '') {
+            return $host;
+        }
+        return $client_id;
     }
 }
 
