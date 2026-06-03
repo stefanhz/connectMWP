@@ -227,6 +227,38 @@ class ConnectMWP_Agent {
     const OAUTH_SPIKE_LOG_MAX    = 50;                            // [OAuth Phase 0 spike] keep last N entries
     const OAUTH_SPIKE_NONCE      = 'connectmwp_oauth_spike';      // [OAuth Phase 0 spike] admin-ajax nonce action
 
+    // ========================================================================
+    // [OAuth Phase 1] Real authorization endpoint constants.
+    //
+    // This is GENERIC OAuth 2.1 product code for ANY self-hosted WordPress site
+    // and ANY spec-compliant client (ChatGPT is merely the first). Everything is
+    // derived from home_url()/rest_url()/the request — never a hardcoded site or
+    // client. The /oauth/{token,register} stubs from Phase 0 remain in place;
+    // only GET/POST /oauth/authorize becomes real here.
+    // ========================================================================
+
+    // Scopes this site advertises + grants. SSOT for the authorize-time subset
+    // check and the consent copy. Must stay in agreement with the
+    // scopes_supported advertised in the discovery docs (oauth_spike_urls /
+    // the AS metadata) — single string scope today.
+    const OAUTH_SUPPORTED_SCOPES = ['connectmwp'];
+
+    // CIMD (client_id_metadata_document) fetch hardening.
+    const OAUTH_CIMD_MAX_BYTES   = 64 * 1024; // hard cap on a client metadata doc body
+    const OAUTH_CIMD_TIMEOUT     = 5;          // seconds; wp_remote_get timeout for the CIMD fetch
+    const OAUTH_CIMD_CACHE_TTL   = 600;        // default transient TTL (10 min) for a validated CIMD doc
+    const OAUTH_CIMD_CACHE_PREFIX = 'cmwp_oauth_cimd_'; // + sha256(url) => transient name
+
+    // Authorization-code store (own per-row + capped index DAL, mirrors the cgpt
+    // token DAL). ONLY the sha256 hash of a code is ever persisted; the plaintext
+    // code exists once (return of mint_oauth_code) and is never stored or logged.
+    const OAUTH_CODE_OPTION_PREFIX = 'connectmwp_oauth_code_'; // + bare hex suffix => per-code option name
+    const OAUTH_CODE_INDEX_OPTION  = 'connectmwp_oauth_code_index'; // array of code_id (hint, self-healing)
+    const OAUTH_CODE_ID_PREFIX     = 'cmwp_oauthc_';           // code_id prefix (internal row id, NOT the secret)
+    const OAUTH_CODE_SECRET_BYTES  = 32;                        // entropy of the auth-code secret (>= 32 random bytes)
+    const OAUTH_CODE_TTL_SECONDS   = 120;                       // auth code lifetime (single-use, short)
+    const MAX_OAUTH_CODES          = 200;                       // safety cap on live (mostly-expired) code rows
+
     /**
      * [OAuth Phase 0 spike] Param names whose VALUES must never be stored in the
      * log. We record that the param was present and its length, never the bytes.
@@ -501,27 +533,835 @@ class ConnectMWP_Agent {
     /** [OAuth Phase 0 spike] one-shot guard so the WWW-Authenticate filter is added once. */
     private $oauth_spike_www_auth_hooked = false;
 
+    // ========================================================================
+    // [OAuth Phase 1] Real GET/POST /oauth/authorize authorization endpoint.
+    //
+    // Replaces the Phase 0 stub. Validates the request fail-closed in a strict
+    // order (HTTPS -> response_type -> CIMD client -> EXACT redirect_uri match ->
+    // PKCE S256 -> resource == this /mcp -> scope subset -> admin gate), renders
+    // a consent screen with a bound-user picker, and on approval mints a
+    // single-use, short-TTL, hashed authorization code bound to the PKCE
+    // challenge. Phase 2's /oauth/token will consume that code.
+    //
+    // Self-authorizes (it is in the central_rest_auth signature-gate bypass and
+    // registered with permission_callback __return_true) because the auth here is
+    // the WP admin LOGIN SESSION + nonce, not an Ed25519 signature or bearer
+    // token. It NEVER touches verify_request_signature / verify_token_request /
+    // dispatch_action. The endpoint always renders HTML or issues a 302 redirect
+    // and exit()s; it never returns a WP_REST_Response.
+    // ========================================================================
+
     /**
-     * [OAuth Phase 0 spike] GET /oauth/authorize stub. Logs the hit, then renders
-     * a plain placeholder page. Deliberately does NOT redirect anywhere — we only
-     * want to observe that ChatGPT reached it and with what query params
-     * (client_id, redirect_uri, scope, response_type, code_challenge, etc.).
+     * [OAuth Phase 1] GET/POST /oauth/authorize. The real authorization endpoint.
+     *
+     * Routed for both GET (initial request + consent render) and POST (consent
+     * approve/deny). The route's permission_callback is __return_true and the
+     * route is exempt from the signature gate; this method performs ALL of its
+     * own auth (admin login session + WP nonce on the POST). Output is always an
+     * HTML page or a 302 redirect followed by exit().
      */
-    public function oauth_spike_authorize_handler($request) {
-        // [OAuth Phase 0 spike]
-        $this->oauth_spike_log_request('/' . self::API_NAMESPACE . '/oauth/authorize', 'GET', []);
-        $html = '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-            . '<meta name="viewport" content="width=device-width, initial-scale=1">'
-            . '<title>connectMWP OAuth</title></head><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;color:#1d2327">'
-            . '<h1>connectMWP OAuth (Phase 0 spike)</h1>'
-            . '<p>This authorization endpoint is not yet implemented. This is an observational build used to learn how OAuth clients discover and connect to this site.</p>'
-            . '</body></html>';
+    public function oauth_authorize_handler($request) {
+        $method = ($request instanceof WP_REST_Request) ? strtoupper($request->get_method()) : 'GET';
+
+        // Observability: keep logging the hit (redacted; never logs code/verifier).
+        $this->oauth_spike_log_request('/' . self::API_NAMESPACE . '/oauth/authorize', $method, []);
+
+        // (1) HTTPS required. Authorization codes and login sessions must never
+        // cross plaintext. Reuse the same transport check the rest of the plugin
+        // relies on (is_ssl plus forwarded-proto awareness via request_is_https).
+        if (!$this->oauth_request_is_https()) {
+            $this->oauth_render_error_page(
+                __('Insecure connection', 'connectmwp'),
+                __('This authorization endpoint requires HTTPS. Your connection is not secure, so the request was refused.', 'connectmwp'),
+                400
+            );
+        }
+
+        // Gather the OAuth params. On GET they live in the query string; on POST
+        // (the consent submission) we echo them back as hidden form fields, so
+        // read both via the merged param bag. We never trust POSTed params to
+        // weaken anything — every check below re-runs against them.
+        $params = $this->oauth_collect_authorize_params($request);
+
+        // (2) response_type MUST be exactly "code".
+        if ($params['response_type'] !== 'code') {
+            // We cannot yet trust a redirect_uri (CIMD not resolved), so render an
+            // error page rather than redirecting.
+            $this->oauth_render_error_page(
+                __('Unsupported response type', 'connectmwp'),
+                __('This server only supports the authorization-code flow (response_type=code).', 'connectmwp'),
+                400
+            );
+        }
+
+        // (3) Resolve the client via its CIMD document (SSRF-guarded fetch). On
+        // ANY failure we render an ERROR PAGE — we have no trusted redirect_uri to
+        // send the error to yet.
+        $client = $this->resolve_oauth_client($params['client_id']);
+        if (is_wp_error($client)) {
+            $this->oauth_render_error_page(
+                __('Unrecognized application', 'connectmwp'),
+                sprintf(
+                    /* translators: %s: reason the client could not be validated */
+                    __('The requesting application could not be verified: %s', 'connectmwp'),
+                    $client->get_error_message()
+                ),
+                400
+            );
+        }
+
+        // (4) redirect_uri MUST be an EXACT string match to one of the CIMD doc's
+        // registered redirect_uris. This is the open-redirect guard: only AFTER it
+        // passes may any subsequent error be delivered BY redirecting to this URI.
+        if ($params['redirect_uri'] === '' || !$this->oauth_redirect_uri_registered($params['redirect_uri'], $client['redirect_uris'])) {
+            $this->oauth_render_error_page(
+                __('Invalid redirect URI', 'connectmwp'),
+                __('The redirect address supplied does not match any address registered by this application. For your safety, the request was refused.', 'connectmwp'),
+                400
+            );
+        }
+        // From here on, $params['redirect_uri'] is TRUSTED and errors may redirect.
+
+        // (5) PKCE: code_challenge present AND method exactly S256. Reject plain
+        // and missing — downgrade protection.
+        if ($params['code_challenge'] === '' || $params['code_challenge_method'] !== 'S256') {
+            $this->oauth_redirect_error(
+                $params['redirect_uri'],
+                'invalid_request',
+                __('PKCE with code_challenge_method=S256 is required.', 'connectmwp'),
+                $params['state']
+            );
+        }
+
+        // (6) resource MUST equal this site's canonical /mcp URI (RFC 8707).
+        if (!$this->oauth_resource_matches($params['resource'])) {
+            $this->oauth_redirect_error(
+                $params['redirect_uri'],
+                'invalid_target',
+                __('The requested resource does not match this server.', 'connectmwp'),
+                $params['state']
+            );
+        }
+
+        // (7) scope: every requested scope must be in the advertised set. An empty
+        // scope defaults to the full advertised set (single scope today).
+        $requested_scopes = $this->oauth_parse_scope($params['scope']);
+        foreach ($requested_scopes as $s) {
+            if (!in_array($s, self::OAUTH_SUPPORTED_SCOPES, true)) {
+                $this->oauth_redirect_error(
+                    $params['redirect_uri'],
+                    'invalid_scope',
+                    __('One or more requested scopes are not supported by this server.', 'connectmwp'),
+                    $params['state']
+                );
+            }
+        }
+        $granted_scope = implode(' ', $requested_scopes);
+
+        // (9) Admin gate. The user driving the browser MUST be a logged-in admin.
+        if (!is_user_logged_in()) {
+            // Bounce through wp-login, returning to THIS authorize URL (all params
+            // preserved) so the flow resumes after login. wp_login_url escapes the
+            // redirect target for us.
+            $self_url = $this->oauth_self_authorize_url($params);
+            wp_safe_redirect(wp_login_url($self_url));
+            exit;
+        }
+        if (!current_user_can('manage_options')) {
+            // Logged in but not an admin — clear denial, no login loop.
+            $this->oauth_render_error_page(
+                __('Administrator required', 'connectmwp'),
+                __('Only site administrators can authorize a connector for this site. Please sign in with an administrator account and try again.', 'connectmwp'),
+                403
+            );
+        }
+
+        // ---- POST: consent submission (approve / deny) ----
+        if ($method === 'POST') {
+            // CSRF: verify the consent nonce. wp_verify_nonce is the right tool here
+            // (REST routes don't auto-enforce the cookie nonce on a public
+            // permission_callback). Re-check manage_options (already done above).
+            $nonce = isset($_POST['connectmwp_oauth_nonce']) ? sanitize_text_field(wp_unslash($_POST['connectmwp_oauth_nonce'])) : '';
+            if (!wp_verify_nonce($nonce, 'connectmwp_oauth_consent')) {
+                $this->oauth_render_error_page(
+                    __('Session expired', 'connectmwp'),
+                    __('Your authorization session expired or was invalid. Please start the connection again from your application.', 'connectmwp'),
+                    400
+                );
+            }
+            if (!current_user_can('manage_options')) {
+                $this->oauth_render_error_page(
+                    __('Administrator required', 'connectmwp'),
+                    __('Only site administrators can authorize a connector for this site.', 'connectmwp'),
+                    403
+                );
+            }
+
+            $decision = isset($_POST['connectmwp_oauth_decision']) ? sanitize_text_field(wp_unslash($_POST['connectmwp_oauth_decision'])) : '';
+
+            if ($decision === 'approve') {
+                // Determine the bound user from the picker. Must be an eligible
+                // (edit_posts-capable) user; fall back to the current admin if the
+                // submitted value is missing or ineligible (never silently grant a
+                // worse-or-unexpected binding — re-validate against capability).
+                $bound_user_id = isset($_POST['connectmwp_oauth_bound_user']) ? intval($_POST['connectmwp_oauth_bound_user']) : 0;
+                if ($bound_user_id <= 0 || !user_can($bound_user_id, 'edit_posts')) {
+                    $current_id = get_current_user_id();
+                    if (user_can($current_id, 'edit_posts')) {
+                        $bound_user_id = $current_id;
+                    } else {
+                        // Pathological: an admin with manage_options but not
+                        // edit_posts (custom role). Refuse rather than bind to a
+                        // user who can't perform the granted actions.
+                        $this->oauth_render_error_page(
+                            __('No eligible user', 'connectmwp'),
+                            __('No content-capable user was selected for this connection.', 'connectmwp'),
+                            400
+                        );
+                    }
+                }
+
+                // (11) Mint a single-use, short-TTL, hashed auth code bound to the
+                // PKCE challenge, the validated client_id + redirect_uri, the
+                // resource, the granted scope, and the selected bound user.
+                $code = $this->mint_oauth_code([
+                    'client_id'             => $params['client_id'],
+                    'redirect_uri'          => $params['redirect_uri'],
+                    'code_challenge'        => $params['code_challenge'],
+                    'code_challenge_method' => 'S256',
+                    'resource'              => $this->oauth_canonical_mcp_uri(),
+                    'bound_user_id'         => $bound_user_id,
+                    'scope'                 => $granted_scope,
+                ]);
+
+                if (is_wp_error($code) || !is_string($code) || $code === '') {
+                    $this->oauth_redirect_error(
+                        $params['redirect_uri'],
+                        'server_error',
+                        __('Could not issue an authorization code. Please try again.', 'connectmwp'),
+                        $params['state']
+                    );
+                }
+
+                // Success redirect: ?code=...&state=...&iss=<root>
+                $sep = (strpos($params['redirect_uri'], '?') === false) ? '?' : '&';
+                $url = $params['redirect_uri'] . $sep
+                    . 'code=' . rawurlencode($code)
+                    . ($params['state'] !== '' ? '&state=' . rawurlencode($params['state']) : '')
+                    . '&iss=' . rawurlencode($this->oauth_issuer());
+                $this->oauth_redirect_raw($url);
+            }
+
+            // Deny (or any non-approve decision): access_denied back to the client.
+            $this->oauth_redirect_error(
+                $params['redirect_uri'],
+                'access_denied',
+                __('The administrator declined to authorize this connection.', 'connectmwp'),
+                $params['state']
+            );
+        }
+
+        // ---- GET: render the consent screen ----
+        $this->oauth_render_consent_screen($client, $params, $requested_scopes);
+    }
+
+    /**
+     * [OAuth Phase 1] Collect + sanitize the authorize params from a request,
+     * reading the query bag on GET and (for POST consent) the echoed hidden
+     * fields. Returns a fixed-shape array of strings. No secrets are logged.
+     */
+    private function oauth_collect_authorize_params($request) {
+        $get = function ($key) use ($request) {
+            $v = '';
+            if ($request instanceof WP_REST_Request) {
+                $rv = $request->get_param($key);
+                if (is_scalar($rv)) {
+                    $v = (string) $rv;
+                }
+            }
+            // get_param already merges GET/POST/body for REST requests; fall back
+            // to the raw superglobals defensively (some hosts route oddly).
+            if ($v === '') {
+                if (isset($_GET[$key]) && is_scalar($_GET[$key])) {
+                    $v = (string) wp_unslash($_GET[$key]);
+                } elseif (isset($_POST[$key]) && is_scalar($_POST[$key])) {
+                    $v = (string) wp_unslash($_POST[$key]);
+                }
+            }
+            return $v;
+        };
+
+        return [
+            'response_type'         => trim($get('response_type')),
+            'client_id'             => trim($get('client_id')),
+            'redirect_uri'          => trim($get('redirect_uri')),
+            'scope'                 => trim($get('scope')),
+            'state'                 => $get('state'), // opaque; preserved verbatim (length-bounded on echo)
+            'code_challenge'        => trim($get('code_challenge')),
+            'code_challenge_method' => trim($get('code_challenge_method')),
+            'resource'              => trim($get('resource')),
+        ];
+    }
+
+    /**
+     * [OAuth Phase 1] Whether the inbound request arrived over HTTPS, accounting
+     * for a reverse proxy that terminates TLS and forwards X-Forwarded-Proto
+     * (common on managed hosts). Mirrors the plugin's transport expectation.
+     */
+    private function oauth_request_is_https() {
+        if (is_ssl()) {
+            return true;
+        }
+        if (isset($_SERVER['HTTP_X_FORWARDED_PROTO'])
+            && strtolower(trim((string) wp_unslash($_SERVER['HTTP_X_FORWARDED_PROTO']))) === 'https') {
+            return true;
+        }
+        return false;
+    }
+
+    /** [OAuth Phase 1] Issuer = site root (scheme+host[+port]), no trailing slash. */
+    private function oauth_issuer() {
+        return untrailingslashit(home_url());
+    }
+
+    /** [OAuth Phase 1] Canonical protected-resource URI for this site's /mcp. */
+    private function oauth_canonical_mcp_uri() {
+        return rest_url(self::API_NAMESPACE . '/mcp');
+    }
+
+    /**
+     * [OAuth Phase 1] Canonical comparison of a requested `resource` against this
+     * site's /mcp URI. Normalizes a trailing slash and is scheme/host
+     * case-insensitive (host only) so trivial formatting differences don't cause
+     * a false invalid_target, while the path stays exact.
+     */
+    private function oauth_resource_matches($resource) {
+        if (!is_string($resource) || $resource === '') {
+            return false;
+        }
+        $norm = function ($u) {
+            $u = untrailingslashit(trim($u));
+            $p = wp_parse_url($u);
+            if (!is_array($p) || empty($p['host'])) {
+                return strtolower($u);
+            }
+            $scheme = isset($p['scheme']) ? strtolower($p['scheme']) : 'https';
+            $host   = strtolower($p['host']);
+            $port   = isset($p['port']) ? ':' . $p['port'] : '';
+            $path   = isset($p['path']) ? $p['path'] : '';
+            return $scheme . '://' . $host . $port . $path;
+        };
+        return hash_equals($norm($this->oauth_canonical_mcp_uri()), $norm($resource));
+    }
+
+    /**
+     * [OAuth Phase 1] Parse an OAuth scope string into a unique list. An empty
+     * scope defaults to the full advertised set (single scope today).
+     */
+    private function oauth_parse_scope($scope) {
+        $scope = is_string($scope) ? trim($scope) : '';
+        if ($scope === '') {
+            return self::OAUTH_SUPPORTED_SCOPES;
+        }
+        $parts = preg_split('/\s+/', $scope);
+        $parts = array_values(array_unique(array_filter(array_map('strval', $parts), function ($s) {
+            return $s !== '';
+        })));
+        return $parts;
+    }
+
+    /**
+     * [OAuth Phase 1] EXACT-match a presented redirect_uri against the CIMD doc's
+     * registered redirect_uris. No normalization, no prefix match — byte-for-byte
+     * equality (constant-time) against each registered entry. This is the core
+     * open-redirect defense.
+     */
+    private function oauth_redirect_uri_registered($redirect_uri, array $registered) {
+        foreach ($registered as $entry) {
+            if (is_string($entry) && hash_equals($entry, $redirect_uri)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * [OAuth Phase 1] Rebuild this authorize endpoint's own URL with all OAuth
+     * params, used as the post-login return target. Built from rest_url() so it
+     * matches whatever this install answers on.
+     */
+    private function oauth_self_authorize_url(array $params) {
+        $base = rest_url(self::API_NAMESPACE . '/oauth/authorize');
+        $query = [
+            'response_type'         => $params['response_type'],
+            'client_id'             => $params['client_id'],
+            'redirect_uri'          => $params['redirect_uri'],
+            'scope'                 => $params['scope'],
+            'state'                 => $params['state'],
+            'code_challenge'        => $params['code_challenge'],
+            'code_challenge_method' => $params['code_challenge_method'],
+            'resource'              => $params['resource'],
+        ];
+        // add_query_arg() URL-encodes the values itself; pass them raw to avoid
+        // double-encoding. Empty values are dropped to keep the URL tidy (they
+        // re-default identically on the next pass).
+        $query = array_filter($query, function ($v) { return $v !== ''; });
+        return add_query_arg($query, $base);
+    }
+
+    /**
+     * [OAuth Phase 1] Redirect back to a (previously VALIDATED) redirect_uri with
+     * a standard OAuth error, the echoed state, and the iss parameter. Caller
+     * MUST have already confirmed $redirect_uri is registered. exit()s.
+     */
+    private function oauth_redirect_error($redirect_uri, $error, $description, $state) {
+        $sep = (strpos($redirect_uri, '?') === false) ? '?' : '&';
+        $url = $redirect_uri . $sep
+            . 'error=' . rawurlencode($error)
+            . '&error_description=' . rawurlencode($description)
+            . ($state !== '' ? '&state=' . rawurlencode($state) : '')
+            . '&iss=' . rawurlencode($this->oauth_issuer());
+        $this->oauth_redirect_raw($url);
+    }
+
+    /**
+     * [OAuth Phase 1] Emit a 302 to an absolute external URL and exit. We do NOT
+     * use wp_safe_redirect here because the target is an OAuth client's
+     * redirect_uri (a foreign host) that we have ALREADY validated by exact match
+     * against the CIMD-registered list — wp_safe_redirect's allowed-host filter
+     * would otherwise rewrite it to the admin dashboard. The exact-match check
+     * upstream is the safety boundary.
+     */
+    private function oauth_redirect_raw($url) {
+        if (!headers_sent()) {
+            status_header(302);
+            header('Location: ' . $url, true, 302);
+            header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+            header('Pragma: no-cache');
+        }
+        exit;
+    }
+
+    // ----------------------- [OAuth Phase 1] SSRF guard --------------------
+
+    /**
+     * [OAuth Phase 1] SSRF-hardened HTTPS GET, used ONLY for fetching a client's
+     * CIMD (client_id metadata) document. Defenses:
+     *   - require https:// (no http, no file://, no other schemes);
+     *   - resolve the host and REJECT if ANY resolved address is private /
+     *     loopback / link-local / unique-local / 0.0.0.0/8 / IPv4-mapped-IPv6;
+     *   - redirection => 0 (never follow a redirect, which could bounce to an
+     *     internal address);
+     *   - small timeout + response-size cap (limit_response_size).
+     *
+     * RESIDUAL RISK (DNS rebinding TOCTOU): we resolve + screen the host here,
+     * then WP_Http resolves it AGAIN when it opens the socket. A hostile DNS
+     * server could return a public IP to our gethostbynamel() probe and a private
+     * IP to the actual fetch. Fully closing this requires pinning the screened IP
+     * into the connection (e.g. CURLOPT_RESOLVE / a custom transport), which the
+     * WP HTTP API does not expose portably. Documented for the Phase 1 security
+     * review; the redirection=>0 + scheme/size caps reduce but do not eliminate
+     * it. A future hardening could pin the resolved IP via a curl 'resolve' opt.
+     *
+     * @param string $url
+     * @param int    $max_bytes
+     * @param int    $timeout
+     * @return string|WP_Error Body on success, WP_Error on any failure/violation.
+     */
+    private function oauth_safe_http_get($url, $max_bytes, $timeout) {
+        if (!is_string($url) || $url === '') {
+            return new WP_Error('cmwp_oauth_ssrf', __('Empty URL.', 'connectmwp'));
+        }
+
+        $parts = wp_parse_url($url);
+        if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
+            return new WP_Error('cmwp_oauth_ssrf', __('Malformed URL.', 'connectmwp'));
+        }
+        if (strtolower($parts['scheme']) !== 'https') {
+            return new WP_Error('cmwp_oauth_ssrf', __('Only https URLs are allowed.', 'connectmwp'));
+        }
+
+        $host = $parts['host'];
+
+        // If the host is a literal IP, screen it directly. Otherwise resolve it
+        // (A + AAAA) and screen every address.
+        $ips = [];
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            $ips[] = $host;
+        } else {
+            // IPv4 (and CNAME-followed) addresses.
+            $v4 = gethostbynamel($host);
+            if (is_array($v4)) {
+                $ips = array_merge($ips, $v4);
+            }
+            // IPv6 addresses, if the resolver is available.
+            if (function_exists('dns_get_record')) {
+                $aaaa = @dns_get_record($host, DNS_AAAA);
+                if (is_array($aaaa)) {
+                    foreach ($aaaa as $rec) {
+                        if (!empty($rec['ipv6'])) {
+                            $ips[] = $rec['ipv6'];
+                        }
+                    }
+                }
+            }
+            if (empty($ips)) {
+                return new WP_Error('cmwp_oauth_ssrf', __('Could not resolve the application host.', 'connectmwp'));
+            }
+        }
+
+        foreach ($ips as $ip) {
+            if (!$this->oauth_ip_is_public($ip)) {
+                return new WP_Error('cmwp_oauth_ssrf', __('The application host resolves to a non-public address and was refused.', 'connectmwp'));
+            }
+        }
+
+        $response = wp_remote_get($url, [
+            'timeout'             => intval($timeout),
+            'redirection'         => 0,                 // never follow redirects
+            'limit_response_size' => intval($max_bytes),
+            'sslverify'           => true,
+            'headers'             => ['Accept' => 'application/json'],
+            'user-agent'          => 'connectMWP/' . self::version() . ' (+OAuth CIMD fetch)',
+        ]);
+
+        if (is_wp_error($response)) {
+            return new WP_Error('cmwp_oauth_fetch', __('Could not reach the application metadata document.', 'connectmwp'));
+        }
+
+        $status = (int) wp_remote_retrieve_response_code($response);
+        if ($status !== 200) {
+            return new WP_Error('cmwp_oauth_fetch', sprintf(
+                /* translators: %d: HTTP status code */
+                __('The application metadata document returned HTTP %d.', 'connectmwp'),
+                $status
+            ));
+        }
+
+        $body = wp_remote_retrieve_body($response);
+        if (!is_string($body) || $body === '') {
+            return new WP_Error('cmwp_oauth_fetch', __('The application metadata document was empty.', 'connectmwp'));
+        }
+        if (strlen($body) > $max_bytes) {
+            return new WP_Error('cmwp_oauth_fetch', __('The application metadata document is too large.', 'connectmwp'));
+        }
+
+        return $body;
+    }
+
+    /**
+     * [OAuth Phase 1] True only if $ip is a routable, public address. Rejects
+     * private (RFC1918 / ULA), loopback, link-local, reserved ranges, 0.0.0.0/8,
+     * and IPv4-mapped-IPv6 (::ffff:a.b.c.d) so an attacker can't tunnel a private
+     * IPv4 through an IPv6 literal.
+     */
+    private function oauth_ip_is_public($ip) {
+        $ip = trim((string) $ip);
+        if ($ip === '' || !filter_var($ip, FILTER_VALIDATE_IP)) {
+            return false;
+        }
+
+        // Unwrap IPv4-mapped IPv6 (::ffff:127.0.0.1 etc.) and re-screen as IPv4.
+        if (stripos($ip, '::ffff:') === 0) {
+            $mapped = substr($ip, 7);
+            if (filter_var($mapped, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+                $ip = $mapped;
+            } else {
+                return false; // unusual mapped form — refuse
+            }
+        }
+
+        // Reject explicit 0.0.0.0/8 (filter_var's NO_RES_RANGE covers much of
+        // this, but be explicit about the "this host" range).
+        if (strpos($ip, '0.') === 0) {
+            return false;
+        }
+
+        // Core screen: must be a valid IP that is NOT in a private or reserved
+        // range. NO_PRIV_RANGE covers RFC1918 + ULA (fc00::/7); NO_RES_RANGE
+        // covers loopback, link-local (169.254/16, fe80::/10), 0.0.0.0/8,
+        // multicast, and other reserved blocks.
+        $ok = filter_var(
+            $ip,
+            FILTER_VALIDATE_IP,
+            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+        );
+        return $ok !== false;
+    }
+
+    // ------------------- [OAuth Phase 1] CIMD client resolution ------------
+
+    /**
+     * [OAuth Phase 1] Resolve + validate a CIMD client_id (which is itself an
+     * https URL pointing at a JSON client-metadata document). Returns a minimal,
+     * trusted descriptor or a WP_Error.
+     *
+     * Validation:
+     *   - client_id MUST be an https:// URL WITH a path component;
+     *   - the document is fetched via the SSRF-guarded GET;
+     *   - it MUST be JSON with client_id, client_name, redirect_uris[] present;
+     *   - the doc's own client_id MUST equal the requested client_id EXACTLY
+     *     (including any query string) — prevents a doc claiming to be a
+     *     different client;
+     *   - redirect_uris must be a non-empty list of strings.
+     * Validated docs are cached briefly in a transient keyed by sha256(url).
+     *
+     * @param string $client_id
+     * @return array{client_id:string,client_name:string,redirect_uris:array}|WP_Error
+     */
+    private function resolve_oauth_client($client_id) {
+        if (!is_string($client_id) || $client_id === '') {
+            return new WP_Error('cmwp_oauth_client', __('Missing client_id.', 'connectmwp'));
+        }
+
+        $parts = wp_parse_url($client_id);
+        if (!is_array($parts)
+            || empty($parts['scheme']) || strtolower($parts['scheme']) !== 'https'
+            || empty($parts['host'])
+            || empty($parts['path']) || $parts['path'] === '/') {
+            return new WP_Error('cmwp_oauth_client', __('client_id must be an https URL with a path to a metadata document.', 'connectmwp'));
+        }
+
+        // Cache lookup (validated docs only).
+        $cache_key = self::OAUTH_CIMD_CACHE_PREFIX . hash('sha256', $client_id);
+        $cached = get_transient($cache_key);
+        if (is_array($cached) && isset($cached['client_id'], $cached['client_name'], $cached['redirect_uris'])) {
+            return $cached;
+        }
+
+        $body = $this->oauth_safe_http_get($client_id, self::OAUTH_CIMD_MAX_BYTES, self::OAUTH_CIMD_TIMEOUT);
+        if (is_wp_error($body)) {
+            return $body;
+        }
+
+        $doc = json_decode($body, true);
+        if (!is_array($doc)) {
+            return new WP_Error('cmwp_oauth_client', __('The application metadata document is not valid JSON.', 'connectmwp'));
+        }
+
+        $doc_client_id = isset($doc['client_id']) && is_string($doc['client_id']) ? $doc['client_id'] : '';
+        $client_name   = isset($doc['client_name']) && is_string($doc['client_name']) ? $doc['client_name'] : '';
+        $redirect_uris = isset($doc['redirect_uris']) && is_array($doc['redirect_uris']) ? $doc['redirect_uris'] : null;
+
+        if ($doc_client_id === '' || $client_name === '' || $redirect_uris === null) {
+            return new WP_Error('cmwp_oauth_client', __('The application metadata document is missing required fields.', 'connectmwp'));
+        }
+
+        // The document's client_id MUST equal the requested client_id EXACTLY.
+        if (!hash_equals($client_id, $doc_client_id)) {
+            return new WP_Error('cmwp_oauth_client', __('The application metadata document does not match the requested client_id.', 'connectmwp'));
+        }
+
+        // redirect_uris: keep only well-formed https (or non-empty string) entries;
+        // require at least one.
+        $clean_uris = [];
+        foreach ($redirect_uris as $u) {
+            if (is_string($u) && $u !== '') {
+                $clean_uris[] = $u;
+            }
+        }
+        if (empty($clean_uris)) {
+            return new WP_Error('cmwp_oauth_client', __('The application registered no usable redirect URIs.', 'connectmwp'));
+        }
+
+        $result = [
+            'client_id'     => $doc_client_id,
+            'client_name'   => $client_name,
+            'redirect_uris' => $clean_uris,
+        ];
+
+        set_transient($cache_key, $result, self::OAUTH_CIMD_CACHE_TTL);
+        return $result;
+    }
+
+    // ------------------ [OAuth Phase 1] consent + error pages --------------
+
+    /**
+     * [OAuth Phase 1] Render a standalone, full-page consent screen and exit.
+     * Deliberately a self-contained HTML document (NOT wrapped via wp_iframe or
+     * the admin chrome) so third-party admin/plugin markup cannot interfere — the
+     * same standalone approach the pairing screen uses. Everything echoed is
+     * escaped. A WP nonce CSRF-protects the Approve/Deny POST back to this same
+     * endpoint.
+     *
+     * @param array $client           Validated CIMD descriptor.
+     * @param array $params           Collected authorize params (already validated).
+     * @param array $requested_scopes List of requested scope strings.
+     */
+    private function oauth_render_consent_screen(array $client, array $params, array $requested_scopes) {
+        $current_id = get_current_user_id();
+        $eligible = get_users([
+            'capability' => 'edit_posts',
+            'orderby'    => 'display_name',
+            'order'      => 'ASC',
+            'number'     => 200,
+        ]);
+
+        $site_name = html_entity_decode(get_bloginfo('name'), ENT_QUOTES, 'UTF-8');
+        $site_url  = home_url();
+        $redirect_host = '';
+        $rp = wp_parse_url($params['redirect_uri']);
+        if (is_array($rp) && !empty($rp['host'])) {
+            $redirect_host = $rp['host'];
+        }
+
+        // Plain-English scope description.
+        $scope_desc = $this->oauth_scope_plain_english($requested_scopes);
+
+        $nonce       = wp_create_nonce('connectmwp_oauth_consent');
+        $form_action = rest_url(self::API_NAMESPACE . '/oauth/authorize');
+
         if (!headers_sent()) {
             status_header(200);
             header('Content-Type: text/html; charset=utf-8');
             header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+            header('Pragma: no-cache');
+            header('X-Frame-Options: DENY'); // never allow this consent UI to be framed
         }
-        echo $html; // static literal, no user input echoed
+        ?>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title><?php echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['client_name'])); ?></title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f0f2f4; color: #1d2327; margin: 0; padding: 2rem 1rem; }
+  .cmwp-oauth-card { max-width: 30rem; margin: 0 auto; background: #fff; border: 1px solid #dbe5ed; border-radius: 12px; box-shadow: 0 6px 28px rgba(20,40,60,.08); padding: 28px 30px; }
+  .cmwp-oauth-card h1 { font-size: 20px; margin: 0 0 4px; }
+  .cmwp-oauth-sub { color: #5a6b78; font-size: 13.5px; margin: 0 0 20px; }
+  .cmwp-oauth-app { display: flex; align-items: center; gap: 10px; background: #f7fafc; border: 1px solid #eef2f4; border-radius: 8px; padding: 12px 14px; margin-bottom: 18px; }
+  .cmwp-oauth-app strong { font-size: 15px; }
+  .cmwp-oauth-rows { margin: 0 0 18px; padding: 0; list-style: none; }
+  .cmwp-oauth-rows li { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid #f1f4f6; font-size: 13.5px; }
+  .cmwp-oauth-rows li:last-child { border-bottom: 0; }
+  .cmwp-oauth-rows .lbl { color: #7f8c8d; }
+  .cmwp-oauth-rows .val { font-weight: 600; text-align: right; word-break: break-word; }
+  .cmwp-oauth-scope { background: #eef9f4; border: 1px solid #cfeee1; border-radius: 8px; padding: 12px 14px; font-size: 13px; color: #1c5c45; margin-bottom: 18px; line-height: 1.5; }
+  .cmwp-oauth-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 20px; }
+  .cmwp-oauth-field span { font-size: 12px; font-weight: 600; color: #7f8c8d; text-transform: uppercase; letter-spacing: .4px; }
+  .cmwp-oauth-field select { padding: 9px 11px; border: 1px solid #dbe5ed; border-radius: 7px; font-size: 14px; background: #fff; color: #2c3e50; }
+  .cmwp-oauth-actions { display: flex; gap: 10px; }
+  .cmwp-oauth-actions button { flex: 1; padding: 11px 14px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: 1px solid transparent; }
+  .cmwp-btn-approve { background: #16a085; color: #fff; }
+  .cmwp-btn-approve:hover { background: #138a72; }
+  .cmwp-btn-deny { background: #fff; color: #444; border-color: #d4dee6; }
+  .cmwp-btn-deny:hover { background: #f6f8fa; }
+  .cmwp-oauth-foot { margin-top: 18px; font-size: 11.5px; color: #93a1ab; line-height: 1.5; text-align: center; }
+  .cmwp-oauth-host { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+</style>
+</head>
+<body>
+  <div class="cmwp-oauth-card">
+    <h1><?php echo esc_html__('Authorize a connection', 'connectmwp'); ?></h1>
+    <p class="cmwp-oauth-sub"><?php echo esc_html__('An application is requesting access to publish on this site.', 'connectmwp'); ?></p>
+
+    <div class="cmwp-oauth-app">
+      <strong><?php echo esc_html($client['client_name']); ?></strong>
+    </div>
+
+    <ul class="cmwp-oauth-rows">
+      <li><span class="lbl"><?php echo esc_html__('Site', 'connectmwp'); ?></span><span class="val"><?php echo esc_html($site_name); ?><br><?php echo esc_html($site_url); ?></span></li>
+      <li><span class="lbl"><?php echo esc_html__('Will redirect to', 'connectmwp'); ?></span><span class="val cmwp-oauth-host"><?php echo esc_html($redirect_host !== '' ? $redirect_host : $params['redirect_uri']); ?></span></li>
+    </ul>
+
+    <div class="cmwp-oauth-scope">
+      <strong><?php echo esc_html__('This will grant:', 'connectmwp'); ?></strong><br>
+      <?php echo esc_html($scope_desc); ?>
+    </div>
+
+    <form method="post" action="<?php echo esc_url($form_action); ?>">
+      <label class="cmwp-oauth-field">
+        <span><?php echo esc_html__('Connect as', 'connectmwp'); ?></span>
+        <select name="connectmwp_oauth_bound_user">
+          <?php foreach ($eligible as $u):
+              $display = $u->display_name ?: $u->user_login; ?>
+            <option value="<?php echo intval($u->ID); ?>" <?php selected($u->ID, $current_id); ?>>
+              <?php echo esc_html($display . ' (' . $u->user_login . ')'); ?>
+            </option>
+          <?php endforeach; ?>
+        </select>
+      </label>
+
+      <input type="hidden" name="connectmwp_oauth_nonce" value="<?php echo esc_attr($nonce); ?>" />
+      <input type="hidden" name="response_type" value="<?php echo esc_attr($params['response_type']); ?>" />
+      <input type="hidden" name="client_id" value="<?php echo esc_attr($params['client_id']); ?>" />
+      <input type="hidden" name="redirect_uri" value="<?php echo esc_attr($params['redirect_uri']); ?>" />
+      <input type="hidden" name="scope" value="<?php echo esc_attr($params['scope']); ?>" />
+      <input type="hidden" name="state" value="<?php echo esc_attr($params['state']); ?>" />
+      <input type="hidden" name="code_challenge" value="<?php echo esc_attr($params['code_challenge']); ?>" />
+      <input type="hidden" name="code_challenge_method" value="<?php echo esc_attr($params['code_challenge_method']); ?>" />
+      <input type="hidden" name="resource" value="<?php echo esc_attr($params['resource']); ?>" />
+
+      <div class="cmwp-oauth-actions">
+        <button type="submit" class="cmwp-btn-deny" name="connectmwp_oauth_decision" value="deny"><?php echo esc_html__('Deny', 'connectmwp'); ?></button>
+        <button type="submit" class="cmwp-btn-approve" name="connectmwp_oauth_decision" value="approve"><?php echo esc_html__('Approve', 'connectmwp'); ?></button>
+      </div>
+    </form>
+
+    <p class="cmwp-oauth-foot"><?php echo esc_html(sprintf(__('Signed in as %s. Only site administrators can approve connections.', 'connectmwp'), wp_get_current_user()->user_login)); ?></p>
+  </div>
+</body>
+</html>
+        <?php
+        exit;
+    }
+
+    /**
+     * [OAuth Phase 1] Plain-English description of the granted scope(s). Single
+     * scope today; generic phrasing so it reads correctly for any future scope.
+     */
+    private function oauth_scope_plain_english(array $scopes) {
+        if (in_array('connectmwp', $scopes, true)) {
+            return __('Read & write posts, upload media, and manage categories and tags — acting as the user you choose below.', 'connectmwp');
+        }
+        // Fallback: list the raw scopes (escaped at the call site).
+        return sprintf(
+            /* translators: %s: space-separated scope list */
+            __('The following scopes: %s', 'connectmwp'),
+            implode(', ', $scopes)
+        );
+    }
+
+    /**
+     * [OAuth Phase 1] Render a standalone error page (used when we cannot trust a
+     * redirect_uri — pre-validation failures). Self-contained HTML, escaped,
+     * no admin chrome. exit()s.
+     */
+    private function oauth_render_error_page($title, $message, $status) {
+        if (!headers_sent()) {
+            status_header(intval($status));
+            header('Content-Type: text/html; charset=utf-8');
+            header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+            header('Pragma: no-cache');
+            header('X-Frame-Options: DENY');
+        }
+        ?>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title><?php echo esc_html($title); ?> — connectMWP</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f0f2f4; color: #1d2327; margin: 0; padding: 3rem 1rem; }
+  .cmwp-oauth-err { max-width: 28rem; margin: 0 auto; background: #fff; border: 1px solid #f3d6d6; border-left: 4px solid #d63638; border-radius: 10px; padding: 24px 28px; }
+  .cmwp-oauth-err h1 { font-size: 18px; margin: 0 0 8px; color: #a11; }
+  .cmwp-oauth-err p { font-size: 14px; line-height: 1.6; color: #444; margin: 0; }
+</style>
+</head>
+<body>
+  <div class="cmwp-oauth-err">
+    <h1><?php echo esc_html($title); ?></h1>
+    <p><?php echo esc_html($message); ?></p>
+  </div>
+</body>
+</html>
+        <?php
         exit;
     }
 
@@ -691,20 +1531,27 @@ class ConnectMWP_Agent {
             ]
         ]);
 
-        // [OAuth Phase 0 spike] Stub OAuth endpoints. These perform NO real auth
-        // and store nothing sensitive — they exist purely to (a) be advertised in
-        // the discovery docs and (b) record what ChatGPT sends when it reaches
-        // them. permission_callback is __return_true ONLY because these are
-        // inert observational stubs; they are explicitly exempted from the
-        // signature gate in central_rest_auth (see the [OAuth Phase 0 spike]
-        // bypass there) so they run instead of being 401'd first.
+        // [OAuth Phase 1] Real authorization endpoint (GET = request + consent
+        // render, POST = consent approve/deny). permission_callback is
+        // __return_true because this endpoint performs its OWN auth (admin LOGIN
+        // SESSION + WP nonce on the POST) rather than an Ed25519 signature or
+        // bearer token, and it is exempt from the signature gate in
+        // central_rest_auth. The handler always renders HTML or 302-redirects and
+        // exit()s — it never returns a WP_REST_Response. See oauth_authorize_handler.
         register_rest_route(self::API_NAMESPACE, '/oauth/authorize', [
             [
-                'methods'             => 'GET',
-                'callback'            => [$this, 'oauth_spike_authorize_handler'],
+                'methods'             => ['GET', 'POST'],
+                'callback'            => [$this, 'oauth_authorize_handler'],
                 'permission_callback' => '__return_true',
             ]
         ]);
+
+        // [OAuth Phase 0 spike] Remaining stub OAuth endpoints. These perform NO
+        // real auth and store nothing sensitive — they exist purely to (a) be
+        // advertised in the discovery docs and (b) record what a client sends.
+        // permission_callback is __return_true ONLY because these are inert
+        // observational stubs; they are explicitly exempted from the signature
+        // gate in central_rest_auth. Phase 2 replaces /oauth/token.
         register_rest_route(self::API_NAMESPACE, '/oauth/token', [
             [
                 'methods'             => 'POST',
@@ -750,11 +1597,14 @@ class ConnectMWP_Agent {
                 return $result; // token-authenticated path; permission_callback (verify_token_request) handles auth.
             }
 
-            // [OAuth Phase 0 spike] Exempt the stub /oauth/* endpoints from the
-            // signature gate so the spike handlers run (they self-authorize as
-            // __return_true and perform no real auth — observational only). The
-            // match is a TIGHT, exact list of the three spike routes; it does NOT
-            // loosen the /mcp match above. Remove this when the spike is replaced.
+            // Exempt the /oauth/* endpoints from the Ed25519 signature gate. The
+            // signature gate is the wrong auth model for these: /oauth/authorize
+            // [OAuth Phase 1] self-authorizes via the WP admin LOGIN SESSION + a
+            // nonce (a human in a browser, no signing key), and /oauth/token +
+            // /oauth/register [OAuth Phase 0 spike] are still inert stubs (Phase 2
+            // makes /token real, where it will auth via the PKCE code-verifier +
+            // single-use auth code, NOT a signature). The match is a TIGHT, exact
+            // list of the three routes; it does NOT loosen the /mcp match above.
             if ($route === '/' . self::API_NAMESPACE . '/oauth/authorize'
                 || $route === '/' . self::API_NAMESPACE . '/oauth/token'
                 || $route === '/' . self::API_NAMESPACE . '/oauth/register') {
@@ -1971,6 +2821,228 @@ class ConnectMWP_Agent {
         }
         $this->write_cgpt_token_index($ids);
         return $ids;
+    }
+
+    // ========================================================================
+    // [OAuth Phase 1] Authorization-code DAL.
+    //
+    // Mirrors the cgpt-token DAL: one option row per code, autoload `no`, plus a
+    // non-authoritative, self-healing index. ONLY the sha256 hash of the code is
+    // persisted — the plaintext code exists exactly once, as the return of
+    // mint_oauth_code(), and is never stored or logged. Codes are short-TTL
+    // (OAUTH_CODE_TTL_SECONDS) and SINGLE-USE: consume_oauth_code() looks up by
+    // hash in constant time and ATOMICALLY deletes the row before returning the
+    // grant, so a second exchange of the same code fails. Phase 2's /oauth/token
+    // calls consume_oauth_code().
+    // ========================================================================
+
+    /** [OAuth Phase 1] Map a code_id to its per-code option name. */
+    private function oauth_code_option_name($code_id) {
+        $code_id = (string) $code_id;
+        $strip = self::OAUTH_CODE_ID_PREFIX;
+        if (strpos($code_id, $strip) === 0) {
+            $suffix = substr($code_id, strlen($strip));
+        } else {
+            $suffix = substr(hash('sha256', $code_id), 0, 32);
+        }
+        return self::OAUTH_CODE_OPTION_PREFIX . $suffix;
+    }
+
+    /**
+     * [OAuth Phase 1] Normalize a stored auth-code grant to its canonical shape.
+     * SSOT for the on-WP auth-code schema. Only `code_hash` (sha256 hex) is the
+     * credential material; the rest is the bound grant.
+     */
+    private function normalize_oauth_code_record($raw) {
+        if (!is_array($raw)) {
+            $raw = [];
+        }
+        return [
+            'code_hash'             => isset($raw['code_hash']) ? (string) $raw['code_hash'] : '',
+            'client_id'             => isset($raw['client_id']) ? (string) $raw['client_id'] : '',
+            'redirect_uri'          => isset($raw['redirect_uri']) ? (string) $raw['redirect_uri'] : '',
+            'code_challenge'        => isset($raw['code_challenge']) ? (string) $raw['code_challenge'] : '',
+            'code_challenge_method' => isset($raw['code_challenge_method']) ? (string) $raw['code_challenge_method'] : '',
+            'resource'              => isset($raw['resource']) ? (string) $raw['resource'] : '',
+            'bound_user_id'         => isset($raw['bound_user_id']) ? intval($raw['bound_user_id']) : 0,
+            'scope'                 => isset($raw['scope']) ? (string) $raw['scope'] : '',
+            'created'               => isset($raw['created']) ? intval($raw['created']) : 0,
+        ];
+    }
+
+    /**
+     * [OAuth Phase 1] Mint a single-use authorization code bound to a grant.
+     * Generates a code_id (row name) plus a SEPARATE high-entropy secret, returns
+     * the opaque plaintext code (the only time it exists), and persists ONLY its
+     * sha256 hash plus the grant fields with a creation timestamp. Returns the
+     * plaintext code string on success, or WP_Error on a storage failure (so the
+     * caller never hands back a code that cannot be consumed).
+     *
+     * @param array $grant client_id, redirect_uri, code_challenge,
+     *                     code_challenge_method, resource, bound_user_id, scope.
+     * @return string|WP_Error
+     */
+    private function mint_oauth_code(array $grant) {
+        $code_id = self::OAUTH_CODE_ID_PREFIX . bin2hex(random_bytes(8));
+        $secret  = bin2hex(random_bytes(self::OAUTH_CODE_SECRET_BYTES));
+        // Opaque code returned to the client. Prefixed so it's recognizable, but
+        // the prefix carries no authority — the secret is the entropy.
+        $plaintext = self::OAUTH_CODE_ID_PREFIX . $secret;
+
+        // Soft cap on the number of live code rows (mostly expired). If we are at
+        // the cap, opportunistically prune expired rows before refusing.
+        $this->oauth_prune_expired_codes();
+
+        $record = $this->normalize_oauth_code_record([
+            'code_hash'             => hash('sha256', $plaintext),
+            'client_id'             => isset($grant['client_id']) ? (string) $grant['client_id'] : '',
+            'redirect_uri'          => isset($grant['redirect_uri']) ? (string) $grant['redirect_uri'] : '',
+            'code_challenge'        => isset($grant['code_challenge']) ? (string) $grant['code_challenge'] : '',
+            'code_challenge_method' => isset($grant['code_challenge_method']) ? (string) $grant['code_challenge_method'] : '',
+            'resource'              => isset($grant['resource']) ? (string) $grant['resource'] : '',
+            'bound_user_id'         => isset($grant['bound_user_id']) ? intval($grant['bound_user_id']) : 0,
+            'scope'                 => isset($grant['scope']) ? (string) $grant['scope'] : '',
+            'created'               => time(),
+        ]);
+
+        // Atomic per-code create. add_option returns false on id collision or a
+        // transient DB failure — in either case the row was NOT stored, so do not
+        // index it and do not hand back a code that will never resolve.
+        $stored = add_option($this->oauth_code_option_name($code_id), $record, '', 'no');
+        if (!$stored) {
+            return new WP_Error('cmwp_oauth_code_store', __('Could not store the authorization code.', 'connectmwp'));
+        }
+        $this->oauth_code_index_add($code_id);
+
+        return $plaintext;
+    }
+
+    /**
+     * [OAuth Phase 1] Consume a presented plaintext authorization code: validate
+     * its structure, find the row by sha256 hash in constant time, ATOMICALLY
+     * delete it (single-use), enforce the TTL, and return the bound grant. A
+     * second call with the same code returns false because the row is gone.
+     * Phase 2's token endpoint is the only intended caller.
+     *
+     * @param string $code
+     * @return array|false The normalized grant on success, false otherwise.
+     */
+    private function consume_oauth_code($code) {
+        if (!is_string($code) || $code === '') {
+            return false;
+        }
+        if (strpos($code, self::OAUTH_CODE_ID_PREFIX) !== 0) {
+            return false;
+        }
+        $expected_len = strlen(self::OAUTH_CODE_ID_PREFIX) + (self::OAUTH_CODE_SECRET_BYTES * 2);
+        if (strlen($code) !== $expected_len) {
+            return false;
+        }
+        $candidate_hash = hash('sha256', $code);
+
+        $index = get_option(self::OAUTH_CODE_INDEX_OPTION, []);
+        if (!is_array($index)) {
+            return false;
+        }
+
+        foreach ($index as $code_id) {
+            $row = get_option($this->oauth_code_option_name($code_id), null);
+            if (!is_array($row)) {
+                continue;
+            }
+            $record = $this->normalize_oauth_code_record($row);
+            $stored_hash = $record['code_hash'];
+            if (strlen($stored_hash) !== 64 || !hash_equals($stored_hash, $candidate_hash)) {
+                continue;
+            }
+
+            // Match. ATOMIC single-use: delete BEFORE any further use. delete_option
+            // returns true only for the worker that actually removed the row, so a
+            // concurrent double-exchange yields at most one success.
+            $deleted = delete_option($this->oauth_code_option_name($code_id));
+            $this->oauth_code_index_remove($code_id);
+            if (!$deleted) {
+                return false; // lost the race — treat as already consumed
+            }
+
+            // TTL enforcement AFTER consumption (the code is now spent either way).
+            if ($record['created'] <= 0 || (time() - $record['created']) > self::OAUTH_CODE_TTL_SECONDS) {
+                return false; // expired
+            }
+
+            return $record;
+        }
+
+        return false;
+    }
+
+    /** [OAuth Phase 1] Append a code_id to the index (bounded optimistic retry). */
+    private function oauth_code_index_add($code_id) {
+        for ($i = 0; $i < self::KEY_INDEX_MAX_RETRY; $i++) {
+            $index = get_option(self::OAUTH_CODE_INDEX_OPTION, []);
+            if (!is_array($index)) {
+                $index = [];
+            }
+            if (in_array($code_id, $index, true)) {
+                return true;
+            }
+            $next = $index;
+            $next[] = $code_id;
+            if (update_option(self::OAUTH_CODE_INDEX_OPTION, $next, 'no')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** [OAuth Phase 1] Remove a code_id from the index (bounded optimistic retry). */
+    private function oauth_code_index_remove($code_id) {
+        for ($i = 0; $i < self::KEY_INDEX_MAX_RETRY; $i++) {
+            $index = get_option(self::OAUTH_CODE_INDEX_OPTION, []);
+            if (!is_array($index)) {
+                return true;
+            }
+            if (!in_array($code_id, $index, true)) {
+                return true;
+            }
+            $next = array_values(array_filter($index, function ($id) use ($code_id) {
+                return $id !== $code_id;
+            }));
+            if (update_option(self::OAUTH_CODE_INDEX_OPTION, $next, 'no')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * [OAuth Phase 1] Best-effort prune of expired auth-code rows. Keeps the
+     * store from accumulating dead rows (codes are TTL'd and single-use, but a
+     * never-exchanged code would otherwise linger). Cheap: iterates the index,
+     * which is small. Self-heals dead index entries as it goes.
+     */
+    private function oauth_prune_expired_codes() {
+        $index = get_option(self::OAUTH_CODE_INDEX_OPTION, []);
+        if (!is_array($index) || empty($index)) {
+            return;
+        }
+        $now = time();
+        $alive = [];
+        foreach ($index as $code_id) {
+            $row = get_option($this->oauth_code_option_name($code_id), null);
+            if (!is_array($row)) {
+                continue; // already gone — drop from index
+            }
+            $rec = $this->normalize_oauth_code_record($row);
+            if ($rec['created'] <= 0 || ($now - $rec['created']) > self::OAUTH_CODE_TTL_SECONDS) {
+                delete_option($this->oauth_code_option_name($code_id));
+                continue;
+            }
+            $alive[] = $code_id;
+        }
+        if (count($alive) !== count($index)) {
+            update_option(self::OAUTH_CODE_INDEX_OPTION, array_values(array_unique($alive)), 'no');
+        }
     }
 
     /**
@@ -4352,8 +5424,22 @@ class ConnectMWP_Agent {
         <div class="cmwp-card" style="margin-top:2rem;border:1px solid #c3c4c7;border-radius:8px;padding:1.25rem;background:#fff">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
                 <h2 style="margin:0">🧪 OAuth Spike Log <span style="font-size:.7em;background:#dba617;color:#1d2327;padding:.1em .5em;border-radius:4px;vertical-align:middle">PHASE 0</span></h2>
-                <button type="button" class="button" id="cmwp-oauth-spike-clear" <?php disabled($count === 0); ?>>Clear log</button>
+                <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+                    <button type="button" class="button" id="cmwp-oauth-spike-copy" <?php disabled($count === 0); ?>><?php echo esc_html__('Copy log', 'connectmwp'); ?></button>
+                    <button type="button" class="button" id="cmwp-oauth-spike-clear" <?php disabled($count === 0); ?>><?php echo esc_html__('Clear log', 'connectmwp'); ?></button>
+                </div>
             </div>
+            <style>
+                /* [OAuth Phase 1 panel fix] Keep the Path (and other code) columns
+                   readable: monospace, no per-character wrapping, horizontal scroll
+                   when a value is long instead of stacking one char per line. */
+                #cmwp-oauth-spike-table { table-layout: auto; }
+                #cmwp-oauth-spike-table td, #cmwp-oauth-spike-table th { vertical-align: top; }
+                #cmwp-oauth-spike-table td.cmwp-oauth-path { white-space: nowrap; word-break: normal; overflow-wrap: normal; max-width: 28rem; overflow-x: auto; }
+                #cmwp-oauth-spike-table td.cmwp-oauth-path code,
+                #cmwp-oauth-spike-table code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: nowrap; }
+                #cmwp-oauth-spike-table td.cmwp-oauth-kv { max-width: 22rem; overflow-x: auto; }
+            </style>
             <p style="color:#646970;margin:.5em 0 1em">
                 <?php echo esc_html__('Observational capture of discovery / OAuth requests (e.g. from ChatGPT). Secret values are redacted; only the last 50 entries are kept. Newest first.', 'connectmwp'); ?>
             </p>
@@ -4361,7 +5447,8 @@ class ConnectMWP_Agent {
             <?php if ($count === 0): ?>
                 <p style="color:#646970"><em><?php echo esc_html__('No requests captured yet. Add a ChatGPT connector in OAuth mode pointing at this site, then refresh this page.', 'connectmwp'); ?></em></p>
             <?php else: ?>
-                <table class="widefat striped" style="margin-top:.5em">
+                <div style="overflow-x:auto">
+                <table class="widefat striped" id="cmwp-oauth-spike-table" style="margin-top:.5em">
                     <thead>
                         <tr>
                             <th style="width:9.5rem"><?php echo esc_html__('Time', 'connectmwp'); ?></th>
@@ -4377,35 +5464,74 @@ class ConnectMWP_Agent {
                             <tr>
                                 <td><code><?php echo esc_html($e['time'] ?? ''); ?></code></td>
                                 <td><code><?php echo esc_html($e['method'] ?? ''); ?></code></td>
-                                <td style="word-break:break-all"><code><?php echo esc_html($e['path'] ?? ''); ?></code></td>
-                                <td><?php echo $this->oauth_spike_render_kv($e['query'] ?? []); // escaped inside ?></td>
-                                <td><?php echo $this->oauth_spike_render_kv($e['body'] ?? []); // escaped inside ?></td>
-                                <td><?php echo $this->oauth_spike_render_kv($e['headers'] ?? []); // escaped inside ?></td>
+                                <td class="cmwp-oauth-path"><code><?php echo esc_html($e['path'] ?? ''); ?></code></td>
+                                <td class="cmwp-oauth-kv"><?php echo $this->oauth_spike_render_kv($e['query'] ?? []); // escaped inside ?></td>
+                                <td class="cmwp-oauth-kv"><?php echo $this->oauth_spike_render_kv($e['body'] ?? []); // escaped inside ?></td>
+                                <td class="cmwp-oauth-kv"><?php echo $this->oauth_spike_render_kv($e['headers'] ?? []); // escaped inside ?></td>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>
                 </table>
+                </div>
             <?php endif; ?>
         </div>
         <script>
         (function () {
             var btn = document.getElementById('cmwp-oauth-spike-clear');
-            if (!btn) { return; }
-            btn.addEventListener('click', function () {
-                if (!window.confirm('Clear the OAuth spike log?')) { return; }
-                btn.disabled = true;
-                var body = new URLSearchParams();
-                body.set('action', 'connectmwp_oauth_spike_clear');
-                body.set('_wpnonce', <?php echo wp_json_encode($nonce); ?>);
-                fetch(<?php echo wp_json_encode($ajax); ?>, {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: body.toString()
-                }).then(function (r) { return r.json(); })
-                  .then(function () { window.location.reload(); })
-                  .catch(function () { btn.disabled = false; window.alert('Could not clear the log.'); });
-            });
+            if (btn) {
+                btn.addEventListener('click', function () {
+                    if (!window.confirm('Clear the OAuth spike log?')) { return; }
+                    btn.disabled = true;
+                    var body = new URLSearchParams();
+                    body.set('action', 'connectmwp_oauth_spike_clear');
+                    body.set('_wpnonce', <?php echo wp_json_encode($nonce); ?>);
+                    fetch(<?php echo wp_json_encode($ajax); ?>, {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: body.toString()
+                    }).then(function (r) { return r.json(); })
+                      .then(function () { window.location.reload(); })
+                      .catch(function () { btn.disabled = false; window.alert('Could not clear the log.'); });
+                });
+            }
+
+            // [OAuth Phase 1 panel fix] One-click "Copy log". The entries are
+            // already redacted server-side (no secret values), so copying the
+            // whole structured log to the clipboard is safe. Uses the async
+            // Clipboard API with a hidden-textarea + execCommand fallback for
+            // non-secure contexts / older browsers.
+            var copyBtn = document.getElementById('cmwp-oauth-spike-copy');
+            if (copyBtn) {
+                var logJson = <?php echo wp_json_encode(wp_json_encode($entries, JSON_PRETTY_PRINT)); ?>;
+                copyBtn.addEventListener('click', function () {
+                    var done = function () {
+                        var prev = copyBtn.textContent;
+                        copyBtn.textContent = 'Copied!';
+                        setTimeout(function () { copyBtn.textContent = prev; }, 1500);
+                    };
+                    var fallback = function () {
+                        try {
+                            var ta = document.createElement('textarea');
+                            ta.value = logJson;
+                            ta.style.position = 'fixed';
+                            ta.style.opacity = '0';
+                            document.body.appendChild(ta);
+                            ta.focus(); ta.select();
+                            document.execCommand('copy');
+                            document.body.removeChild(ta);
+                            done();
+                        } catch (e) {
+                            window.alert('Could not copy the log automatically.');
+                        }
+                    };
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(logJson).then(done).catch(fallback);
+                    } else {
+                        fallback();
+                    }
+                });
+            }
         })();
         </script>
         <?php
