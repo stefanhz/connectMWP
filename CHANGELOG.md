@@ -4,6 +4,38 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-06-02 — v2.1.3 (in-development build, NOT a stable release)
+
+This is an **in-development (pre-release) build**, not a stable release. It fixes the OAuth consent login loop and lands the OAuth **token endpoint (Phase 2)** — with this, the end-to-end ChatGPT OAuth flow is functionally complete (consent → code → token → authenticated `/mcp` calls). The Ed25519 signature path and the per-site header-token (`cgpt`) path are untouched.
+
+### Fixed
+
+- **connectmwp-agent — OAuth login loop.** The `/oauth/authorize` consent screen is now served as a **cookie-native front-end page** (`/connectmwp-oauth/authorize`) instead of a REST route. REST cookie auth requires a nonce that a third-party OAuth redirect can't supply, so WordPress treated a logged-in admin as logged-out and bounced them back to the login form forever. Standard cookie auth now recognizes the admin. The Authorization-Server-metadata `authorization_endpoint` was repointed accordingly. (`connectmwp-agent/connectmwp-agent.php`)
+
+### Added
+
+- **connectmwp-agent — real token endpoint `POST /oauth/token` (OAuth Phase 2).**
+  - **authorization-code + PKCE(S256) exchange** and **refresh-token grant with rotation**.
+  - **New access/refresh token DAL** — tokens are opaque, stored sha256-hashed (never plaintext), with ~1h access / 30d refresh lifetimes, bound to audience + scope.
+  - **`/mcp` now accepts OAuth `cmwp_oat_` access tokens** (audience / expiry / scope enforced) in addition to the existing `cmwp_cgpt_` API tokens — both via `Authorization: Bearer`, routed through the same capability engine.
+  (`connectmwp-agent/connectmwp-agent.php`)
+
+### Hardened (per adversarial review)
+
+- **Token-request `resource` is cross-checked against the grant's bound resource** (RFC 8707) — a mismatched audience is rejected.
+- **Refresh scope-widening is rejected BEFORE the token is consumed** (peek-then-rotate) — a rejected refresh no longer destroys the session.
+- **Per-IP rate limit on `/oauth/token`.**
+- **Distinct `connectmwp_oauth_*` resource-server error codes** for precise client/diagnostic feedback.
+  (`connectmwp-agent/connectmwp-agent.php`)
+
+### Not yet implemented
+
+- **Phase 3:** admin grant-management UI, docs/UI client matrix, and removal of the Phase-0 spike stubs.
+
+### Unchanged
+
+- The Ed25519 request-signature path and the per-site header-token (`cgpt`) auth path are unchanged.
+
 ## 2026-06-02 — v2.1.2 (in-development build, NOT a stable release)
 
 This is an **in-development (pre-release) build**, not a stable release. It promotes the OAuth spike (Phase 0, observational) into a real, security-hardened **Phase 1 authorization endpoint**, versioned so the build is referenceable and gets its own CHANGELOG line. The flow stops at authorization-code issuance — the token endpoint (Phase 2) is not built yet, so no client can complete an OAuth exchange. The existing Ed25519 signature path and per-site header-token path are untouched.
