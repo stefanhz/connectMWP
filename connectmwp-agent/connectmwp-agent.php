@@ -99,6 +99,16 @@ class ConnectMWP_Agent {
     const CGPT_AUTH_MAX_FAILURES   = 10;   // failed-resolve attempts per IP before lockout
     const CGPT_AUTH_LOCKOUT_SECONDS = 600; // lockout / failure-count window (10 min)
 
+    // [OAuth Phase 2] /oauth/token per-IP failure limiter (M-rate). Mirrors the
+    // cgpt verifier limiter: only FAILED grants count, successful exchanges are
+    // never penalized. Defense-in-depth/DoS — the 256-bit token entropy already
+    // makes brute force infeasible, but the limiter caps abusive request volume.
+    // Hashed-IP key (cmwp_oauth_token_limit_<md5(ip)>), same budget/window
+    // constants spirit as the cgpt limiter but declared separately so the two
+    // credential classes can be tuned independently.
+    const OAUTH_TOKEN_MAX_FAILURES    = 20;  // failed grant attempts per IP before lockout
+    const OAUTH_TOKEN_LOCKOUT_SECONDS = 600; // lockout / failure-count window (10 min)
+
     // Wire-format length of an enrollment code: bin2hex(random_bytes(16)) yields
     // exactly 32 lowercase hex chars (see generate_enrollment_code()). Declared
     // once so the mint side and the structural validator cannot drift (T041).
@@ -937,33 +947,55 @@ class ConnectMWP_Agent {
     }
 
     /**
+     * [OAuth Phase 2] SSOT normalization for RFC 8707 resource-indicator
+     * comparison. Returns a canonical comparison string, or NULL if the input is
+     * not a usable bare URI. Normalization: trim, drop a trailing slash,
+     * lowercase scheme + host (path stays case-exact), preserve port. RFC 8707:
+     * the resource indicator must be a bare URI — a query string or fragment is
+     * rejected (returns NULL) rather than silently stripped. Both the canonical
+     * /mcp check (oauth_resource_matches) and the grant cross-check
+     * (oauth_token_grant_authorization_code, I-1) MUST go through this so the two
+     * comparisons can never drift.
+     *
+     * @return string|null Canonical compare form, or null for a non-comparable
+     *                     value (empty, non-string, or carrying query/fragment).
+     */
+    private function oauth_normalize_resource_for_compare($resource) {
+        if (!is_string($resource) || $resource === '') {
+            return null;
+        }
+        if (strpos($resource, '?') !== false || strpos($resource, '#') !== false) {
+            return null;
+        }
+        $u = untrailingslashit(trim($resource));
+        $p = wp_parse_url($u);
+        if (!is_array($p) || empty($p['host'])) {
+            return strtolower($u);
+        }
+        $scheme = isset($p['scheme']) ? strtolower($p['scheme']) : 'https';
+        $host   = strtolower($p['host']);
+        $port   = isset($p['port']) ? ':' . $p['port'] : '';
+        $path   = isset($p['path']) ? $p['path'] : '';
+        return $scheme . '://' . $host . $port . $path;
+    }
+
+    /**
      * [OAuth Phase 1] Canonical comparison of a requested `resource` against this
      * site's /mcp URI. Normalizes a trailing slash and is scheme/host
      * case-insensitive (host only) so trivial formatting differences don't cause
-     * a false invalid_target, while the path stays exact.
+     * a false invalid_target, while the path stays exact. Shares
+     * oauth_normalize_resource_for_compare with the grant cross-check (I-1).
      */
     private function oauth_resource_matches($resource) {
-        if (!is_string($resource) || $resource === '') {
+        $candidate = $this->oauth_normalize_resource_for_compare($resource);
+        if ($candidate === null) {
             return false;
         }
-        // RFC 8707: the resource indicator must be a bare URI — no query string and
-        // no fragment. Reject (non-match) rather than silently stripping them.
-        if (strpos($resource, '?') !== false || strpos($resource, '#') !== false) {
+        $canonical = $this->oauth_normalize_resource_for_compare($this->oauth_canonical_mcp_uri());
+        if ($canonical === null) {
             return false;
         }
-        $norm = function ($u) {
-            $u = untrailingslashit(trim($u));
-            $p = wp_parse_url($u);
-            if (!is_array($p) || empty($p['host'])) {
-                return strtolower($u);
-            }
-            $scheme = isset($p['scheme']) ? strtolower($p['scheme']) : 'https';
-            $host   = strtolower($p['host']);
-            $port   = isset($p['port']) ? ':' . $p['port'] : '';
-            $path   = isset($p['path']) ? $p['path'] : '';
-            return $scheme . '://' . $host . $port . $path;
-        };
-        return hash_equals($norm($this->oauth_canonical_mcp_uri()), $norm($resource));
+        return hash_equals($canonical, $candidate);
     }
 
     /**
@@ -971,6 +1003,12 @@ class ConnectMWP_Agent {
      * scope defaults to the full advertised set (single scope today).
      */
     private function oauth_parse_scope($scope) {
+        // INVARIANT (Minor 5): an empty/absent scope is treated as the full
+        // advertised set (`connectmwp`) EVERYWHERE — at mint, at refresh no-widen
+        // comparison, and at the /mcp scope gate. Because both sides of every
+        // subset check pass through this same expansion, an empty stored scope and
+        // an empty requested scope both normalize to ['connectmwp'], so the
+        // no-widen guard can never be fooled by an empty string.
         $scope = is_string($scope) ? trim($scope) : '';
         if ($scope === '') {
             return self::OAUTH_SUPPORTED_SCOPES;
@@ -1534,6 +1572,24 @@ class ConnectMWP_Agent {
             return $this->oauth_token_error('invalid_request', __('HTTPS is required for the token endpoint.', 'connectmwp'));
         }
 
+        // M-rate: per-IP failure limiter, mirroring the /mcp cgpt verifier limiter.
+        // Only FAILED grants are counted (a successful exchange never increments),
+        // so a legitimate client refreshing on schedule is never throttled. The IP
+        // is hashed into the key so no raw PII lands in an option name. This is
+        // defense-in-depth/DoS — token entropy already defeats brute force.
+        $ip = $this->get_client_ip();
+        $limit_key = 'cmwp_oauth_token_limit_' . md5($ip);
+        $failures  = intval(get_transient($limit_key));
+        if ($failures >= self::OAUTH_TOKEN_MAX_FAILURES) {
+            $response = new WP_REST_Response([
+                'error'             => 'temporarily_unavailable',
+                'error_description' => __('Too many failed token requests from this IP. Please try again later.', 'connectmwp'),
+            ], 429);
+            $response->header('Cache-Control', 'no-store');
+            $response->header('Pragma', 'no-cache');
+            return $response;
+        }
+
         // OAuth token requests are application/x-www-form-urlencoded. WP_REST_Request
         // parses that into body params. We deliberately read body params (NOT JSON)
         // so a JSON-bodied request simply yields no grant_type → invalid_request.
@@ -1549,17 +1605,36 @@ class ConnectMWP_Agent {
 
         $grant_type = $param('grant_type');
         if ($grant_type === '') {
-            return $this->oauth_token_error('invalid_request', __('Missing grant_type.', 'connectmwp'));
+            return $this->oauth_token_count_failure($limit_key, $failures,
+                $this->oauth_token_error('invalid_request', __('Missing grant_type.', 'connectmwp')));
         }
 
         if ($grant_type === 'authorization_code') {
-            return $this->oauth_token_grant_authorization_code($param);
+            return $this->oauth_token_count_failure($limit_key, $failures,
+                $this->oauth_token_grant_authorization_code($param));
         }
         if ($grant_type === 'refresh_token') {
-            return $this->oauth_token_grant_refresh($param);
+            return $this->oauth_token_count_failure($limit_key, $failures,
+                $this->oauth_token_grant_refresh($param));
         }
 
-        return $this->oauth_token_error('unsupported_grant_type', __('Unsupported grant_type.', 'connectmwp'));
+        return $this->oauth_token_count_failure($limit_key, $failures,
+            $this->oauth_token_error('unsupported_grant_type', __('Unsupported grant_type.', 'connectmwp')));
+    }
+
+    /**
+     * [OAuth Phase 2] M-rate helper: increment the per-IP /oauth/token failure
+     * counter when a grant produced an error response (HTTP >= 400), and leave a
+     * successful exchange untouched. Returns $response unchanged so callers can
+     * `return $this->oauth_token_count_failure(...)` inline. Best-effort transient
+     * (not strictly atomic) — acceptable for a volume throttle on a 256-bit secret.
+     */
+    private function oauth_token_count_failure($limit_key, $failures, $response) {
+        $status = ($response instanceof WP_REST_Response) ? intval($response->get_status()) : 400;
+        if ($status >= 400) {
+            set_transient($limit_key, $failures + 1, self::OAUTH_TOKEN_LOCKOUT_SECONDS);
+        }
+        return $response;
     }
 
     /**
@@ -1601,11 +1676,27 @@ class ConnectMWP_Agent {
             return $this->oauth_token_error('invalid_grant', __('redirect_uri does not match the authorization code.', 'connectmwp'));
         }
 
-        // If the client sends `resource`, it must match the grant's bound resource
-        // (the canonical /mcp URI). Absent `resource` is tolerated — the grant
-        // already pins the audience. A PRESENT but mismatching resource is rejected.
-        if ($resource !== '' && !$this->oauth_resource_matches($resource)) {
-            return $this->oauth_token_error('invalid_target', __('resource does not match the authorized audience.', 'connectmwp'));
+        // If the client sends `resource`, it must match the grant's bound resource.
+        // Absent `resource` is tolerated — the grant already pins the audience. A
+        // PRESENT but mismatching resource is rejected. TWO independent checks
+        // (RFC 8707):
+        //   (a) the presented resource must equal this site's canonical /mcp URI;
+        //   (b) the presented resource must equal the resource BOUND TO THE GRANT
+        //       (the resource the authorization code was issued against).
+        // Today (a) and (b) are equal, but binding the token request's resource to
+        // the grant's stored resource is the architecturally-required check — it
+        // stays correct across a site migration or a `rest_url` filter change that
+        // would shift the live canonical URI away from a still-valid grant.
+        if ($resource !== '') {
+            if (!$this->oauth_resource_matches($resource)) {
+                return $this->oauth_token_error('invalid_target', __('resource does not match the authorized audience.', 'connectmwp'));
+            }
+            $grant_resource = isset($grant['resource']) ? (string) $grant['resource'] : '';
+            $presented_norm = $this->oauth_normalize_resource_for_compare($resource);
+            $grant_norm     = $this->oauth_normalize_resource_for_compare($grant_resource);
+            if ($presented_norm === null || $grant_norm === null || !hash_equals($grant_norm, $presented_norm)) {
+                return $this->oauth_token_error('invalid_target', __('resource does not match the resource bound to the authorization code.', 'connectmwp'));
+            }
         }
 
         // PKCE proof (S256 only — the authorize endpoint requires S256 and stores
@@ -1646,34 +1737,57 @@ class ConnectMWP_Agent {
             return $this->oauth_token_error('invalid_request', __('Missing refresh_token.', 'connectmwp'));
         }
 
-        // Pre-rotation no-widen guard for `resource`: if the client supplies one it
-        // must be the same audience the refresh token is bound to. We validate the
-        // requested resource against THIS site's canonical /mcp URI (the only
-        // audience this site issues), so a request naming a different audience is
-        // rejected before we spend (rotate) the refresh token.
-        if ($req_resource !== '' && !$this->oauth_resource_matches($req_resource)) {
-            return $this->oauth_token_error('invalid_target', __('resource does not match the token audience.', 'connectmwp'));
-        }
-
-        $tokens = $this->rotate_oauth_refresh_token($refresh_token);
-        if ($tokens === false) {
+        // I-2: PEEK before ROTATE. The no-widen scope/audience checks must run
+        // against the stored record BEFORE we consume (rotate) the refresh token —
+        // otherwise an innocent/mistaken widen request would permanently destroy a
+        // client's working refresh token (rotate atomically deletes it). The peek
+        // is read-only: single-use is still guaranteed solely by rotate's atomic
+        // delete (a concurrent double-rotate: only one delete wins, the other
+        // fails closed). Scope/audience on the new pair still come verbatim from
+        // the stored record and are never widened.
+        $peek = $this->peek_oauth_refresh_token($refresh_token);
+        if ($peek === false) {
             return $this->oauth_token_error('invalid_grant', __('Refresh token is invalid, expired, or already used.', 'connectmwp'));
         }
+        $stored = $peek['record'];
 
-        // No-widen scope guard: the rotated pair carries the original scope. If the
-        // client asked for a scope, it may only be a SUBSET of the granted scope.
-        // (Single-scope today, but enforce generally so a future multi-scope world
-        // can't widen.) On a widen attempt we reject — note the new pair has
-        // already been issued, but it is bound to the ORIGINAL (narrower) scope, so
-        // no privilege escalation occurred; we simply refuse to confirm the wider
-        // request. The just-issued pair will expire/prune on its own.
+        // No-widen guard for `resource` (audience). If the client supplies one it
+        // must (a) match THIS site's canonical /mcp URI and (b) equal the audience
+        // the refresh token is bound to. Rejected WITHOUT consuming the token.
+        if ($req_resource !== '') {
+            if (!$this->oauth_resource_matches($req_resource)) {
+                return $this->oauth_token_error('invalid_target', __('resource does not match the token audience.', 'connectmwp'));
+            }
+            $req_norm    = $this->oauth_normalize_resource_for_compare($req_resource);
+            $stored_aud  = isset($stored['audience']) ? (string) $stored['audience'] : '';
+            $stored_norm = $this->oauth_normalize_resource_for_compare($stored_aud);
+            if ($req_norm === null || $stored_norm === null || !hash_equals($stored_norm, $req_norm)) {
+                return $this->oauth_token_error('invalid_target', __('resource does not match the token audience.', 'connectmwp'));
+            }
+        }
+
+        // No-widen scope guard: if the client asked for a scope, it may only be a
+        // SUBSET of the granted scope. (Single-scope today, but enforce generally
+        // so a future multi-scope world can't widen.) Rejected WITHOUT consuming
+        // the token — checked against the PEEKED stored record, not the rotated
+        // output.
         if ($req_scope !== '') {
-            $granted = $this->oauth_parse_scope(isset($tokens['scope']) ? $tokens['scope'] : '');
+            $granted = $this->oauth_parse_scope(isset($stored['scope']) ? (string) $stored['scope'] : '');
             $asked   = $this->oauth_parse_scope($req_scope);
             $extra   = array_diff($asked, $granted);
             if (!empty($extra)) {
                 return $this->oauth_token_error('invalid_scope', __('Requested scope exceeds the originally granted scope.', 'connectmwp'));
             }
+        }
+
+        // All no-widen checks passed — NOW consume + reissue atomically. The race
+        // between peek and rotate is benign: rotate's atomic delete still wins-once
+        // (a concurrent rotate of the same token gets one success, the other false
+        // -> invalid_grant). Scope/audience on the new pair come verbatim from the
+        // stored record (never widened).
+        $tokens = $this->rotate_oauth_refresh_token($refresh_token);
+        if ($tokens === false) {
+            return $this->oauth_token_error('invalid_grant', __('Refresh token is invalid, expired, or already used.', 'connectmwp'));
         }
 
         return $this->oauth_token_success($tokens);
@@ -2003,6 +2117,10 @@ class ConnectMWP_Agent {
                 return 'Too many failed token attempts from this IP. Please try again later.';
             case 'connectmwp_cgpt_unbound_token':
                 return 'ChatGPT API token is not bound to a valid user; regenerate it from the connectMWP settings page.';
+            case 'connectmwp_oauth_invalid_token':
+                return 'OAuth access token is invalid, expired, or not valid for this resource.';
+            case 'connectmwp_oauth_unbound_token':
+                return 'OAuth access token is not bound to a valid user; re-authorize from your AI client.';
             default:
                 return 'Unauthorized request signature verification failed.';
         }
@@ -2442,12 +2560,12 @@ class ConnectMWP_Agent {
                 // Invalid / expired / wrong-type (e.g. a refresh token presented at
                 // /mcp). Count against the IP limiter and 401.
                 set_transient($limit_key, $failures + 1, self::CGPT_AUTH_LOCKOUT_SECONDS);
-                $this->verification_error_code = 'connectmwp_cgpt_invalid_token';
+                $this->verification_error_code = 'connectmwp_oauth_invalid_token';
                 $this->cgpt_token_verified = false;
                 $this->oauth_spike_emit_www_authenticate();
                 return new WP_Error(
-                    'connectmwp_cgpt_invalid_token',
-                    $this->describe_verification_error('connectmwp_cgpt_invalid_token'),
+                    'connectmwp_oauth_invalid_token',
+                    $this->describe_verification_error('connectmwp_oauth_invalid_token'),
                     array('status' => 401)
                 );
             }
@@ -2459,12 +2577,12 @@ class ConnectMWP_Agent {
             // resource server must never be accepted here (cross-RS token reuse).
             if (!$this->oauth_resource_matches((string) $record['audience'])) {
                 set_transient($limit_key, $failures + 1, self::CGPT_AUTH_LOCKOUT_SECONDS);
-                $this->verification_error_code = 'connectmwp_cgpt_invalid_token';
+                $this->verification_error_code = 'connectmwp_oauth_invalid_token';
                 $this->cgpt_token_verified = false;
                 $this->oauth_spike_emit_www_authenticate();
                 return new WP_Error(
-                    'connectmwp_cgpt_invalid_token',
-                    $this->describe_verification_error('connectmwp_cgpt_invalid_token'),
+                    'connectmwp_oauth_invalid_token',
+                    $this->describe_verification_error('connectmwp_oauth_invalid_token'),
                     array('status' => 401)
                 );
             }
@@ -2473,23 +2591,23 @@ class ConnectMWP_Agent {
             $scopes = $this->oauth_parse_scope((string) $record['scope']);
             if (!in_array('connectmwp', $scopes, true)) {
                 set_transient($limit_key, $failures + 1, self::CGPT_AUTH_LOCKOUT_SECONDS);
-                $this->verification_error_code = 'connectmwp_cgpt_invalid_token';
+                $this->verification_error_code = 'connectmwp_oauth_invalid_token';
                 $this->cgpt_token_verified = false;
                 $this->oauth_spike_emit_www_authenticate();
                 return new WP_Error(
-                    'connectmwp_cgpt_invalid_token',
-                    $this->describe_verification_error('connectmwp_cgpt_invalid_token'),
+                    'connectmwp_oauth_invalid_token',
+                    $this->describe_verification_error('connectmwp_oauth_invalid_token'),
                     array('status' => 401)
                 );
             }
 
             // Fail-closed: a token bound to no valid user is misconfigured.
             if ((int) ($record['bound_user_id'] ?? 0) <= 0) {
-                $this->verification_error_code = 'connectmwp_cgpt_unbound_token';
+                $this->verification_error_code = 'connectmwp_oauth_unbound_token';
                 $this->cgpt_token_verified = false;
                 return new WP_Error(
-                    'connectmwp_cgpt_unbound_token',
-                    $this->describe_verification_error('connectmwp_cgpt_unbound_token'),
+                    'connectmwp_oauth_unbound_token',
+                    $this->describe_verification_error('connectmwp_oauth_unbound_token'),
                     array('status' => 403)
                 );
             }
@@ -2565,11 +2683,13 @@ class ConnectMWP_Agent {
         switch ($code) {
             case 'connectmwp_cgpt_missing_token':
             case 'connectmwp_cgpt_invalid_token':
+            case 'connectmwp_oauth_invalid_token':
                 return 401;
             case 'connectmwp_cgpt_rate_limited':
                 return 429;
             case 'connectmwp_cgpt_insecure_transport':
             case 'connectmwp_cgpt_unbound_token':
+            case 'connectmwp_oauth_unbound_token':
             default:
                 return 403;
         }
@@ -3698,6 +3818,60 @@ class ConnectMWP_Agent {
             }
             if ($record['expires'] <= 0 || time() >= $record['expires']) {
                 return false; // expired
+            }
+            return [
+                'token_id' => $token_id,
+                'record'   => $record,
+            ];
+        }
+
+        return false;
+    }
+
+    /**
+     * [OAuth Phase 2] NON-consuming peek of a presented refresh token (I-2).
+     * Resolves the plaintext to its stored record and validates prefix/length,
+     * type ('refresh'), and expiry — but does NOT delete the row. Used by the
+     * token endpoint to gate the no-widen scope/audience check BEFORE spending
+     * (rotating) the token, so an innocent/mistaken widen request can no longer
+     * permanently destroy a client's refresh token. Single-use is still enforced
+     * solely by rotate_oauth_refresh_token's atomic delete; this peek must never
+     * mutate state. Returns ['token_id'=>..., 'record'=>...] or false.
+     */
+    private function peek_oauth_refresh_token($plaintext) {
+        if (!is_string($plaintext) || $plaintext === '') {
+            return false;
+        }
+        if (strpos($plaintext, self::OAUTH_REFRESH_TOKEN_PREFIX) !== 0) {
+            return false;
+        }
+        $expected_len = strlen(self::OAUTH_REFRESH_TOKEN_PREFIX) + (self::OAUTH_TOKEN_SECRET_BYTES * 2);
+        if (strlen($plaintext) !== $expected_len) {
+            return false;
+        }
+        $candidate_hash = hash('sha256', $plaintext);
+
+        $index = get_option(self::OAUTH_TOKEN_INDEX_OPTION, []);
+        if (!is_array($index)) {
+            return false;
+        }
+
+        foreach ($index as $token_id) {
+            $record = $this->get_oauth_token($token_id);
+            if ($record === false) {
+                continue;
+            }
+            $stored_hash = $record['token_hash'];
+            if (strlen($stored_hash) !== 64 || !hash_equals($stored_hash, $candidate_hash)) {
+                continue;
+            }
+            // Matched a row. It MUST be a refresh token and unexpired. (No delete —
+            // this is a read-only peek; rotate enforces single-use.)
+            if ($record['type'] !== 'refresh') {
+                return false;
+            }
+            if ($record['expires'] <= 0 || time() >= $record['expires']) {
+                return false; // expired refresh token
             }
             return [
                 'token_id' => $token_id,
