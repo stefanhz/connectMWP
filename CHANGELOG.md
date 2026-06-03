@@ -4,6 +4,49 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2026-06-02 — v2.1.2 (in-development build, NOT a stable release)
+
+This is an **in-development (pre-release) build**, not a stable release. It promotes the OAuth spike (Phase 0, observational) into a real, security-hardened **Phase 1 authorization endpoint**, versioned so the build is referenceable and gets its own CHANGELOG line. The flow stops at authorization-code issuance — the token endpoint (Phase 2) is not built yet, so no client can complete an OAuth exchange. The existing Ed25519 signature path and per-site header-token path are untouched.
+
+### Added
+
+- **connectmwp-agent — real `/oauth/authorize` endpoint (OAuth Phase 1).** Replaces the observational stub with a working authorization-code issuer. Key properties:
+  - **CIMD client validation behind an SSRF guard.** Client metadata is fetched over **https only**; private, loopback, link-local, and IPv4-mapped addresses are blocked, and redirects are not followed.
+  - **Admin-only consent.** The consent screen is login-gated to `manage_options`, with a bound-user selector so the admin chooses which WP user the future credential will act as.
+  - **PKCE S256 required** — no `plain`, no missing challenge.
+  - **RFC 8707 `resource`/audience binding** to this site's `/mcp` URI.
+  - **Single-use, short-TTL (~120s) authorization codes**, stored hashed (never in plaintext).
+  - **`iss` on every redirect** and **exact `redirect_uri` matching** (open-redirect protection).
+  (`connectmwp-agent/connectmwp-agent.php`)
+
+### Hardened (per adversarial review)
+
+- **Admin gate runs BEFORE the outbound CIMD fetch** — an unauthenticated caller can no longer trigger the SSRF-guarded fetch at all.
+- **`X-Forwarded-Proto` is only trusted behind a declared trusted proxy** — otherwise the request's own scheme is authoritative.
+- **Pending-code cap enforced** to bound stored authorization-code state.
+- **`http://` `redirect_uri`s rejected** (https-only redirect targets).
+- **`state` length cap** and **`code_challenge` format validation**.
+- **Security headers on the OAuth pages** — `Referrer-Policy`, a Content-Security-Policy, and `X-Content-Type-Options`.
+  (`connectmwp-agent/connectmwp-agent.php`)
+
+### Changed
+
+- **connectmwp-agent — OAuth spike-log admin panel readability fix.** The redacted request log no longer renders one character per line, and a **"Copy log"** button was added. (`connectmwp-agent/connectmwp-agent.php`)
+
+### Not yet implemented
+
+- **The token endpoint (Phase 2).** `/oauth/token` is still a stub, so the OAuth flow stops at authorization-code issuance and no client can complete a token exchange yet.
+
+### Unchanged
+
+- **Existing auth paths are untouched.** The Ed25519 signature path (Claude/Cursor) and the per-site header-token path (ChatGPT) work exactly as before. OAuth Phase 1 is additive; it does not gate, replace, or alter any existing authentication.
+
+### Bumped
+
+- All three components → 2.1.2 (lockstep). Plugin re-packaged (both zip locations, sha-identical).
+
+---
+
 ## 2026-06-02 — v2.1.1 (in-development build, NOT a stable release)
 
 This is an **in-development (pre-release) build**, not a stable release — it captures the "OAuth Phase 0 spike" work that was sitting on `main` mislabeled as the prior stable `2.1.0`. It is versioned only so the build is referenceable and gets its own CHANGELOG line. (Intended label was the pre-release `2.2.0-dev.1`, but the version tooling rejects non-`X.Y.Z` strings, so it landed as plain `2.1.1`; the convention will be revisited.)
