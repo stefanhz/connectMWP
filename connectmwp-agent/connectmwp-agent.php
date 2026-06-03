@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP
  * Plugin URI: https://connectmwp.com
  * Description: Securely let your own local AI client (Claude, Cursor) publish to this WordPress site over a signed, session-less Ed25519 connection — no login, no central server.
- * Version: 2.1.3
+ * Version: 2.1.4
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Stefan Heinz, 2morrow.ai
@@ -1363,9 +1363,15 @@ class ConnectMWP_Agent {
         $site_name = html_entity_decode(get_bloginfo('name'), ENT_QUOTES, 'UTF-8');
         $site_url  = home_url();
         $redirect_host = '';
+        $redirect_origin = '';
         $rp = wp_parse_url($params['redirect_uri']);
         if (is_array($rp) && !empty($rp['host'])) {
             $redirect_host = $rp['host'];
+            if (!empty($rp['scheme'])) {
+                // scheme://host[:port] of the (already CIMD-exact-matched, trusted)
+                // client redirect_uri — needed in the CSP form-action below.
+                $redirect_origin = $rp['scheme'] . '://' . $rp['host'] . (isset($rp['port']) ? ':' . intval($rp['port']) : '');
+            }
         }
 
         // Plain-English scope description.
@@ -1382,9 +1388,15 @@ class ConnectMWP_Agent {
             header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
             header('Pragma: no-cache');
             header('X-Frame-Options: DENY'); // never allow this consent UI to be framed
-            // Self-contained page: no scripts, only inline styles, form posts to
-            // self. Lock everything else down.
-            header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'");
+            // Self-contained page: no scripts, only inline styles. form-action must
+            // allow BOTH 'self' (the consent POST target) AND the validated client
+            // redirect_uri origin — CSP form-action ALSO governs the 302 that
+            // FOLLOWS the form POST, so without the client origin the browser
+            // silently blocks the post-approval redirect to the client and the
+            // consent screen appears to "do nothing". redirect_uri is already
+            // exact-matched against the CIMD doc by this point, so its origin is trusted.
+            $csp_form_action = "'self'" . ($redirect_origin !== '' ? ' ' . $redirect_origin : '');
+            header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action " . $csp_form_action . ";");
             header('X-Content-Type-Options: nosniff');
         }
         ?>

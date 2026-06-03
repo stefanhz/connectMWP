@@ -4,6 +4,14 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2.1.4 — 2026-06-02 (in-development build, NOT a stable release)
+
+This is an **in-development (pre-release) build**, not a stable release.
+
+### Fixed
+
+- **connectmwp-agent — OAuth consent "Approve" did nothing.** The consent page's Content-Security-Policy `form-action 'self'` also governs the redirect that follows the form POST, so the browser silently blocked the post-approval 302 to the client (e.g. ChatGPT). The CSP now also allows the validated (CIMD-exact-matched) client redirect_uri origin, so approval completes the OAuth redirect. No other behavior changed. (`connectmwp-agent/connectmwp-agent.php`)
+
 ## 2026-06-02 — v2.1.3 (in-development build, NOT a stable release)
 
 This is an **in-development (pre-release) build**, not a stable release. It fixes the OAuth consent login loop and lands the OAuth **token endpoint (Phase 2)** — with this, the end-to-end ChatGPT OAuth flow is functionally complete (consent → code → token → authenticated `/mcp` calls). The Ed25519 signature path and the per-site header-token (`cgpt`) path are untouched.
