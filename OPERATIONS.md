@@ -1,8 +1,8 @@
 # connectMWP — Operations Runbook
 
-> **Verified against:** connectMWP **v2.1.0** (all three components, lockstep).
+> **Verified against:** connectMWP **v2.2.0** (all three components, lockstep).
 > **Last reviewed:** 2026-06-02.
-> **Re-verify when:** the MCP CLI surface changes (`add-site`/`remove-site`/`set-default`/`list-sites` flags), the plugin auth flow changes, the release/publish process changes, the `connectmwp_trust_proxy` / `CONNECTMWP_TRUST_PROXY` trusted-proxy setting changes, the ChatGPT token flow (`/mcp` endpoint, settings card, per-site cap) changes, or component versions drift out of lockstep.
+> **Re-verify when:** the MCP CLI surface changes (`add-site`/`remove-site`/`set-default`/`list-sites` flags), the plugin auth flow changes, the release/publish process changes, the `connectmwp_trust_proxy` / `CONNECTMWP_TRUST_PROXY` trusted-proxy setting changes, the API-token flow (`/mcp` endpoint, settings card, per-site cap) changes, the ChatGPT OAuth flow (`/connectmwp-oauth/authorize`, `/oauth/token`, the Connected-apps card) changes, or component versions drift out of lockstep.
 
 Project-internal operational guide. **Not user-facing** — for that, see `README.md`.
 This file is the Stefan-and-Claude reference for the recurring operational moves:
@@ -18,7 +18,8 @@ pairing sites, re-pairing after a key revoke, and shipping a new npm release.
 6. [Local Node↔PHP interop verification (signing-canonical proof)](#6-local-nodephp-interop-verification-signing-canonical-proof)
 7. [Local error-sanitization verification (T138)](#7-local-error-sanitization-verification-t138)
 8. [Security hardening — edge rate-limiting & trusted proxy](#8-security-hardening--edge-rate-limiting--trusted-proxy)
-9. [Connect ChatGPT to a site (token flow, v2.1.0+)](#9-connect-chatgpt-to-a-site-token-flow-v210)
+9. [Connect Antigravity / Gemini CLI / other remote clients (API token)](#9-connect-antigravity--gemini-cli--other-remote-clients-api-token)
+10. [Connect ChatGPT via OAuth (v2.2.0+)](#10-connect-chatgpt-via-oauth-v220)
 
 ---
 
@@ -495,69 +496,120 @@ limiter. When in doubt, leave it OFF and rely on the edge rate-limit in §8.1.
 
 ---
 
-## 9. Connect ChatGPT to a site (token flow, v2.1.0+)
+## 9. Connect Antigravity / Gemini CLI / other remote clients (API token)
 
-ChatGPT connects to a site over the plugin-hosted remote MCP endpoint
-(`POST {site}/wp-json/connectmwp/v1/mcp`), authenticated by a per-site API
-**token** instead of an Ed25519 device key. No central server is involved — the
-endpoint runs on the user's own site, same as the signature path. This flow is
-entirely admin-side on WordPress + a paste into ChatGPT; there is no
-`connectmwp-mcp` CLI step.
+Remote MCP clients that support a custom `Authorization: Bearer` header
+authenticate with a per-site API token. No central server is involved — the
+`/mcp` endpoint runs on the user's own site. This flow is entirely admin-side
+on WordPress + a paste into the client; there is no `connectmwp-mcp` CLI step.
 
 **On the WordPress site:**
 
-1. Log in → **Settings → connectMWP** → find the **Connect ChatGPT (beta)** card.
-2. Pick the **WP user the token binds to** — ChatGPT will act with exactly that
-   user's capabilities (post author = that user, caps checked via
-   `user_can(bound_user, …)`). Choose a user with no more than the access ChatGPT
-   needs (e.g. an Author/Editor, not necessarily an Administrator).
+1. Log in → **Settings → connectMWP** → find the **API token** card.
+2. Pick the **WP user the token binds to** — the client will act with exactly
+   that user's capabilities (post author = that user, caps checked via
+   `user_can(bound_user, …)`). Choose a user with no more than the access needed
+   (an Author or Editor, not necessarily an Administrator).
 3. Optionally set a **label** (shown in the token list so you can tell connectors
    apart), then click **Generate**.
 4. The plaintext token (`cmwp_cgpt_<hex>`) is shown **once** — it is stored only
    as a sha256 hash and can never be re-displayed. Copy it now along with the
    **connector URL** the card displays.
 
-**In ChatGPT:**
+**In your remote MCP client (Antigravity, Gemini CLI, or similar):**
 
-5. **Settings → Apps (Connectors) → enable Developer mode → Create / Add a
-   connector.** (OpenAI relabels these surfaces periodically — the exact menu
-   names may differ; look for "developer mode" + "add a custom connector / MCP
-   server.")
-6. Connector / MCP server **URL:** the connector URL from the card
+5. Add a new remote MCP server.
+6. Set the **server URL** to the connector URL from the card
    (`https://yoursite.com/wp-json/connectmwp/v1/mcp`).
-7. **Auth: API key / Bearer token** → paste the `cmwp_cgpt_<hex>` token.
-8. **If your host strips the `Authorization` header** (some managed hosts do, the
-   same edge behavior that forced custom headers on the signature path), you can
-   fall back to the **path-token URL** — the token embedded as a path segment:
-   `https://yoursite.com/wp-json/connectmwp/v1/mcp/cmwp_cgpt_<hex>` — with the
-   connector's auth field left empty. **This fallback is OFF by default and must
-   be explicitly enabled.** On the card, tick **"Enable URL-embedded token
-   fallback"**; only then does the card surface the path-token URL and only then
-   does the plugin honor a token presented in the URL. ⚠ **Log-exposure warning:**
-   the URL-embedded form puts your token in the address, so it can appear in
-   server/CDN access logs. Use it only if the header method genuinely fails, and
-   **rotate the token periodically** (revoke + regenerate). The two header
-   methods (`Authorization: Bearer` and `X-ConnectMWP-Token`) always work and do
-   not require this opt-in.
-9. Save. ChatGPT runs `initialize` → `tools/list`; you should see the connectMWP
-   tools (create/update/publish posts, tags, categories).
+7. Set **authentication** to **Bearer token** (also labelled "API key" in some
+   clients) and paste the `cmwp_cgpt_<hex>` token.
+8. **If your host strips the `Authorization` header** (some managed hosts do),
+   you can fall back to the **path-token URL** — the token embedded as a path
+   segment: `https://yoursite.com/wp-json/connectmwp/v1/mcp/cmwp_cgpt_<hex>` —
+   with the auth field left empty. **This fallback is OFF by default and must be
+   explicitly enabled.** In WP Admin, tick **"Enable URL-embedded token
+   fallback"** in the API token card; only then does the card surface the
+   path-token URL and only then does the plugin honor a token in the URL.
+   **Log-exposure warning:** the URL-embedded form puts your token in the
+   address, so it can appear in server/CDN access logs. Use it only if the
+   header method genuinely fails, and **rotate the token periodically** (revoke
+   + regenerate). The two header methods (`Authorization: Bearer` and
+   `X-ConnectMWP-Token`) always work and do not require this opt-in.
+9. Save. The client runs `initialize` → `tools/list`; you should see the
+   connectMWP tools (create/update/publish posts, tags, categories).
+
+**Multiple sites:** add one server entry per site and give each a distinct name
+(e.g. `connectmwp-myblog`) so tools do not get mixed up across sites.
+
+**What these clients can and cannot do:**
+
+- CAN: create / update / publish posts, manage tags and categories, set a post's
+  featured image by **media id** (`featured_media`).
+- CANNOT: **upload media.** `connectmwp_upload_media` is multipart-only and is
+  not exposed over the MCP/JSON-RPC path. To add images, upload them via a
+  local client (Claude/Cursor over the stdio signature path) or the WP media
+  library, then reference the media id from the remote client.
+
+**Limits & lifecycle:**
+
+- **Per-site cap: 20 live tokens.** To mint a 21st you must revoke an existing
+  one first.
+- **Revoke** from the same card — find the token row (by label / last-used) and
+  click **Revoke**. Revocation is immediate and irreversible; the client will
+  get a 401 on the next call. Treat a token like a WordPress Application
+  Password: if it leaks, revoke it.
+- HTTPS is enforced; the endpoint is per-IP rate-limited. Tokens record a
+  last-used timestamp so you can spot stale ones.
+
+---
+
+## 10. Connect ChatGPT via OAuth (v2.2.0+)
+
+ChatGPT's connector UI offers only OAuth, No-Auth, and Mixed authentication
+modes — there is no API-key field. ConnectMWP's plugin acts as its own OAuth
+2.1 Authorization Server directly on your site, so no central server is
+involved. The admin approves the connection via a browser sign-in, and
+subsequent access/refresh tokens are issued directly by the plugin.
+
+This flow is browser-based (ChatGPT → browser → your site → back to ChatGPT);
+there is no terminal command.
+
+**Steps:**
+
+1. In ChatGPT, open **Settings → Apps (Connectors)**, enable Developer mode,
+   and create a new connector.
+2. Set the **connector URL** to `https://yoursite.com/wp-json/connectmwp/v1/mcp`.
+3. Set **Authentication** to **OAuth**.
+4. Click **Sign in**. You will be redirected to your site's login screen — sign
+   in as an **administrator** (only administrators can approve OAuth connections).
+5. On the consent screen, review the requested access and click **Approve**.
+6. ChatGPT completes the OAuth exchange and the connection is live. The session
+   appears in WP Admin → **Settings → connectMWP → Connected apps (OAuth)**.
+
+**Multiple sites:** add one connector per site in ChatGPT.
 
 **What ChatGPT can and cannot do:**
 
 - CAN: create / update / publish posts, manage tags and categories, set a post's
   featured image by **media id** (`featured_media`).
-- CANNOT: **upload media.** `connectmwp_upload_media` is multipart-only and isn't
-  exposed over the MCP/JSON-RPC path, so it's absent from `tools/list`. To add
-  images, upload them via a local client (Claude/Cursor over the stdio signature
-  path) or the WP media library, then reference the resulting id from ChatGPT.
+- CANNOT: **upload media.** Same multipart limitation as the API-token path.
+  Upload via a local client or the WP media library, then reference the id from
+  ChatGPT.
 
-**Limits & lifecycle:**
+**Revoke a ChatGPT connection:**
 
-- **Per-site cap: 20 live tokens.** To mint a 21st you must revoke an existing one
-  first.
-- **Revoke** from the same card — find the token row (by label / last-used) and
-  click **Revoke**. Revocation is immediate and irreversible; ChatGPT will get a
-  401 on the next call. Treat a token like a WordPress Application Password: if it
-  leaks, revoke it.
-- HTTPS is enforced; the endpoint is per-IP rate-limited. Tokens record a
-  last-used timestamp so you can spot stale ones.
+1. WP Admin → **Settings → connectMWP → Connected apps (OAuth)**.
+2. Find the ChatGPT row (App column shows `chatgpt.com`) and click **Revoke**.
+3. Revocation is immediate — ChatGPT will receive a 401 on its next request.
+
+**Lifecycle notes:**
+
+- Access tokens expire after 1 hour; the refresh token keeps the connection
+  alive for up to 30 days of inactivity. Each time the refresh token is used,
+  it is rotated (OAuth 2.1 requirement for public clients).
+- An "Expired" status in the Connected apps card means the refresh token has
+  lapsed; the user must re-authorize by clicking Sign in in ChatGPT again.
+- The OAuth authorization page (`/connectmwp-oauth/authorize`) is a cookie-native
+  front-end page — it requires the admin to be logged into WordPress in the same
+  browser. It is NOT a REST route, which is why cookie auth works without a REST
+  nonce (a browser OAuth redirect cannot supply one).

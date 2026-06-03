@@ -6245,7 +6245,7 @@ class ConnectMWP_Agent {
                     <div>
                         <h2 class="cmwp-card-title">Configure an AI client</h2>
                         <p class="cmwp-card-sub">Drop this MCP server registration into your AI app's settings. The pairing above gives every AI client on this Mac the same access.</p>
-                        <p class="cmwp-card-sub"><?php echo esc_html__('Using ChatGPT? It connects differently — see the "Connect ChatGPT (beta)" section below.', 'connectmwp'); ?></p>
+                        <p class="cmwp-card-sub"><?php echo esc_html__('Claude / Cursor / Cline use this stdio path. ChatGPT uses OAuth; Antigravity, Gemini CLI and other remote clients use an API token. See the sections below.', 'connectmwp'); ?></p>
                     </div>
                 </div>
 
@@ -6334,6 +6334,8 @@ class ConnectMWP_Agent {
 
             <?php $this->render_cgpt_card(); ?>
 
+            <?php $this->render_chatgpt_oauth_info_card(); ?>
+
             <?php $this->render_oauth_connections_card(); ?>
         </div>
         <?php
@@ -6395,8 +6397,9 @@ class ConnectMWP_Agent {
         <section class="cmwp-card" id="cmwp-cgpt-card">
             <div class="cmwp-card-header">
                 <div>
-                    <h2 class="cmwp-card-title">🤖 Connect ChatGPT <span class="cmwp-badge-new">BETA</span></h2>
-                    <p class="cmwp-card-sub">ChatGPT connects directly to <strong>this site</strong> using a token you generate here. The token lives inside your ChatGPT connector settings — it never passes through any third-party server. Revoke it anytime below.</p>
+                    <h2 class="cmwp-card-title">API token &mdash; for Antigravity, Gemini CLI &amp; other MCP clients</h2>
+                    <p class="cmwp-card-sub">Remote MCP clients that support a custom auth header (Antigravity, Gemini CLI, and similar) authenticate using a bearer token you generate here. Paste the token as an <code>Authorization: Bearer &lt;token&gt;</code> header in those clients alongside the connector URL shown after generation. The token never passes through any third-party server &mdash; it travels directly from the client to your site. Revoke it anytime below.</p>
+                    <p class="cmwp-card-sub" style="margin-top:8px;"><strong>Not for ChatGPT</strong> &mdash; ChatGPT uses OAuth, not an API token. See the <a href="#cmwp-chatgpt-oauth-info">ChatGPT (OAuth)</a> section below.</p>
                 </div>
             </div>
 
@@ -6431,14 +6434,15 @@ class ConnectMWP_Agent {
                 </div>
 
                 <div class="cmwp-pc-instructions">
-                    <strong>👉 Add it to ChatGPT:</strong>
+                    <strong>Add it to your MCP client (Antigravity, Gemini CLI, or similar):</strong>
                     <ol>
-                        <li>In ChatGPT, open <b>Settings → Apps → Advanced → Developer mode</b>, then <b>Create app</b> (a custom connector).</li>
-                        <li>Paste the <b>connector URL</b> below.</li>
-                        <li>For authentication choose <b>API key</b> and paste the token you just copied.</li>
-                        <li>Save, then enable the connector in a new chat.</li>
+                        <li>In your client, add a new remote MCP server.</li>
+                        <li>Set the <b>server URL</b> to the connector URL shown below.</li>
+                        <li>Set the <b>authentication</b> to <b>Bearer token</b> (also labelled API key in some clients) and paste the token you just copied.</li>
+                        <li>Save, then enable the connector.</li>
                     </ol>
-                    <p style="margin:8px 0 4px;font-size:12.5px;color:#7f8c8d;">ChatGPT moves these menus around — if the labels differ, look for "developer mode" / "create connector" / "API key auth".</p>
+                    <p style="margin:8px 0 4px;font-size:12.5px;color:#7f8c8d;">For multiple sites, add one entry per site and give each a distinct name (for example, <em>connectmwp-myblog</em>) so tools do not get mixed up between sites.</p>
+                    <p style="margin:4px 0 0;font-size:12.5px;color:#c0392b;"><strong>Not for ChatGPT</strong> &mdash; ChatGPT uses OAuth, not an API token. See the ChatGPT (OAuth) section below.</p>
                 </div>
 
                 <p class="cmwp-cgpt-urllabel">Connector URL <span class="cmwp-cgpt-urltag">recommended</span></p>
@@ -6468,7 +6472,7 @@ class ConnectMWP_Agent {
 
             <!-- Existing tokens table -->
             <div id="cmwp-cgpt-table-wrap" style="<?php echo empty($rows) ? 'display:none;' : ''; ?>margin-top:18px;">
-                <h3 class="cmwp-card-title" style="font-size:14px;margin-bottom:8px;">Existing ChatGPT tokens</h3>
+                <h3 class="cmwp-card-title" style="font-size:14px;margin-bottom:8px;">Existing API tokens</h3>
                 <table class="cmwp-cgpt-table" id="cmwp-cgpt-table">
                     <thead>
                         <tr>
@@ -6720,6 +6724,60 @@ class ConnectMWP_Agent {
             }
         })();
         </script>
+        <?php
+    }
+
+    /**
+     * "ChatGPT (OAuth)" static info card. Admin-only — render path is already
+     * inside render_settings_page() which hard-gates on manage_options. Explains
+     * the OAuth connection flow for ChatGPT: paste the /mcp URL into ChatGPT,
+     * choose OAuth, sign in as an admin, approve. No token is generated here —
+     * ChatGPT's OAuth flow handles authentication automatically. Purely static
+     * markup; no AJAX or backend logic touched.
+     */
+    private function render_chatgpt_oauth_info_card() {
+        $mcp_url = esc_url(rest_url(self::API_NAMESPACE . '/mcp'));
+        ?>
+        <section class="cmwp-card" id="cmwp-chatgpt-oauth-info">
+            <div class="cmwp-card-header">
+                <div>
+                    <h2 class="cmwp-card-title">ChatGPT (OAuth)</h2>
+                    <p class="cmwp-card-sub">ChatGPT connects via OAuth &mdash; no token is generated or pasted. ChatGPT&rsquo;s connector UI offers only OAuth, No-Auth, and Mixed authentication modes, so it uses the plugin&rsquo;s built-in OAuth 2.1 sign-in instead of an API token.</p>
+                </div>
+            </div>
+
+            <div class="cmwp-pc-instructions" style="margin-top:0;">
+                <strong>How to connect ChatGPT to this site:</strong>
+                <ol>
+                    <li>In ChatGPT, open <strong>Settings &rarr; Apps (Connectors)</strong>, enable Developer mode, then create a new connector.</li>
+                    <li>Set the connector URL to the address shown below and choose <strong>Authentication: OAuth</strong>.</li>
+                    <li>Click <strong>Sign in</strong>. You will be redirected to this site&rsquo;s login screen &mdash; sign in as an <strong>administrator</strong>.</li>
+                    <li>On the consent screen, review the requested access and click <strong>Approve</strong>.</li>
+                    <li>ChatGPT completes the connection. The new session appears in the <strong>Connected apps (OAuth)</strong> card below. To disconnect at any time, click Revoke there.</li>
+                </ol>
+                <p style="margin:10px 0 4px;font-size:12.5px;color:#7f8c8d;">For multiple sites, add one connector per site and give each a clear name (for example, <em>connectmwp-myblog</em>) so tools do not get mixed up between sites.</p>
+            </div>
+
+            <p class="cmwp-cgpt-urllabel" style="margin-top:14px;">Connector URL</p>
+            <div class="cmwp-pc-cmd">
+                <textarea readonly class="cmwp-pc-textarea cmwp-cgpt-url" id="cmwp-oauth-mcp-url"><?php echo esc_textarea($mcp_url); ?></textarea>
+                <button type="button" class="cmwp-btn-copy" id="cmwp-oauth-copy-url">Copy</button>
+            </div>
+
+            <script>
+            (function() {
+                const btn = document.getElementById('cmwp-oauth-copy-url');
+                const ta  = document.getElementById('cmwp-oauth-mcp-url');
+                if (btn && ta) {
+                    btn.addEventListener('click', function() {
+                        navigator.clipboard.writeText(ta.value)
+                            .then(function() { showConnectMWPToast(btn, 'Copied'); })
+                            .catch(function() { showConnectMWPToast(btn, 'Copy failed — select & ⌘C'); });
+                    });
+                }
+            })();
+            </script>
+        </section>
         <?php
     }
 
