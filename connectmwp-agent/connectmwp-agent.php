@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP
  * Plugin URI: https://connectmwp.com
  * Description: Securely let your own local AI client (Claude, Cursor) publish to this WordPress site over a signed, session-less Ed25519 connection — no login, no central server.
- * Version: 2.2.0
+ * Version: 2.3.1
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Stefan Heinz, 2morrow.ai
@@ -5998,6 +5998,51 @@ class ConnectMWP_Agent {
                 .cmwp-wrap textarea.cmwp-pc-textarea { height: 70px; }
                 .cmwp-btn-copy { height: 38px; padding: 0 16px; }
             }
+
+            /* --- client-first switchboard: top-level tabs by client family --- */
+            .cmwp-switch { background: #fff; border: 1px solid #e5eaed; border-radius: 14px; box-shadow: 0 1px 2px rgba(44,62,80,.03); padding: 18px 22px 6px; margin-bottom: 18px; }
+            .cmwp-switch-q b { font-size: 15px; font-weight: 700; color: #2c3e50; }
+            .cmwp-switch-q span { display: block; font-size: 12.5px; color: #7f8c8d; margin-top: 3px; line-height: 1.5; }
+            .cmwp-ctabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; }
+            .cmwp-ctab { appearance: none; text-align: left; cursor: pointer; background: #fbfcfd; border: 1.5px solid #e5eaed; border-radius: 11px; padding: 13px 14px; transition: border-color .15s ease, background .15s ease, box-shadow .15s ease; font-family: inherit; display: flex; gap: 11px; align-items: flex-start; }
+            .cmwp-ctab:hover { border-color: #cfe0ee; background: #fff; }
+            .cmwp-ctab.active { border-color: #3498db; background: #fff; box-shadow: 0 3px 10px rgba(52,152,219,.13); }
+            .cmwp-ctab:focus-visible { outline: 2px solid #3498db; outline-offset: 2px; }
+            .cmwp-ctab-ic { width: 30px; height: 30px; border-radius: 8px; flex: 0 0 auto; display: grid; place-items: center; font-size: 16px; background: #ebf5fb; }
+            .cmwp-ctab.active .cmwp-ctab-ic { background: #3498db; }
+            .cmwp-ctab-nm { font-size: 13.5px; font-weight: 700; color: #2c3e50; line-height: 1.25; display: block; }
+            .cmwp-ctab-mh { font-size: 11.5px; color: #7f8c8d; margin-top: 3px; font-weight: 600; display: block; }
+            .cmwp-ctab.active .cmwp-ctab-mh { color: #2980b9; }
+            .cmwp-panel { display: none; }
+            .cmwp-panel.active { display: block; }
+            .cmwp-stdio-where { font-size: 12.5px; color: #7f8c8d; line-height: 1.6; margin: 6px 0 0; }
+            .cmwp-stdio-where code { background: rgba(0,0,0,.05); padding: 1px 6px; border-radius: 4px; font-size: 11.5px; }
+            @media (max-width: 600px) { .cmwp-ctabs { grid-template-columns: 1fr; } }
+
+            /* Merged "Your connections" table (one place for every connection type) */
+            .cmwp-conns { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
+            .cmwp-conns th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.5px; color: #7f8c8d; padding: 7px 10px; border-bottom: 1px solid #eef2f4; font-weight: 700; }
+            .cmwp-conns td { padding: 11px 10px; border-bottom: 1px solid #f4f7f9; color: #34495e; vertical-align: middle; }
+            .cmwp-conns tr:last-child td { border-bottom: none; }
+            .cmwp-ty { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+            .cmwp-ty-key { background: #eef4fb; color: #2980b9; }
+            .cmwp-ty-tok { background: #f3eefb; color: #7d3cba; }
+            .cmwp-ty-oauth { background: #e9f7f2; color: #16a085; }
+            .cmwp-conn-who { font-weight: 700; color: #2c3e50; }
+            .cmwp-conn-sub { display: block; font-weight: 500; margin-top: 2px; }
+            .cmwp-conn-sub code { font-family: SF Mono, Menlo, Consolas, monospace; font-size: 11px; color: #abb2b9; background: rgba(0,0,0,0.04); padding: 1px 6px; border-radius: 4px; cursor: pointer; }
+            .cmwp-conn-sub code:hover { background: rgba(52,152,219,0.12); color: #2980b9; }
+            .cmwp-stat { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: #16a085; }
+            .cmwp-stat-dot { width: 8px; height: 8px; border-radius: 50%; background: #16a085; box-shadow: 0 0 0 3px #d8f1ea; flex-shrink: 0; }
+            .cmwp-stat.stale { color: #7f8c8d; }
+            .cmwp-stat.stale .cmwp-stat-dot { background: #abb2b9; box-shadow: 0 0 0 3px #ecf0f1; }
+            .cmwp-conns form { margin: 0; }
+            @media (max-width: 640px) {
+                .cmwp-conns thead { display: none; }
+                .cmwp-conns, .cmwp-conns tbody, .cmwp-conns tr, .cmwp-conns td { display: block; width: 100%; }
+                .cmwp-conns tr { border: 1px solid #eef2f4; border-radius: 10px; margin-bottom: 10px; padding: 6px 4px; }
+                .cmwp-conns td { border: none; padding: 6px 10px; }
+            }
         </style>
 
         <script>
@@ -6055,8 +6100,32 @@ class ConnectMWP_Agent {
 
             <header class="cmwp-hero">
                 <h1>🔌 connectMWP <span class="cmwp-ver">v<?php echo esc_html(self::version()); ?></span></h1>
-                <p>Secure, signature-based direct connector between local AI clients (Claude Desktop, Cursor, Antigravity, etc.) and this WordPress site.</p>
+                <p>Let an AI client publish to this WordPress site over a secure, direct connection &mdash; nothing routes through a third-party server.</p>
             </header>
+
+            <div class="cmwp-switch">
+                <div class="cmwp-switch-q">
+                    <b>Connect an AI client</b>
+                    <span>Pick the client you use &mdash; each one connects a little differently, and we&rsquo;ll show only the steps for yours.</span>
+                </div>
+                <div class="cmwp-ctabs" id="cmwp-client-tabs" role="tablist" aria-label="Choose your AI client">
+                    <button type="button" class="cmwp-ctab active" data-client="device" role="tab" aria-selected="true">
+                        <span class="cmwp-ctab-ic">🖥️</span>
+                        <span><span class="cmwp-ctab-nm">Claude · Cursor · Cline</span><span class="cmwp-ctab-mh">Device pairing</span></span>
+                    </button>
+                    <button type="button" class="cmwp-ctab" data-client="chatgpt" role="tab" aria-selected="false">
+                        <span class="cmwp-ctab-ic">💬</span>
+                        <span><span class="cmwp-ctab-nm">ChatGPT</span><span class="cmwp-ctab-mh">OAuth sign-in</span></span>
+                    </button>
+                    <button type="button" class="cmwp-ctab" data-client="token" role="tab" aria-selected="false">
+                        <span class="cmwp-ctab-ic">🔑</span>
+                        <span><span class="cmwp-ctab-nm">Antigravity · Gemini CLI · other</span><span class="cmwp-ctab-mh">API token</span></span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- DEVICE PAIRING panel (Claude / Cursor / Cline) -->
+            <div class="cmwp-panel active" data-client-panel="device" role="tabpanel">
 
             <?php if ($page_state === 'mid-pair'):
                 $npx_cmd = 'npx -y connectmwp-mcp add-site --enroll "' . $enrollment_string . '"';
@@ -6285,59 +6354,37 @@ class ConnectMWP_Agent {
             <section class="cmwp-config-card">
                 <div class="cmwp-card-header">
                     <div>
-                        <h2 class="cmwp-card-title">Configure an AI client</h2>
-                        <p class="cmwp-card-sub">Drop this MCP server registration into your AI app's settings. The pairing above gives every AI client on this Mac the same access.</p>
-                        <p class="cmwp-card-sub"><?php echo esc_html__('Claude / Cursor / Cline use this stdio path. ChatGPT uses OAuth; Antigravity, Gemini CLI and other remote clients use an API token. See the sections below.', 'connectmwp'); ?></p>
+                        <h2 class="cmwp-card-title">Add the MCP server to your app</h2>
+                        <p class="cmwp-card-sub">After pairing, drop this registration into your AI app&rsquo;s settings. Every Claude / Cursor / Cline app on this Mac shares the pairing above &mdash; no extra setup per app.</p>
                     </div>
                 </div>
-
-                <div class="cmwp-tabs" id="cmwp-config-tabs" role="tablist" aria-label="AI client configuration">
-                    <button type="button" class="cmwp-tab active" data-target="claude" role="tab" aria-selected="true">Claude Desktop</button>
-                    <button type="button" class="cmwp-tab" data-target="cursor" role="tab" aria-selected="false">Cursor</button>
-                    <button type="button" class="cmwp-tab" data-target="other" role="tab" aria-selected="false">Other (Cline, Continue, …)</button>
-                </div>
-
-                <div class="cmwp-tab-tip" data-tip="claude">
-                    Edit <code>claude_desktop_config.json</code>. If you already have other MCP servers, merge only the <b>highlighted block</b> into your existing <code>"mcpServers"</code> object.
-                </div>
-<pre class="cmwp-config-json" data-pane="claude"><span class="cmwp-dim">{
+<pre class="cmwp-config-json"><span class="cmwp-dim">{
   "mcpServers": {</span>
-<span class="cmwp-hi">    "connectmwp": {
-      "command": "npx",
-      "args": ["-y", "connectmwp-mcp"]
-    }</span>
+<span class="cmwp-hi">    "connectmwp": { "command": "npx", "args": ["-y", "connectmwp-mcp"] }</span>
 <span class="cmwp-dim">  }
 }</span></pre>
-
-                <div class="cmwp-tab-tip" data-tip="cursor" style="display:none">
-                    Cursor: Settings → Features → MCP. Merge only the <b>highlighted block</b> into your existing <code>"mcpServers"</code> object.
-                </div>
-<pre class="cmwp-config-json" data-pane="cursor" style="display:none"><span class="cmwp-dim">{
-  "mcpServers": {</span>
-<span class="cmwp-hi">    "connectmwp": {
-      "command": "npx",
-      "args": ["-y", "connectmwp-mcp"]
-    }</span>
-<span class="cmwp-dim">  }
-}</span></pre>
-
-                <div class="cmwp-tab-tip" data-tip="other" style="display:none">
-                    For Cline, Continue, or any other MCP-capable client: register a stdio MCP server named <code>connectmwp</code> with command <code>npx</code> and args <code>["-y", "connectmwp-mcp"]</code>. Exact menu paths vary by app.
-                </div>
-<pre class="cmwp-config-json" data-pane="other" style="display:none"><span class="cmwp-dim">Command:</span>  npx
-<span class="cmwp-dim">Args:</span>     -y connectmwp-mcp
-<span class="cmwp-dim">Name:</span>     connectmwp
-<span class="cmwp-dim">Transport:</span> stdio</pre>
+                <p class="cmwp-stdio-where"><b>Where to put it</b> &mdash; <b>Claude:</b> <code>claude_desktop_config.json</code> · <b>Cursor:</b> Settings → MCP · <b>Cline / Continue:</b> add an MCP server named <code>connectmwp</code>. Merge only the highlighted line into any existing <code>"mcpServers"</code> object, then fully quit &amp; relaunch the app (⌘Q on macOS).</p>
             </section>
 
+            </div><!-- /device panel -->
+
+            <!-- CHATGPT panel (OAuth) -->
+            <div class="cmwp-panel" data-client-panel="chatgpt" role="tabpanel">
+                <?php $this->render_chatgpt_oauth_info_card(); ?>
+            </div>
+
+            <!-- API TOKEN panel (Antigravity / Gemini CLI / other) -->
+            <div class="cmwp-panel" data-client-panel="token" role="tabpanel">
+                <?php $this->render_cgpt_card(); ?>
+            </div>
+
             <script>
-            // Click-to-copy on key_id chips + tab switching for the Configure card.
+            // Click-to-copy on key_id chips (device-tab client list).
             (function() {
                 document.querySelectorAll('.cmwp-copy').forEach(function(el) {
                     el.addEventListener('click', function() {
-                        const text = el.dataset.copy || el.textContent;
-                        // T056: never claim success if the clipboard write rejects
-                        // (non-secure context, unfocused doc, restrictive policy).
+                        var text = el.dataset.copy || el.textContent;
+                        // T056: never claim success if the clipboard write rejects.
                         navigator.clipboard.writeText(text).then(function() {
                             showConnectMWPToast(el, 'Key ID copied');
                         }).catch(function() {
@@ -6345,66 +6392,154 @@ class ConnectMWP_Agent {
                         });
                     });
                 });
+            })();
 
-                const tabs = Array.prototype.slice.call(document.querySelectorAll('#cmwp-config-tabs .cmwp-tab'));
-                function activateTab(tab) {
-                    const target = tab.dataset.target;
+            // Top-level client-family tab switching (device / chatgpt / token).
+            (function() {
+                var tabs = Array.prototype.slice.call(document.querySelectorAll('#cmwp-client-tabs .cmwp-ctab'));
+                var panels = Array.prototype.slice.call(document.querySelectorAll('[data-client-panel]'));
+                function activate(tab) {
+                    var c = tab.dataset.client;
                     tabs.forEach(function(t) {
-                        const on = t === tab;
+                        var on = (t === tab);
                         t.classList.toggle('active', on);
                         t.setAttribute('aria-selected', on ? 'true' : 'false');
                     });
-                    document.querySelectorAll('[data-pane]').forEach(function(p) {
-                        p.style.display = (p.dataset.pane === target ? 'block' : 'none');
-                    });
-                    document.querySelectorAll('[data-tip]').forEach(function(p) {
-                        p.style.display = (p.dataset.tip === target ? 'block' : 'none');
+                    panels.forEach(function(p) {
+                        p.classList.toggle('active', p.dataset.clientPanel === c);
                     });
                 }
                 tabs.forEach(function(tab, i) {
-                    tab.addEventListener('click', function() { activateTab(tab); });
-                    // Arrow-key navigation between tabs (WAI-ARIA tabs pattern).
+                    tab.addEventListener('click', function() { activate(tab); });
+                    // Arrow-key navigation (WAI-ARIA tabs pattern).
                     tab.addEventListener('keydown', function(e) {
-                        let next = null;
+                        var next = null;
                         if (e.key === 'ArrowRight') next = tabs[(i + 1) % tabs.length];
                         else if (e.key === 'ArrowLeft') next = tabs[(i - 1 + tabs.length) % tabs.length];
-                        if (next) { e.preventDefault(); activateTab(next); next.focus(); }
+                        if (next) { e.preventDefault(); activate(next); next.focus(); }
                     });
                 });
             })();
             </script>
 
-            <?php $this->render_cgpt_card(); ?>
+            <?php
+                // Merged "Your connections" — every connection type in ONE table
+                // below the setup tabs (v2.3.0). Device keys + API tokens + OAuth
+                // apps, each with the right revoke mechanism on its row.
+                $token_rows = $this->get_cgpt_token_rows();
+                $oauth_rows = $this->get_oauth_connection_rows();
+                $total_conns = count($all_keys_with_users) + count($token_rows) + count($oauth_rows);
+            ?>
+            <section class="cmwp-card">
+                <div class="cmwp-card-header">
+                    <div>
+                        <h2 class="cmwp-card-title">Your connections</h2>
+                        <p class="cmwp-card-sub">Everything that can publish to this site, in one place. Revoke any row to cut it off.</p>
+                    </div>
+                </div>
 
-            <?php $this->render_chatgpt_oauth_info_card(); ?>
+                <div id="cmwp-conns-wrap" style="<?php echo $total_conns === 0 ? 'display:none;' : ''; ?>">
+                    <table class="cmwp-conns" id="cmwp-conns-table">
+                        <thead>
+                            <tr><th>Type</th><th>Client / app</th><th>Bound user</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($all_keys_with_users as $k): ?>
+                                <tr>
+                                    <td><span class="cmwp-ty cmwp-ty-key">🖥️ Device key</span></td>
+                                    <td class="cmwp-conn-who"><?php echo esc_html($k['label']); ?><?php if (!empty($k['is_just_paired'])): ?> <span class="cmwp-badge-new">JUST PAIRED</span><?php endif; ?><span class="cmwp-conn-sub"><code class="cmwp-copy" data-copy="<?php echo esc_attr($k['key_id']); ?>" title="Click to copy"><?php echo esc_html($k['key_id']); ?></code></span></td>
+                                    <td><?php echo esc_html($k['user_login']); ?></td>
+                                    <td><?php echo esc_html($k['display_created']); ?></td>
+                                    <td><?php echo esc_html($k['display_last_used']); ?></td>
+                                    <td><span class="cmwp-stat<?php echo !empty($k['is_stale']) ? ' stale' : ''; ?>"><span class="cmwp-stat-dot"></span><?php echo !empty($k['is_stale']) ? 'Idle' : 'Connected'; ?></span></td>
+                                    <td>
+                                        <form method="post">
+                                            <?php wp_nonce_field('connectmwp_revoke_key'); ?>
+                                            <input type="hidden" name="connectmwp_action" value="revoke_key" />
+                                            <input type="hidden" name="key_id" value="<?php echo esc_attr($k['key_id']); ?>" />
+                                            <button type="submit" class="cmwp-btn-revoke" onclick="return confirm('Revoke access for &quot;<?php echo esc_js($k['label']); ?>&quot;? This cannot be undone.');">Revoke</button>
+                                        </form>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                            <?php foreach ($token_rows as $r): ?>
+                                <tr data-token-row="<?php echo esc_attr($r['token_id']); ?>">
+                                    <td><span class="cmwp-ty cmwp-ty-tok">🔑 API token</span></td>
+                                    <td class="cmwp-conn-who"><?php echo esc_html($r['label'] !== '' ? $r['label'] : 'API token'); ?></td>
+                                    <td><?php echo esc_html($r['user_display']); ?><?php echo $r['user_login'] !== '' ? ' <span style="color:#abb2b9;">(' . esc_html($r['user_login']) . ')</span>' : ''; ?></td>
+                                    <td><?php echo esc_html($r['created'] !== '' ? $r['created'] : '—'); ?></td>
+                                    <td><?php echo esc_html($r['last_used'] !== '' ? $r['last_used'] : 'never'); ?></td>
+                                    <td><span class="cmwp-stat"><span class="cmwp-stat-dot"></span>Active</span></td>
+                                    <td><button type="button" class="cmwp-btn-revoke cmwp-cgpt-revoke" data-token-id="<?php echo esc_attr($r['token_id']); ?>" data-label="<?php echo esc_attr($r['label'] !== '' ? $r['label'] : 'API token'); ?>">Revoke</button></td>
+                                </tr>
+                            <?php endforeach; ?>
+                            <?php foreach ($oauth_rows as $r): $is_active = ($r['status'] === 'Active'); ?>
+                                <tr data-family-row="<?php echo esc_attr($r['family']); ?>">
+                                    <td><span class="cmwp-ty cmwp-ty-oauth">💬 ChatGPT OAuth</span></td>
+                                    <td class="cmwp-conn-who"><?php echo esc_html($r['app']); ?></td>
+                                    <td><?php echo esc_html($r['user_display']); ?><?php echo $r['user_login'] !== '' ? ' <span style="color:#abb2b9;">(' . esc_html($r['user_login']) . ')</span>' : ''; ?></td>
+                                    <td><?php echo esc_html($r['created'] !== '' ? $r['created'] : '—'); ?></td>
+                                    <td><?php echo esc_html($r['last_used'] !== '' ? $r['last_used'] : 'Never'); ?></td>
+                                    <td><span class="cmwp-stat<?php echo $is_active ? '' : ' stale'; ?>"><span class="cmwp-stat-dot"></span><?php echo esc_html($r['status']); ?></span></td>
+                                    <td><button type="button" class="cmwp-btn-revoke cmwp-oauth-revoke" data-family="<?php echo esc_attr($r['family']); ?>" data-app="<?php echo esc_attr($r['app']); ?>">Revoke</button></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                    <p class="cmwp-tz-note">Times shown in the site&rsquo;s configured timezone (Settings → General → Timezone). Click a device key ID to copy it. Tokens are never stored and can&rsquo;t be shown again &mdash; connections can only be revoked.</p>
+                </div>
+                <p id="cmwp-conns-empty" class="cmwp-tz-note" style="<?php echo $total_conns === 0 ? '' : 'display:none;'; ?>">No AI clients are connected yet. Use the tabs above to connect one.</p>
+            </section>
 
-            <?php $this->render_oauth_connections_card(); ?>
+            <script>
+            // OAuth-connection revoke, delegated on the merged table. (API-token
+            // revoke + generate live in the API-token card's own script, which also
+            // targets this table. Device keys revoke via POST form -> page reload.)
+            (function() {
+                var ajaxUrl = '<?php echo esc_js(admin_url('admin-ajax.php')); ?>';
+                var nonce = '<?php echo esc_js(wp_create_nonce('connectmwp_oauth_manage')); ?>';
+                var tableBody = document.querySelector('#cmwp-conns-table tbody');
+                var wrap = document.getElementById('cmwp-conns-wrap');
+                var emptyMsg = document.getElementById('cmwp-conns-empty');
+                if (!tableBody) return;
+                tableBody.addEventListener('click', async function(e) {
+                    var btn = e.target.closest('.cmwp-oauth-revoke');
+                    if (!btn) return;
+                    var family = btn.getAttribute('data-family');
+                    var app = btn.getAttribute('data-app') || 'this app';
+                    if (!window.confirm('Disconnect "' + app + '"? It will immediately lose access to this site. This cannot be undone.')) return;
+                    btn.disabled = true;
+                    btn.textContent = 'Revoking…';
+                    try {
+                        var body = new URLSearchParams({ action: 'connectmwp_oauth_revoke', _wpnonce: nonce, family: family });
+                        var res = await fetch(ajaxUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() });
+                        var data = await res.json();
+                        if (!res.ok || !data || !data.success) {
+                            window.alert((data && data.data && data.data.message) ? data.data.message : 'Could not revoke connection.');
+                            btn.disabled = false; btn.textContent = 'Revoke'; return;
+                        }
+                        var row = tableBody.querySelector('tr[data-family-row="' + (window.CSS && CSS.escape ? CSS.escape(family) : family) + '"]');
+                        if (row) row.remove();
+                        if (tableBody.querySelectorAll('tr').length === 0) {
+                            if (wrap) wrap.style.display = 'none';
+                            if (emptyMsg) emptyMsg.style.display = '';
+                        }
+                    } catch (err) {
+                        window.alert('Could not revoke connection.');
+                        btn.disabled = false; btn.textContent = 'Revoke';
+                    }
+                });
+            })();
+            </script>
         </div>
         <?php
     }
 
     /**
-     * "Connect ChatGPT (beta)" settings card (T5). Admin-only — render path is
-     * already inside render_settings_page() which hard-gates on manage_options.
-     * Lets an admin mint a ChatGPT bearer token bound to a chosen WP user, shows
-     * the plaintext exactly once, lists existing tokens (metadata only — the
-     * plaintext is never recoverable), and revokes per-row. All mutating calls go
-     * through the nonce + manage_options-gated cgpt_generate/cgpt_revoke AJAX
-     * actions. This card is admin UX only; it is NOT on the MCP traffic path.
+     * Gather API-token rows for the merged "Your connections" table. Single
+     * source of this data (v2.3.0 — extracted from the old per-card token table).
      */
-    private function render_cgpt_card() {
-        // Eligible delegation targets: users who can edit posts. Default the
-        // <select> to the current admin if they qualify. Batched query (no N+1).
-        $eligible = get_users([
-            'capability' => 'edit_posts',
-            'orderby'    => 'display_name',
-            'order'      => 'ASC',
-            'number'     => 200,
-        ]);
-        $current_id = get_current_user_id();
-
-        // Existing tokens, newest first, with bound-user display resolved via one
-        // batched get_users() (mirrors the key-table N+1 fix above).
+    private function get_cgpt_token_rows() {
         $tokens   = $this->list_cgpt_tokens();
         $user_ids = array_values(array_unique(array_filter(array_map(function ($t) {
             return intval($t['bound_user_id']);
@@ -6428,20 +6563,119 @@ class ConnectMWP_Agent {
                 'last_ip'      => $t['last_ip'],
             ];
         }
-        // Newest first by created string (mysql datetime sorts lexicographically).
         usort($rows, function ($a, $b) {
             return strcmp($b['created'], $a['created']);
         });
+        return $rows;
+    }
 
-        $at_cap = count($tokens) >= self::MAX_CGPT_TOKENS_PER_SITE;
+    /**
+     * Gather OAuth-connection rows (grouped by token family) for the merged
+     * "Your connections" table. Single source of this data (v2.3.0 — extracted
+     * from the old "Connected apps (OAuth)" card).
+     */
+    private function get_oauth_connection_rows() {
+        $tokens = $this->list_oauth_tokens();
+
+        $families = [];
+        foreach ($tokens as $token_id => $t) {
+            $family = (string) $t['family'];
+            if ($family === '') {
+                continue;
+            }
+            if (!isset($families[$family])) {
+                $families[$family] = [
+                    'family'           => $family,
+                    'bound_user_id'    => intval($t['bound_user_id']),
+                    'scope'            => (string) $t['scope'],
+                    'client_id'        => (string) $t['client_id'],
+                    'created'          => intval($t['created']),
+                    'last_used'        => intval($t['last_used']),
+                    'has_live_refresh' => false,
+                ];
+            }
+            $grp =& $families[$family];
+            $c = intval($t['created']);
+            if ($c > 0 && ($grp['created'] === 0 || $c < $grp['created'])) {
+                $grp['created'] = $c;
+            }
+            $lu = intval($t['last_used']);
+            if ($lu > $grp['last_used']) {
+                $grp['last_used'] = $lu;
+            }
+            if ($t['type'] === 'refresh' && intval($t['expires']) > 0 && time() < intval($t['expires'])) {
+                $grp['has_live_refresh'] = true;
+            }
+            if ($grp['client_id'] === '' && (string) $t['client_id'] !== '') {
+                $grp['client_id'] = (string) $t['client_id'];
+            }
+            if ($grp['scope'] === '' && (string) $t['scope'] !== '') {
+                $grp['scope'] = (string) $t['scope'];
+            }
+            unset($grp);
+        }
+
+        $user_ids = array_values(array_unique(array_filter(array_map(function ($g) {
+            return intval($g['bound_user_id']);
+        }, $families))));
+        $user_map = [];
+        if (!empty($user_ids)) {
+            foreach (get_users(['include' => $user_ids]) as $u) {
+                $user_map[intval($u->ID)] = $u;
+            }
+        }
+
+        $rows = [];
+        foreach ($families as $g) {
+            $u = $user_map[intval($g['bound_user_id'])] ?? null;
+            $rows[] = [
+                'family'       => $g['family'],
+                'app'          => $this->oauth_app_display_name($g['client_id']),
+                'user_display' => $u ? ($u->display_name ?: $u->user_login) : 'Unknown user',
+                'user_login'   => $u ? $u->user_login : '',
+                'scope'        => $g['scope'],
+                'created'      => $this->format_oauth_timestamp($g['created']),
+                'last_used'    => $this->format_oauth_timestamp($g['last_used']),
+                'status'       => $g['has_live_refresh'] ? 'Active' : 'Expired',
+            ];
+        }
+        usort($rows, function ($a, $b) {
+            return strcmp($b['created'], $a['created']);
+        });
+        return $rows;
+    }
+
+    /**
+     * "Connect ChatGPT (beta)" settings card (T5). Admin-only — render path is
+     * already inside render_settings_page() which hard-gates on manage_options.
+     * Lets an admin mint a ChatGPT bearer token bound to a chosen WP user, shows
+     * the plaintext exactly once, lists existing tokens (metadata only — the
+     * plaintext is never recoverable), and revokes per-row. All mutating calls go
+     * through the nonce + manage_options-gated cgpt_generate/cgpt_revoke AJAX
+     * actions. This card is admin UX only; it is NOT on the MCP traffic path.
+     */
+    private function render_cgpt_card() {
+        // Eligible delegation targets: users who can edit posts. Default the
+        // <select> to the current admin if they qualify. Batched query (no N+1).
+        $eligible = get_users([
+            'capability' => 'edit_posts',
+            'orderby'    => 'display_name',
+            'order'      => 'ASC',
+            'number'     => 200,
+        ]);
+        $current_id = get_current_user_id();
+
+        // Token count drives the generate cap; the token rows themselves now
+        // render in the merged "Your connections" table (see get_cgpt_token_rows()).
+        $at_cap = count($this->list_cgpt_tokens()) >= self::MAX_CGPT_TOKENS_PER_SITE;
         $path_token_enabled = $this->cgpt_path_token_enabled();
         ?>
         <section class="cmwp-card" id="cmwp-cgpt-card">
             <div class="cmwp-card-header">
                 <div>
                     <h2 class="cmwp-card-title">API token &mdash; for Antigravity, Gemini CLI &amp; other MCP clients</h2>
-                    <p class="cmwp-card-sub">Remote MCP clients that support a custom auth header (Antigravity, Gemini CLI, and similar) authenticate using a bearer token you generate here. Paste the token as an <code>Authorization: Bearer &lt;token&gt;</code> header in those clients alongside the connector URL shown after generation. The token never passes through any third-party server &mdash; it travels directly from the client to your site. Revoke it anytime below.</p>
-                    <p class="cmwp-card-sub" style="margin-top:8px;"><strong>Not for ChatGPT</strong> &mdash; ChatGPT uses OAuth, not an API token. See the <a href="#cmwp-chatgpt-oauth-info">ChatGPT (OAuth)</a> section below.</p>
+                    <p class="cmwp-card-sub">Remote MCP clients that support a custom auth header (Antigravity, Gemini CLI, and similar) authenticate using a bearer token you generate here. Paste the token as an <code>Authorization: Bearer &lt;token&gt;</code> header in those clients alongside the connector URL shown after generation. The token never passes through any third-party server &mdash; it travels directly from the client to your site. Revoke it anytime from <strong>Your connections</strong> below.</p>
+                    <p class="cmwp-card-sub" style="margin-top:8px;"><strong>Connecting ChatGPT instead?</strong> ChatGPT uses OAuth, not an API token &mdash; switch to the <strong>ChatGPT</strong> tab above.</p>
                 </div>
             </div>
 
@@ -6484,7 +6718,7 @@ class ConnectMWP_Agent {
                         <li>Save, then enable the connector.</li>
                     </ol>
                     <p style="margin:8px 0 4px;font-size:12.5px;color:#7f8c8d;">For multiple sites, add one entry per site and give each a distinct name (for example, <em>connectmwp-myblog</em>) so tools do not get mixed up between sites.</p>
-                    <p style="margin:4px 0 0;font-size:12.5px;color:#c0392b;"><strong>Not for ChatGPT</strong> &mdash; ChatGPT uses OAuth, not an API token. See the ChatGPT (OAuth) section below.</p>
+                    <p style="margin:4px 0 0;font-size:12.5px;color:#c0392b;"><strong>Not for ChatGPT</strong> &mdash; ChatGPT uses OAuth, not an API token (see the ChatGPT tab).</p>
                 </div>
 
                 <p class="cmwp-cgpt-urllabel">Connector URL <span class="cmwp-cgpt-urltag">recommended</span></p>
@@ -6512,30 +6746,7 @@ class ConnectMWP_Agent {
                 <p class="cmwp-cgpt-pathwarn">⚠ The URL-embedded form puts your token in the address, so it can appear in server/CDN access logs. Use it only if the normal (header) method fails, and revoke + regenerate the token periodically.</p>
             </div>
 
-            <!-- Existing tokens table -->
-            <div id="cmwp-cgpt-table-wrap" style="<?php echo empty($rows) ? 'display:none;' : ''; ?>margin-top:18px;">
-                <h3 class="cmwp-card-title" style="font-size:14px;margin-bottom:8px;">Existing API tokens</h3>
-                <table class="cmwp-cgpt-table" id="cmwp-cgpt-table">
-                    <thead>
-                        <tr>
-                            <th>Label</th><th>Bound user</th><th>Created</th><th>Last used</th><th>Last IP</th><th></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($rows as $r): ?>
-                            <tr data-token-row="<?php echo esc_attr($r['token_id']); ?>">
-                                <td><?php echo esc_html($r['label'] !== '' ? $r['label'] : 'ChatGPT'); ?></td>
-                                <td><?php echo esc_html($r['user_display']); ?><?php echo $r['user_login'] !== '' ? ' <span style="color:#abb2b9;">(' . esc_html($r['user_login']) . ')</span>' : ''; ?></td>
-                                <td><?php echo esc_html($r['created'] !== '' ? $r['created'] : '—'); ?></td>
-                                <td><?php echo esc_html($r['last_used'] !== '' ? $r['last_used'] : 'never'); ?></td>
-                                <td><?php echo esc_html($r['last_ip'] !== '' ? $r['last_ip'] : '—'); ?></td>
-                                <td><button type="button" class="cmwp-btn-revoke cmwp-cgpt-revoke" data-token-id="<?php echo esc_attr($r['token_id']); ?>" data-label="<?php echo esc_attr($r['label'] !== '' ? $r['label'] : 'ChatGPT'); ?>">Revoke</button></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-                <p class="cmwp-tz-note">Times shown in the site's configured timezone. The token value itself is never stored and cannot be shown again — only revoked.</p>
-            </div>
+            <p class="cmwp-tz-note" style="margin-top:14px;">Your active API tokens are listed in <strong>Your connections</strong> below, where you can revoke any of them.</p>
         </section>
 
         <style>
@@ -6553,13 +6764,10 @@ class ConnectMWP_Agent {
             .cmwp-cgpt-pathtoggle-row { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; font-weight: 600; color: #34495e; cursor: pointer; }
             .cmwp-cgpt-pathtoggle-row input[type=checkbox] { margin-top: 2px; }
             .cmwp-cgpt-pathwarn { margin: 8px 0 0; font-size: 12.5px; line-height: 1.5; color: #b9770e; }
-            .cmwp-cgpt-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-            .cmwp-cgpt-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: #7f8c8d; padding: 6px 10px; border-bottom: 1px solid #eef2f4; }
-            .cmwp-cgpt-table td { padding: 9px 10px; border-bottom: 1px solid #f4f7f9; color: #34495e; vertical-align: middle; }
         </style>
 
         <script>
-        (function() {
+        document.addEventListener('DOMContentLoaded', function() {
             const ajaxUrl = '<?php echo esc_js(admin_url('admin-ajax.php')); ?>';
             const nonce = '<?php echo esc_js(wp_create_nonce('connectmwp_cgpt')); ?>';
             const maxTokens = <?php echo intval(self::MAX_CGPT_TOKENS_PER_SITE); ?>;
@@ -6573,8 +6781,10 @@ class ConnectMWP_Agent {
             const urlPathTa= document.getElementById('cmwp-cgpt-url-path');
             const urlPathBlock = document.getElementById('cmwp-cgpt-url-path-block');
             const pathToggle = document.getElementById('cmwp-cgpt-path-toggle');
-            const tableWrap= document.getElementById('cmwp-cgpt-table-wrap');
-            const tableBody= document.querySelector('#cmwp-cgpt-table tbody');
+            // Token rows render in the shared "Your connections" table below.
+            const tableWrap= document.getElementById('cmwp-conns-wrap');
+            const tableBody= document.querySelector('#cmwp-conns-table tbody');
+            const emptyMsg = document.getElementById('cmwp-conns-empty');
 
             function wireCopy(btnId, srcEl) {
                 const btn = document.getElementById(btnId);
@@ -6696,30 +6906,57 @@ class ConnectMWP_Agent {
                 return td;
             }
 
+            // Build a row in the MERGED-table format (Type pill + who + meta +
+            // status + revoke), matching the server-rendered token rows.
             function addRow(r) {
                 if (!tableBody) return;
+                const label = r.label || 'API token';
                 const tr = document.createElement('tr');
                 tr.setAttribute('data-token-row', r.token_id);
-                tr.appendChild(cell(r.label));
+
+                const tyTd = document.createElement('td');
+                const ty = document.createElement('span');
+                ty.className = 'cmwp-ty cmwp-ty-tok';
+                ty.textContent = '🔑 API token';
+                tyTd.appendChild(ty);
+                tr.appendChild(tyTd);
+
+                const whoTd = document.createElement('td');
+                whoTd.className = 'cmwp-conn-who';
+                whoTd.appendChild(document.createTextNode(label));
+                tr.appendChild(whoTd);
+
                 tr.appendChild(cell(r.user_display, r.user_login || null));
                 tr.appendChild(cell(r.created));
                 tr.appendChild(cell(r.last_used));
-                tr.appendChild(cell(r.last_ip));
+
+                const stTd = document.createElement('td');
+                const st = document.createElement('span');
+                st.className = 'cmwp-stat';
+                const dot = document.createElement('span');
+                dot.className = 'cmwp-stat-dot';
+                st.appendChild(dot);
+                st.appendChild(document.createTextNode('Active'));
+                stTd.appendChild(st);
+                tr.appendChild(stTd);
+
                 const actionTd = document.createElement('td');
                 const btn = document.createElement('button');
                 btn.type = 'button';
                 btn.className = 'cmwp-btn-revoke cmwp-cgpt-revoke';
                 btn.setAttribute('data-token-id', r.token_id);
-                btn.setAttribute('data-label', r.label);
+                btn.setAttribute('data-label', label);
                 btn.textContent = 'Revoke';
                 actionTd.appendChild(btn);
                 tr.appendChild(actionTd);
+
                 tableBody.insertBefore(tr, tableBody.firstChild);
                 if (tableWrap) tableWrap.style.display = '';
+                if (emptyMsg) emptyMsg.style.display = 'none';
             }
 
             function refreshCapState() {
-                const count = tableBody ? tableBody.querySelectorAll('tr').length : 0;
+                const count = tableBody ? tableBody.querySelectorAll('tr[data-token-row]').length : 0;
                 if (genBtn) genBtn.disabled = count >= maxTokens;
             }
 
@@ -6730,7 +6967,7 @@ class ConnectMWP_Agent {
                     if (!btn) return;
                     const tokenId = btn.getAttribute('data-token-id');
                     const label = btn.getAttribute('data-label') || 'this token';
-                    if (!window.confirm('Revoke "' + label + '"? ChatGPT will immediately lose access. This cannot be undone.')) return;
+                    if (!window.confirm('Revoke "' + label + '"? That client will immediately lose access. This cannot be undone.')) return;
                     btn.disabled = true;
                     btn.textContent = 'Revoking…';
                     try {
@@ -6755,7 +6992,10 @@ class ConnectMWP_Agent {
                         }
                         const row = tableBody.querySelector('tr[data-token-row="' + (window.CSS && CSS.escape ? CSS.escape(tokenId) : tokenId) + '"]');
                         if (row) row.remove();
-                        if (tableWrap && tableBody.querySelectorAll('tr').length === 0) tableWrap.style.display = 'none';
+                        if (tableBody.querySelectorAll('tr').length === 0) {
+                            if (tableWrap) tableWrap.style.display = 'none';
+                            if (emptyMsg) emptyMsg.style.display = '';
+                        }
                         refreshCapState();
                     } catch (err) {
                         window.alert('Could not revoke token.');
@@ -6764,7 +7004,7 @@ class ConnectMWP_Agent {
                     }
                 });
             }
-        })();
+        });
         </script>
         <?php
     }
@@ -6820,197 +7060,6 @@ class ConnectMWP_Agent {
             })();
             </script>
         </section>
-        <?php
-    }
-
-    /**
-     * "Connected apps (OAuth)" settings card. Admin-only — render path is already
-     * inside render_settings_page() which hard-gates on manage_options. Lists the
-     * apps connected via the OAuth flow, ONE row per connection (= one token
-     * `family`: access + refresh + any rotations all share a family id), with the
-     * derived app name, bound user, scope, connect/last-used times, status, and a
-     * Revoke button that disconnects the whole family. Read/metadata only — no
-     * token plaintext is ever shown (only sha256 hashes are stored anyway). The
-     * single mutating call goes through the nonce + manage_options-gated
-     * connectmwp_oauth_revoke AJAX action. NOT on the MCP traffic path.
-     */
-    private function render_oauth_connections_card() {
-        // All OAuth token rows, grouped into connections by `family`. One
-        // connection = the access token + its refresh token + any later
-        // rotations, all sharing a single family id.
-        $tokens = $this->list_oauth_tokens();
-
-        $families = [];
-        foreach ($tokens as $token_id => $t) {
-            $family = (string) $t['family'];
-            if ($family === '') {
-                // A row with no family cannot be grouped/revoked-as-a-unit; skip
-                // it from the connection view (defensive — mint always sets one).
-                continue;
-            }
-            if (!isset($families[$family])) {
-                $families[$family] = [
-                    'family'         => $family,
-                    'bound_user_id'  => intval($t['bound_user_id']),
-                    'scope'          => (string) $t['scope'],
-                    'client_id'      => (string) $t['client_id'],
-                    'created'        => intval($t['created']),
-                    'last_used'      => intval($t['last_used']),
-                    'has_live_refresh' => false,
-                ];
-            }
-            $grp =& $families[$family];
-            // Earliest created across the family = when the app first connected.
-            $c = intval($t['created']);
-            if ($c > 0 && ($grp['created'] === 0 || $c < $grp['created'])) {
-                $grp['created'] = $c;
-            }
-            // Latest last_used across the family.
-            $lu = intval($t['last_used']);
-            if ($lu > $grp['last_used']) {
-                $grp['last_used'] = $lu;
-            }
-            // A connection is "Active" iff it still has an unexpired refresh
-            // token (the long-lived credential that keeps the app connected).
-            if ($t['type'] === 'refresh' && intval($t['expires']) > 0 && time() < intval($t['expires'])) {
-                $grp['has_live_refresh'] = true;
-            }
-            // Prefer a non-empty client_id / scope if the first-seen row lacked one.
-            if ($grp['client_id'] === '' && (string) $t['client_id'] !== '') {
-                $grp['client_id'] = (string) $t['client_id'];
-            }
-            if ($grp['scope'] === '' && (string) $t['scope'] !== '') {
-                $grp['scope'] = (string) $t['scope'];
-            }
-            unset($grp);
-        }
-
-        // Resolve bound-user display names in one batched query (no N+1).
-        $user_ids = array_values(array_unique(array_filter(array_map(function ($g) {
-            return intval($g['bound_user_id']);
-        }, $families))));
-        $user_map = [];
-        if (!empty($user_ids)) {
-            foreach (get_users(['include' => $user_ids]) as $u) {
-                $user_map[intval($u->ID)] = $u;
-            }
-        }
-
-        $rows = [];
-        foreach ($families as $g) {
-            $u = $user_map[intval($g['bound_user_id'])] ?? null;
-            $rows[] = [
-                'family'       => $g['family'],
-                'app'          => $this->oauth_app_display_name($g['client_id']),
-                'user_display' => $u ? ($u->display_name ?: $u->user_login) : 'Unknown user',
-                'user_login'   => $u ? $u->user_login : '',
-                'scope'        => $g['scope'],
-                'created'      => $this->format_oauth_timestamp($g['created']),
-                'last_used'    => $this->format_oauth_timestamp($g['last_used']),
-                'status'       => $g['has_live_refresh'] ? 'Active' : 'Expired',
-            ];
-        }
-        // Newest connection first (created string; YYYY-MM-DD HH:MM sorts lexicographically).
-        usort($rows, function ($a, $b) {
-            return strcmp($b['created'], $a['created']);
-        });
-        ?>
-        <section class="cmwp-card" id="cmwp-oauth-card">
-            <div class="cmwp-card-header">
-                <div>
-                    <h2 class="cmwp-card-title">🔗 Connected apps (OAuth)</h2>
-                    <p class="cmwp-card-sub">Apps that connected to <strong>this site</strong> through the OAuth sign-in flow. Each row is one connected app; revoking it disconnects that app completely (both its access and refresh tokens).</p>
-                </div>
-            </div>
-
-            <div id="cmwp-oauth-table-wrap" style="<?php echo empty($rows) ? 'display:none;' : ''; ?>margin-top:6px;">
-                <table class="cmwp-oauth-table" id="cmwp-oauth-table">
-                    <thead>
-                        <tr>
-                            <th>App</th><th>Bound user</th><th>Scope</th><th>Connected</th><th>Last used</th><th>Status</th><th></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($rows as $r): ?>
-                            <tr data-family-row="<?php echo esc_attr($r['family']); ?>">
-                                <td><?php echo esc_html($r['app']); ?></td>
-                                <td><?php echo esc_html($r['user_display']); ?><?php echo $r['user_login'] !== '' ? ' <span style="color:#abb2b9;">(' . esc_html($r['user_login']) . ')</span>' : ''; ?></td>
-                                <td><?php echo esc_html($r['scope'] !== '' ? $r['scope'] : '—'); ?></td>
-                                <td><?php echo esc_html($r['created'] !== '' ? $r['created'] : '—'); ?></td>
-                                <td><?php echo esc_html($r['last_used'] !== '' ? $r['last_used'] : 'Never'); ?></td>
-                                <td><span class="cmwp-oauth-status cmwp-oauth-status-<?php echo $r['status'] === 'Active' ? 'active' : 'expired'; ?>"><?php echo esc_html($r['status']); ?></span></td>
-                                <td><button type="button" class="cmwp-btn-revoke cmwp-oauth-revoke" data-family="<?php echo esc_attr($r['family']); ?>" data-app="<?php echo esc_attr($r['app']); ?>">Revoke</button></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-                <p class="cmwp-tz-note">Times shown in the site's configured timezone (Settings → General → Timezone). Tokens themselves are never stored and cannot be shown — connections can only be revoked.</p>
-            </div>
-            <p id="cmwp-oauth-empty" class="cmwp-tz-note" style="<?php echo empty($rows) ? '' : 'display:none;'; ?>">No apps are connected via OAuth.</p>
-        </section>
-
-        <style>
-            .cmwp-oauth-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-            .cmwp-oauth-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: #7f8c8d; padding: 6px 10px; border-bottom: 1px solid #eef2f4; }
-            .cmwp-oauth-table td { padding: 9px 10px; border-bottom: 1px solid #f4f7f9; color: #34495e; vertical-align: middle; }
-            .cmwp-oauth-status { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 0.3px; padding: 2px 8px; border-radius: 999px; }
-            .cmwp-oauth-status-active { color: #16a085; background: #d8f1ea; }
-            .cmwp-oauth-status-expired { color: #7f8c8d; background: #ecf0f1; }
-        </style>
-
-        <script>
-        (function() {
-            const ajaxUrl = '<?php echo esc_js(admin_url('admin-ajax.php')); ?>';
-            const nonce = '<?php echo esc_js(wp_create_nonce('connectmwp_oauth_manage')); ?>';
-
-            const tableWrap = document.getElementById('cmwp-oauth-table-wrap');
-            const tableBody = document.querySelector('#cmwp-oauth-table tbody');
-            const emptyMsg  = document.getElementById('cmwp-oauth-empty');
-
-            if (!tableBody) return;
-
-            tableBody.addEventListener('click', async function(e) {
-                const btn = e.target.closest('.cmwp-oauth-revoke');
-                if (!btn) return;
-                const family = btn.getAttribute('data-family');
-                const app = btn.getAttribute('data-app') || 'this app';
-                if (!window.confirm('Disconnect "' + app + '"? It will immediately lose access to this site. This cannot be undone.')) return;
-                btn.disabled = true;
-                btn.textContent = 'Revoking…';
-                try {
-                    const body = new URLSearchParams({
-                        action: 'connectmwp_oauth_revoke',
-                        _wpnonce: nonce,
-                        family: family
-                    });
-                    const res = await fetch(ajaxUrl, {
-                        method: 'POST',
-                        credentials: 'same-origin',
-                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                        body: body.toString()
-                    });
-                    const data = await res.json();
-                    if (!res.ok || !data || !data.success) {
-                        const msg = (data && data.data && data.data.message) ? data.data.message : 'Could not revoke connection.';
-                        window.alert(msg);
-                        btn.disabled = false;
-                        btn.textContent = 'Revoke';
-                        return;
-                    }
-                    const row = tableBody.querySelector('tr[data-family-row="' + (window.CSS && CSS.escape ? CSS.escape(family) : family) + '"]');
-                    if (row) row.remove();
-                    if (tableBody.querySelectorAll('tr').length === 0) {
-                        if (tableWrap) tableWrap.style.display = 'none';
-                        if (emptyMsg) emptyMsg.style.display = '';
-                    }
-                } catch (err) {
-                    window.alert('Could not revoke connection.');
-                    btn.disabled = false;
-                    btn.textContent = 'Revoke';
-                }
-            });
-        })();
-        </script>
         <?php
     }
 

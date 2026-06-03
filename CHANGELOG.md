@@ -4,6 +4,40 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2.3.1 — 2026-06-03
+
+**Settings page — connections consolidated into one table.** Follow-up to the 2.3.0 redesign. In 2.3.0 each client tab carried its own connection list; this release replaces those three per-tab lists with a **single "Your connections" table below the setup tabs**, so every connection is visible in one place. The tabs are now setup-only. Render-layer change only — no auth, signing, OAuth, token, or DAL behavior changed.
+
+### Changed
+
+- **connectmwp-agent — all connections now live in ONE merged "Your connections" table** below the setup tabs. A **Type** column tags each row — Device key / API token / ChatGPT OAuth — so "what can publish to my site right now?" is answerable at a glance instead of being split across three separate tables. Each row keeps its correct revoke mechanism (device keys via form-post reload; API tokens and OAuth apps via their existing AJAX revoke).
+- **connectmwp-agent — the per-tab connection tables were removed.** The setup tabs (Device pairing / ChatGPT / API token) now show only how to connect that client; their connection lists moved to the merged table.
+
+### Internal
+
+- The three connection sources feed the merged table via two new private helpers (`get_cgpt_token_rows()`, `get_oauth_connection_rows()`); the standalone "Connected apps (OAuth)" card render method was removed (its rows + revoke handler moved onto the merged table); the API-token card's generate / one-time-reveal / revoke JS now targets the merged table and is deferred to `DOMContentLoaded` (the table renders lower in the DOM than the card).
+
+### Unchanged (explicitly preserved)
+
+- All three auth paths, every nonce/capability gate, the live pairing-completion poll, the one-time token reveal, the path-token opt-in + its log-exposure warning, and all AJAX generate/revoke actions are unchanged — only the connection **display** was consolidated.
+
+## 2.3.0 — 2026-06-03
+
+**Settings-page redesign — client-first setup.** After OAuth landed in 2.2.0 the plugin's **Settings → connectMWP** page had grown into six stacked cards with no signpost for *which* connection method a given AI client needs — users had to find their own way around. This release reorganizes the page around one question: **"which AI client are you connecting?"** No auth, signing, OAuth, token, or DAL behavior changed — this is a render-layer reorganization only.
+
+### Changed
+
+- **connectmwp-agent — the settings page is now a client-first switchboard.** Three top-level tabs named by the *client family*, each with a one-word method hint, route the admin to exactly the path they need and hide the rest:
+  - **Claude · Cursor · Cline** → *Device pairing* (the pairing flow, paired-client list, and the stdio MCP-server snippet).
+  - **ChatGPT** → *OAuth sign-in* (the connect steps, connector URL, and the Connected apps list).
+  - **Antigravity · Gemini CLI · other** → *API token* (generate-token form, one-time reveal, connector URL, and existing-token list — including the URL-embedded-token log-exposure warning).
+  Each tab keeps that client's own connections in context. While a pairing code is live, the device tab leads so the time-sensitive command stays in front.
+- **connectmwp-agent — the "Configure an AI client" card was simplified.** The Claude/Cursor/Other sub-tabs collapsed into a single MCP-server snippet plus a one-line "where to put it" note (the snippet was identical across all three). The hero was slimmed to a single descriptive line.
+
+### Unchanged (explicitly preserved)
+
+- All three auth paths (Ed25519 signatures, `cmwp_cgpt_` API tokens, `cmwp_oat_` OAuth), every nonce/capability gate, the live pairing-completion poll, the one-time token reveal, the path-token opt-in + its log-exposure warning, and all AJAX generate/revoke handlers are byte-for-byte unchanged — only their on-page placement moved.
+
 ## 2.2.0 — 2026-06-02
 
 **Stable release.** ChatGPT — and any spec-compliant remote MCP client — can now connect to a self-hosted WordPress site and publish, authenticated by full **OAuth 2.1**, with **no central server in the path**. The plugin is its own Authorization Server *and* Resource Server, so the decentralization thesis holds: the client talks straight to the user's site, exactly as Claude/Cursor already do over the signature path. This release graduates the in-development 2.1.1–2.1.4 OAuth work (Phases 0–3) into a single hardened, shippable build.
