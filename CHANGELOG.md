@@ -4,6 +4,47 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2.2.0 — 2026-06-02
+
+**Stable release.** ChatGPT — and any spec-compliant remote MCP client — can now connect to a self-hosted WordPress site and publish, authenticated by full **OAuth 2.1**, with **no central server in the path**. The plugin is its own Authorization Server *and* Resource Server, so the decentralization thesis holds: the client talks straight to the user's site, exactly as Claude/Cursor already do over the signature path. This release graduates the in-development 2.1.1–2.1.4 OAuth work (Phases 0–3) into a single hardened, shippable build.
+
+### Added
+
+- **connectmwp-agent — plugin-hosted OAuth 2.1 (Authorization Server + Resource Server, no central server).** The complete browser-based authorization flow now lives entirely in the plugin:
+  - **Discovery** — `.well-known` documents at the site root: RFC 9728 Protected Resource Metadata and RFC 8414 Authorization Server Metadata, so OAuth clients can self-discover the authorization and token surfaces.
+  - **Consent** — a **cookie-native, admin-only consent page** at `/connectmwp-oauth/authorize` (a front-end page, not a REST route, so standard WordPress cookie auth recognizes the logged-in admin — no nonce a third-party redirect can't supply). The admin selects which WP user the issued credential acts as.
+  - **Token** — `POST /oauth/token` performs **authorization-code + PKCE (S256) exchange** and **refresh-token grant with rotation**. Access/refresh tokens are opaque, stored sha256-hashed (never plaintext), with ~1h access / 30d refresh lifetimes, bound to audience + scope.
+  - **Resource access** — `/mcp` now accepts OAuth `cmwp_oat_` access tokens (audience / scope / expiry enforced) alongside the existing `cmwp_cgpt_` API tokens, both routed through the same capability engine.
+  - **Client identification via CIMD** (Client ID Metadata Documents): client metadata is fetched over an SSRF-guarded path; authorization codes are single-use and hashed; every redirect carries `iss`; open-redirect is prevented by exact `redirect_uri` matching.
+  (`connectmwp-agent/connectmwp-agent.php`)
+- **connectmwp-agent — "Connected apps (OAuth)" admin panel.** View and revoke OAuth connections, grouped and revocable by token family. (`connectmwp-agent/connectmwp-agent.php`)
+- **Docs + plugin UI — the 3-way client connection model is now documented.** Three ways a client connects: Claude / Cursor / Cline (stdio + Ed25519 signatures), Antigravity / Gemini CLI / other header clients (per-site API token), and ChatGPT (OAuth 2.1). Settings UI and docs updated to match.
+
+### Hardened (per adversarial review)
+
+- **Admin gate runs BEFORE the outbound CIMD fetch** — an unauthenticated caller can never trigger the SSRF-guarded fetch.
+- **Unified HTTPS detection across all auth gates** — one consistent scheme determination for the signature, header-token, and OAuth paths.
+- **Peek-before-rotate on refresh** — scope-widening is rejected before the refresh token is consumed, so a rejected refresh no longer destroys the session.
+- **Token-request `resource` cross-checked against the grant's bound resource** (RFC 8707) — a mismatched audience is rejected.
+- **Per-IP rate limit on the token endpoint.**
+- **CSP `form-action` includes the validated client redirect origin** — fixes the post-approval redirect that the consent page's `form-action 'self'` previously blocked.
+- **Distinct OAuth resource-server error codes** (`connectmwp_oauth_*`) for precise client and diagnostic feedback.
+- **`client_id` length cap** and **`WWW-Authenticate` discovery challenge scoped to `/mcp`.**
+
+### Changed
+
+- **Removed the temporary Phase-0 OAuth spike scaffolding** (observational stub endpoints and the redacted request-log viewer) now that the real OAuth build has landed.
+
+### Unchanged
+
+- **The Ed25519 request-signature path (Claude/Cursor) and the per-site header-token path are unchanged.** OAuth is additive; it does not gate, replace, or alter any existing authentication.
+
+### Bumped
+
+- All three components → 2.2.0 (lockstep). Plugin re-packaged (both zip locations, sha-identical).
+
+---
+
 ## 2.1.4 — 2026-06-02 (in-development build, NOT a stable release)
 
 This is an **in-development (pre-release) build**, not a stable release.
