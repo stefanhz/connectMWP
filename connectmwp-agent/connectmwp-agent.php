@@ -201,6 +201,18 @@ class ConnectMWP_Agent {
         // inside the handler so it never touches acme/SSL/IndieAuth files.
         add_action('parse_request', [$this, 'oauth_spike_wellknown_router']);
 
+        // [OAuth Phase 1] Serve GET/POST /connectmwp-oauth/authorize as a NORMAL
+        // (non-REST) front-end page via REQUEST_URI interception (same mechanism
+        // as the .well-known router above — no rewrite rules, so no activation
+        // flush is ever needed). This MUST NOT be a REST route: the WP REST API
+        // does not establish the logged-in user from the auth cookie unless the
+        // request carries a valid REST nonce (X-WP-Nonce/_wpnonce), and a
+        // third-party OAuth redirect (ChatGPT -> browser -> authorize URL) cannot
+        // supply that nonce. On a plain front-end request, standard cookie auth
+        // establishes the admin natively, so current_user_can('manage_options')
+        // works and the login loop is avoided.
+        add_action('parse_request', [$this, 'oauth_authorize_router']);
+
         // [OAuth Phase 0 spike] Clear the captured spike log (admin-only,
         // nonce-gated; admin UX, never on the MCP traffic path).
         add_action('wp_ajax_connectmwp_oauth_spike_clear', [$this, 'oauth_spike_clear_handler']);
@@ -236,6 +248,16 @@ class ConnectMWP_Agent {
     // client. The /oauth/{token,register} stubs from Phase 0 remain in place;
     // only GET/POST /oauth/authorize becomes real here.
     // ========================================================================
+
+    // [OAuth Phase 1] Front-end (NON-REST) path the authorization endpoint is
+    // served on, intercepted via REQUEST_URI in oauth_authorize_router(). It is a
+    // clean root path (not under /wp-admin, not under /wp-json) so it works even
+    // where /wp-admin or the REST API is locked down, and — critically — it is a
+    // normal front-end request where WP cookie auth (is_user_logged_in /
+    // current_user_can) works WITHOUT a REST nonce. This is the URL advertised as
+    // authorization_endpoint in the AS metadata. No leading host; matched against
+    // the request path only.
+    const OAUTH_AUTHORIZE_PATH = '/connectmwp-oauth/authorize';
 
     // Scopes this site advertises + grants. SSOT for the authorize-time subset
     // check and the consent copy. Must stay in agreement with the
@@ -279,7 +301,11 @@ class ConnectMWP_Agent {
         return [
             'site_root' => $site_root,
             'mcp'       => $mcp_url,
-            'authorize' => rest_url(self::API_NAMESPACE . '/oauth/authorize'),
+            // authorization_endpoint is now the cookie-native FRONT-END page
+            // (home_url path), NOT a REST route — see oauth_authorize_router /
+            // the login-loop fix. The token + register endpoints stay REST
+            // (back-channel; no browser cookie/nonce involved).
+            'authorize' => home_url(self::OAUTH_AUTHORIZE_PATH),
             'token'     => rest_url(self::API_NAMESPACE . '/oauth/token'),
             'register'  => rest_url(self::API_NAMESPACE . '/oauth/register'),
             'prm'       => $site_root . '/.well-known/oauth-protected-resource',
@@ -534,37 +560,82 @@ class ConnectMWP_Agent {
     private $oauth_spike_www_auth_hooked = false;
 
     // ========================================================================
-    // [OAuth Phase 1] Real GET/POST /oauth/authorize authorization endpoint.
+    // [OAuth Phase 1] Real GET/POST authorization endpoint, served at
+    // OAUTH_AUTHORIZE_PATH as a cookie-native FRONT-END page (NOT a REST route).
     //
-    // Replaces the Phase 0 stub. Validates the request fail-closed in a strict
-    // order (HTTPS -> response_type -> CIMD client -> EXACT redirect_uri match ->
-    // PKCE S256 -> resource == this /mcp -> scope subset -> admin gate), renders
-    // a consent screen with a bound-user picker, and on approval mints a
-    // single-use, short-TTL, hashed authorization code bound to the PKCE
-    // challenge. Phase 2's /oauth/token will consume that code.
+    // Validates the request fail-closed in a strict order (HTTPS -> response_type
+    // -> admin gate -> CIMD client -> EXACT redirect_uri match -> PKCE S256 ->
+    // resource == this /mcp -> scope subset), renders a consent screen with a
+    // bound-user picker, and on approval mints a single-use, short-TTL, hashed
+    // authorization code bound to the PKCE challenge. Phase 2's /oauth/token will
+    // consume that code.
     //
-    // Self-authorizes (it is in the central_rest_auth signature-gate bypass and
-    // registered with permission_callback __return_true) because the auth here is
-    // the WP admin LOGIN SESSION + nonce, not an Ed25519 signature or bearer
-    // token. It NEVER touches verify_request_signature / verify_token_request /
-    // dispatch_action. The endpoint always renders HTML or issues a 302 redirect
-    // and exit()s; it never returns a WP_REST_Response.
+    // Served front-end (via oauth_authorize_router on parse_request) rather than
+    // REST precisely so standard WP cookie auth establishes the logged-in admin
+    // WITHOUT a REST nonce — a third-party OAuth redirect cannot supply one, and a
+    // REST route's current_user_can() would always be false, causing an infinite
+    // wp-login loop. The auth here is the WP admin LOGIN SESSION + a nonce on the
+    // POST, not an Ed25519 signature or bearer token. It NEVER touches
+    // verify_request_signature / verify_token_request / dispatch_action. The
+    // endpoint always renders HTML or issues a 302 redirect and exit()s.
     // ========================================================================
 
     /**
-     * [OAuth Phase 1] GET/POST /oauth/authorize. The real authorization endpoint.
+     * [OAuth Phase 1] Front-end router for the authorization endpoint.
      *
-     * Routed for both GET (initial request + consent render) and POST (consent
-     * approve/deny). The route's permission_callback is __return_true and the
-     * route is exempt from the signature gate; this method performs ALL of its
-     * own auth (admin login session + WP nonce on the POST). Output is always an
-     * HTML page or a 302 redirect followed by exit().
+     * Fires on parse_request (same lifecycle stage as the .well-known router).
+     * At this point WordPress has already loaded the auth cookie, so the current
+     * user IS established and current_user_can('manage_options') works WITHOUT a
+     * REST nonce — which is the entire fix for the login loop. We match the exact
+     * OAUTH_AUTHORIZE_PATH (tolerant of a trailing slash + query string, but NOT
+     * a loose prefix), then dispatch into oauth_authorize_handler() for both GET
+     * and POST. The handler always renders HTML or 302-redirects and exit()s.
      */
-    public function oauth_authorize_handler($request) {
-        $method = ($request instanceof WP_REST_Request) ? strtoupper($request->get_method()) : 'GET';
+    public function oauth_authorize_router() {
+        $raw_uri = isset($_SERVER['REQUEST_URI']) ? (string) wp_unslash($_SERVER['REQUEST_URI']) : '';
+        if ($raw_uri === '') {
+            return;
+        }
+
+        $path = parse_url($raw_uri, PHP_URL_PATH);
+        if (!is_string($path) || $path === '') {
+            return;
+        }
+        // Exact match, tolerant only of a single trailing slash. NOT a prefix match
+        // (so e.g. /connectmwp-oauth/authorize-evil or /connectmwp-oauth/authorize/x
+        // do NOT match).
+        $normalized = untrailingslashit($path);
+        if ($normalized !== self::OAUTH_AUTHORIZE_PATH) {
+            return;
+        }
+
+        // Dispatch into the shared handler. Pass null — the handler reads request
+        // params from $_GET/$_POST and the method from $_SERVER['REQUEST_METHOD'].
+        $this->oauth_authorize_handler(null);
+        exit; // defensive: the handler always exit()s, but never fall through to WP.
+    }
+
+    /**
+     * [OAuth Phase 1] GET/POST authorization endpoint, served at
+     * OAUTH_AUTHORIZE_PATH as a NORMAL front-end page (see oauth_authorize_router)
+     * — NOT a REST route. It is served front-end specifically so standard WP
+     * cookie authentication establishes the logged-in admin WITHOUT a REST nonce
+     * (a third-party OAuth redirect cannot supply one), which fixes the login
+     * loop. This method performs ALL of its own auth (admin login session + WP
+     * nonce on the POST). Output is always an HTML page or a 302 redirect followed
+     * by exit().
+     *
+     * Reads request params from $_GET/$_POST (sanitized in
+     * oauth_collect_authorize_params); the $request argument is unused and always
+     * null when called from the front-end router.
+     */
+    public function oauth_authorize_handler($request = null) {
+        $method = isset($_SERVER['REQUEST_METHOD'])
+            ? strtoupper((string) wp_unslash($_SERVER['REQUEST_METHOD']))
+            : 'GET';
 
         // Observability: keep logging the hit (redacted; never logs code/verifier).
-        $this->oauth_spike_log_request('/' . self::API_NAMESPACE . '/oauth/authorize', $method, []);
+        $this->oauth_spike_log_request(self::OAUTH_AUTHORIZE_PATH, $method, []);
 
         // (1) HTTPS required. Authorization codes and login sessions must never
         // cross plaintext. Reuse the same transport check the rest of the plugin
@@ -783,29 +854,23 @@ class ConnectMWP_Agent {
     }
 
     /**
-     * [OAuth Phase 1] Collect + sanitize the authorize params from a request,
-     * reading the query bag on GET and (for POST consent) the echoed hidden
-     * fields. Returns a fixed-shape array of strings. No secrets are logged.
+     * [OAuth Phase 1] Collect + sanitize the authorize params from the raw
+     * superglobals, reading the query bag on GET and (for POST consent) the echoed
+     * hidden fields. The endpoint is served as a normal front-end page (not REST),
+     * so there is no WP_REST_Request — params come straight from $_GET/$_POST.
+     * Returns a fixed-shape array of strings. No secrets are logged.
      */
-    private function oauth_collect_authorize_params($request) {
-        $get = function ($key) use ($request) {
-            $v = '';
-            if ($request instanceof WP_REST_Request) {
-                $rv = $request->get_param($key);
-                if (is_scalar($rv)) {
-                    $v = (string) $rv;
-                }
+    private function oauth_collect_authorize_params($request = null) {
+        $get = function ($key) {
+            // Prefer POST (the consent submission echoes every param as a hidden
+            // field) over GET, then unslash. Every value is re-validated downstream.
+            if (isset($_POST[$key]) && is_scalar($_POST[$key])) {
+                return (string) wp_unslash($_POST[$key]);
             }
-            // get_param already merges GET/POST/body for REST requests; fall back
-            // to the raw superglobals defensively (some hosts route oddly).
-            if ($v === '') {
-                if (isset($_GET[$key]) && is_scalar($_GET[$key])) {
-                    $v = (string) wp_unslash($_GET[$key]);
-                } elseif (isset($_POST[$key]) && is_scalar($_POST[$key])) {
-                    $v = (string) wp_unslash($_POST[$key]);
-                }
+            if (isset($_GET[$key]) && is_scalar($_GET[$key])) {
+                return (string) wp_unslash($_GET[$key]);
             }
-            return $v;
+            return '';
         };
 
         return [
@@ -914,11 +979,13 @@ class ConnectMWP_Agent {
 
     /**
      * [OAuth Phase 1] Rebuild this authorize endpoint's own URL with all OAuth
-     * params, used as the post-login return target. Built from rest_url() so it
-     * matches whatever this install answers on.
+     * params, used as the post-login return target. Built from
+     * home_url(OAUTH_AUTHORIZE_PATH) — the front-end (cookie-native) authorize
+     * URL — so that after wp-login redirects back here, standard cookie auth
+     * works WITHOUT a REST nonce (this is the login-loop fix).
      */
     private function oauth_self_authorize_url(array $params) {
-        $base = rest_url(self::API_NAMESPACE . '/oauth/authorize');
+        $base = home_url(self::OAUTH_AUTHORIZE_PATH);
         $query = [
             'response_type'         => $params['response_type'],
             'client_id'             => $params['client_id'],
@@ -1247,7 +1314,9 @@ class ConnectMWP_Agent {
         $scope_desc = $this->oauth_scope_plain_english($requested_scopes);
 
         $nonce       = wp_create_nonce('connectmwp_oauth_consent');
-        $form_action = rest_url(self::API_NAMESPACE . '/oauth/authorize');
+        // POST back to the SAME front-end authorize URL (not REST), so cookie auth
+        // + the WP nonce authorize the consent submission.
+        $form_action = home_url(self::OAUTH_AUTHORIZE_PATH);
 
         if (!headers_sent()) {
             status_header(200);
@@ -1576,20 +1645,14 @@ class ConnectMWP_Agent {
             ]
         ]);
 
-        // [OAuth Phase 1] Real authorization endpoint (GET = request + consent
-        // render, POST = consent approve/deny). permission_callback is
-        // __return_true because this endpoint performs its OWN auth (admin LOGIN
-        // SESSION + WP nonce on the POST) rather than an Ed25519 signature or
-        // bearer token, and it is exempt from the signature gate in
-        // central_rest_auth. The handler always renders HTML or 302-redirects and
-        // exit()s — it never returns a WP_REST_Response. See oauth_authorize_handler.
-        register_rest_route(self::API_NAMESPACE, '/oauth/authorize', [
-            [
-                'methods'             => ['GET', 'POST'],
-                'callback'            => [$this, 'oauth_authorize_handler'],
-                'permission_callback' => '__return_true',
-            ]
-        ]);
+        // [OAuth Phase 1] The authorization endpoint is intentionally NOT a REST
+        // route. It is served as a normal cookie-native FRONT-END page at
+        // OAUTH_AUTHORIZE_PATH via oauth_authorize_router() (REQUEST_URI
+        // interception on parse_request). A REST route would require a valid REST
+        // nonce (X-WP-Nonce/_wpnonce) before WP establishes the logged-in user
+        // from the auth cookie — and a third-party OAuth redirect (browser hitting
+        // the authorize URL) cannot supply that nonce, which caused an infinite
+        // wp-login loop. See oauth_authorize_router / oauth_authorize_handler.
 
         // [OAuth Phase 0 spike] Remaining stub OAuth endpoints. These perform NO
         // real auth and store nothing sensitive — they exist purely to (a) be
@@ -1642,16 +1705,17 @@ class ConnectMWP_Agent {
                 return $result; // token-authenticated path; permission_callback (verify_token_request) handles auth.
             }
 
-            // Exempt the /oauth/* endpoints from the Ed25519 signature gate. The
-            // signature gate is the wrong auth model for these: /oauth/authorize
-            // [OAuth Phase 1] self-authorizes via the WP admin LOGIN SESSION + a
-            // nonce (a human in a browser, no signing key), and /oauth/token +
-            // /oauth/register [OAuth Phase 0 spike] are still inert stubs (Phase 2
-            // makes /token real, where it will auth via the PKCE code-verifier +
-            // single-use auth code, NOT a signature). The match is a TIGHT, exact
-            // list of the three routes; it does NOT loosen the /mcp match above.
-            if ($route === '/' . self::API_NAMESPACE . '/oauth/authorize'
-                || $route === '/' . self::API_NAMESPACE . '/oauth/token'
+            // Exempt the back-channel /oauth/* REST endpoints from the Ed25519
+            // signature gate. The signature gate is the wrong auth model for these:
+            // /oauth/token + /oauth/register [OAuth Phase 0 spike] are still inert
+            // stubs (Phase 2 makes /token real, where it will auth via the PKCE
+            // code-verifier + single-use auth code, NOT a signature). NOTE:
+            // /oauth/authorize is NO LONGER a REST route — it is served as a
+            // cookie-native FRONT-END page at OAUTH_AUTHORIZE_PATH (see
+            // oauth_authorize_router), so it never reaches this filter and is not
+            // listed here. The match is a TIGHT, exact list; it does NOT loosen the
+            // /mcp match above.
+            if ($route === '/' . self::API_NAMESPACE . '/oauth/token'
                 || $route === '/' . self::API_NAMESPACE . '/oauth/register') {
                 return $result;
             }
