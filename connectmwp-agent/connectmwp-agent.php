@@ -594,71 +594,13 @@ class ConnectMWP_Agent {
             );
         }
 
-        // (3) Resolve the client via its CIMD document (SSRF-guarded fetch). On
-        // ANY failure we render an ERROR PAGE — we have no trusted redirect_uri to
-        // send the error to yet.
-        $client = $this->resolve_oauth_client($params['client_id']);
-        if (is_wp_error($client)) {
-            $this->oauth_render_error_page(
-                __('Unrecognized application', 'connectmwp'),
-                sprintf(
-                    /* translators: %s: reason the client could not be validated */
-                    __('The requesting application could not be verified: %s', 'connectmwp'),
-                    $client->get_error_message()
-                ),
-                400
-            );
-        }
-
-        // (4) redirect_uri MUST be an EXACT string match to one of the CIMD doc's
-        // registered redirect_uris. This is the open-redirect guard: only AFTER it
-        // passes may any subsequent error be delivered BY redirecting to this URI.
-        if ($params['redirect_uri'] === '' || !$this->oauth_redirect_uri_registered($params['redirect_uri'], $client['redirect_uris'])) {
-            $this->oauth_render_error_page(
-                __('Invalid redirect URI', 'connectmwp'),
-                __('The redirect address supplied does not match any address registered by this application. For your safety, the request was refused.', 'connectmwp'),
-                400
-            );
-        }
-        // From here on, $params['redirect_uri'] is TRUSTED and errors may redirect.
-
-        // (5) PKCE: code_challenge present AND method exactly S256. Reject plain
-        // and missing — downgrade protection.
-        if ($params['code_challenge'] === '' || $params['code_challenge_method'] !== 'S256') {
-            $this->oauth_redirect_error(
-                $params['redirect_uri'],
-                'invalid_request',
-                __('PKCE with code_challenge_method=S256 is required.', 'connectmwp'),
-                $params['state']
-            );
-        }
-
-        // (6) resource MUST equal this site's canonical /mcp URI (RFC 8707).
-        if (!$this->oauth_resource_matches($params['resource'])) {
-            $this->oauth_redirect_error(
-                $params['redirect_uri'],
-                'invalid_target',
-                __('The requested resource does not match this server.', 'connectmwp'),
-                $params['state']
-            );
-        }
-
-        // (7) scope: every requested scope must be in the advertised set. An empty
-        // scope defaults to the full advertised set (single scope today).
-        $requested_scopes = $this->oauth_parse_scope($params['scope']);
-        foreach ($requested_scopes as $s) {
-            if (!in_array($s, self::OAUTH_SUPPORTED_SCOPES, true)) {
-                $this->oauth_redirect_error(
-                    $params['redirect_uri'],
-                    'invalid_scope',
-                    __('One or more requested scopes are not supported by this server.', 'connectmwp'),
-                    $params['state']
-                );
-            }
-        }
-        $granted_scope = implode(' ', $requested_scopes);
-
-        // (9) Admin gate. The user driving the browser MUST be a logged-in admin.
+        // (3) Admin gate — MUST run BEFORE the outbound CIMD fetch (step 4). If we
+        // resolved the client first, any unauthenticated internet caller could make
+        // this server fetch an arbitrary https URL (the client_id) — an
+        // unauthenticated SSRF trigger. By gating on a logged-in admin here, the
+        // outbound fetch is only ever reachable by an authenticated site admin.
+        // Both branches below use error PAGES / login redirect (NOT an OAuth
+        // redirect): no trusted redirect_uri exists yet.
         if (!is_user_logged_in()) {
             // Bounce through wp-login, returning to THIS authorize URL (all params
             // preserved) so the flow resumes after login. wp_login_url escapes the
@@ -675,6 +617,74 @@ class ConnectMWP_Agent {
                 403
             );
         }
+
+        // (4) Resolve the client via its CIMD document (SSRF-guarded fetch). Only
+        // reachable by an authenticated admin (gated at step 3). On ANY failure we
+        // render an ERROR PAGE — we have no trusted redirect_uri to send the error
+        // to yet.
+        $client = $this->resolve_oauth_client($params['client_id']);
+        if (is_wp_error($client)) {
+            $this->oauth_render_error_page(
+                __('Unrecognized application', 'connectmwp'),
+                sprintf(
+                    /* translators: %s: reason the client could not be validated */
+                    __('The requesting application could not be verified: %s', 'connectmwp'),
+                    $client->get_error_message()
+                ),
+                400
+            );
+        }
+
+        // (5) redirect_uri MUST be an EXACT string match to one of the CIMD doc's
+        // registered redirect_uris. This is the open-redirect guard: only AFTER it
+        // passes may any subsequent error be delivered BY redirecting to this URI.
+        if ($params['redirect_uri'] === '' || !$this->oauth_redirect_uri_registered($params['redirect_uri'], $client['redirect_uris'])) {
+            $this->oauth_render_error_page(
+                __('Invalid redirect URI', 'connectmwp'),
+                __('The redirect address supplied does not match any address registered by this application. For your safety, the request was refused.', 'connectmwp'),
+                400
+            );
+        }
+        // From here on, $params['redirect_uri'] is TRUSTED and errors may redirect.
+
+        // (6) PKCE: code_challenge present, well-formed, AND method exactly S256.
+        // Reject plain, missing, or malformed/over-long challenges — downgrade and
+        // junk-input protection.
+        if ($params['code_challenge'] === ''
+            || $params['code_challenge_method'] !== 'S256'
+            || !preg_match('/^[A-Za-z0-9\-._~]{43,128}$/', $params['code_challenge'])) {
+            $this->oauth_redirect_error(
+                $params['redirect_uri'],
+                'invalid_request',
+                __('PKCE with a well-formed code_challenge and code_challenge_method=S256 is required.', 'connectmwp'),
+                $params['state']
+            );
+        }
+
+        // (7) resource MUST equal this site's canonical /mcp URI (RFC 8707).
+        if (!$this->oauth_resource_matches($params['resource'])) {
+            $this->oauth_redirect_error(
+                $params['redirect_uri'],
+                'invalid_target',
+                __('The requested resource does not match this server.', 'connectmwp'),
+                $params['state']
+            );
+        }
+
+        // (8) scope: every requested scope must be in the advertised set. An empty
+        // scope defaults to the full advertised set (single scope today).
+        $requested_scopes = $this->oauth_parse_scope($params['scope']);
+        foreach ($requested_scopes as $s) {
+            if (!in_array($s, self::OAUTH_SUPPORTED_SCOPES, true)) {
+                $this->oauth_redirect_error(
+                    $params['redirect_uri'],
+                    'invalid_scope',
+                    __('One or more requested scopes are not supported by this server.', 'connectmwp'),
+                    $params['state']
+                );
+            }
+        }
+        $granted_scope = implode(' ', $requested_scopes);
 
         // ---- POST: consent submission (approve / deny) ----
         if ($method === 'POST') {
@@ -735,10 +745,17 @@ class ConnectMWP_Agent {
                 ]);
 
                 if (is_wp_error($code) || !is_string($code) || $code === '') {
+                    // The redirect_uri is validated by this point, so deliver the
+                    // failure BY redirecting. A capacity rejection (the
+                    // MAX_OAUTH_CODES cap) is transient, so signal
+                    // temporarily_unavailable; everything else is server_error.
+                    $is_capacity = is_wp_error($code) && $code->get_error_code() === 'cmwp_oauth_code_capacity';
                     $this->oauth_redirect_error(
                         $params['redirect_uri'],
-                        'server_error',
-                        __('Could not issue an authorization code. Please try again.', 'connectmwp'),
+                        $is_capacity ? 'temporarily_unavailable' : 'server_error',
+                        $is_capacity
+                            ? __('The server is briefly at capacity for pending authorizations. Please try again shortly.', 'connectmwp')
+                            : __('Could not issue an authorization code. Please try again.', 'connectmwp'),
                         $params['state']
                     );
                 }
@@ -796,7 +813,7 @@ class ConnectMWP_Agent {
             'client_id'             => trim($get('client_id')),
             'redirect_uri'          => trim($get('redirect_uri')),
             'scope'                 => trim($get('scope')),
-            'state'                 => $get('state'), // opaque; preserved verbatim (length-bounded on echo)
+            'state'                 => substr($get('state'), 0, 2048), // opaque; preserved verbatim but hard-capped at 2048 chars to bound echo size
             'code_challenge'        => trim($get('code_challenge')),
             'code_challenge_method' => trim($get('code_challenge_method')),
             'resource'              => trim($get('resource')),
@@ -812,7 +829,12 @@ class ConnectMWP_Agent {
         if (is_ssl()) {
             return true;
         }
-        if (isset($_SERVER['HTTP_X_FORWARDED_PROTO'])
+        // Only trust X-Forwarded-Proto when we KNOW we sit behind a trusted reverse
+        // proxy (same discipline as get_client_ip). Otherwise a client could spoof
+        // the header to defeat the HTTPS gate. is_behind_trusted_proxy() is the
+        // SSOT for "may I trust forwarding headers?" (default OFF).
+        if ($this->is_behind_trusted_proxy()
+            && isset($_SERVER['HTTP_X_FORWARDED_PROTO'])
             && strtolower(trim((string) wp_unslash($_SERVER['HTTP_X_FORWARDED_PROTO']))) === 'https') {
             return true;
         }
@@ -837,6 +859,11 @@ class ConnectMWP_Agent {
      */
     private function oauth_resource_matches($resource) {
         if (!is_string($resource) || $resource === '') {
+            return false;
+        }
+        // RFC 8707: the resource indicator must be a bare URI — no query string and
+        // no fragment. Reject (non-match) rather than silently stripping them.
+        if (strpos($resource, '?') !== false || strpos($resource, '#') !== false) {
             return false;
         }
         $norm = function ($u) {
@@ -938,6 +965,9 @@ class ConnectMWP_Agent {
             header('Location: ' . $url, true, 302);
             header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
             header('Pragma: no-cache');
+            // Don't leak the authorize URL's params (code/state/etc.) to the
+            // destination via the Referer header.
+            header('Referrer-Policy: no-referrer');
         }
         exit;
     }
@@ -1152,16 +1182,24 @@ class ConnectMWP_Agent {
             return new WP_Error('cmwp_oauth_client', __('The application metadata document does not match the requested client_id.', 'connectmwp'));
         }
 
-        // redirect_uris: keep only well-formed https (or non-empty string) entries;
-        // require at least one.
+        // redirect_uris: keep only well-formed, non-plaintext entries; require at
+        // least one. Accept https:// and custom mobile/native schemes (e.g.
+        // myapp://...); REJECT plaintext http:// — an authorization code must never
+        // be delivered over cleartext. A loopback http URI is no exception here:
+        // Phase 1 has no native-app loopback story, so we keep the rule strict.
         $clean_uris = [];
         foreach ($redirect_uris as $u) {
-            if (is_string($u) && $u !== '') {
-                $clean_uris[] = $u;
+            if (!is_string($u) || $u === '') {
+                continue;
             }
+            $scheme = strtolower((string) wp_parse_url($u, PHP_URL_SCHEME));
+            if ($scheme === 'http') {
+                continue; // plaintext — never accept
+            }
+            $clean_uris[] = $u;
         }
         if (empty($clean_uris)) {
-            return new WP_Error('cmwp_oauth_client', __('The application registered no usable redirect URIs.', 'connectmwp'));
+            return new WP_Error('cmwp_oauth_client', __('The application registered no usable (non-plaintext) redirect URIs.', 'connectmwp'));
         }
 
         $result = [
@@ -1217,6 +1255,10 @@ class ConnectMWP_Agent {
             header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
             header('Pragma: no-cache');
             header('X-Frame-Options: DENY'); // never allow this consent UI to be framed
+            // Self-contained page: no scripts, only inline styles, form posts to
+            // self. Lock everything else down.
+            header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'");
+            header('X-Content-Type-Options: nosniff');
         }
         ?>
 <!doctype html>
@@ -1338,6 +1380,9 @@ class ConnectMWP_Agent {
             header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
             header('Pragma: no-cache');
             header('X-Frame-Options: DENY');
+            // Self-contained page: no scripts, only inline styles, no forms.
+            header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'");
+            header('X-Content-Type-Options: nosniff');
         }
         ?>
 <!doctype html>
@@ -2892,6 +2937,14 @@ class ConnectMWP_Agent {
         // Soft cap on the number of live code rows (mostly expired). If we are at
         // the cap, opportunistically prune expired rows before refusing.
         $this->oauth_prune_expired_codes();
+
+        // Enforce the hard cap AFTER pruning: if still at/over MAX_OAUTH_CODES,
+        // refuse rather than let the code store grow unbounded. The caller maps
+        // this transient-capacity error to a temporarily_unavailable redirect.
+        $idx = get_option(self::OAUTH_CODE_INDEX_OPTION, []);
+        if (is_array($idx) && count($idx) >= self::MAX_OAUTH_CODES) {
+            return new WP_Error('cmwp_oauth_code_capacity', __('Too many pending authorization codes; try again shortly.', 'connectmwp'));
+        }
 
         $record = $this->normalize_oauth_code_record([
             'code_hash'             => hash('sha256', $plaintext),
