@@ -281,6 +281,26 @@ class ConnectMWP_Agent {
     const OAUTH_CODE_TTL_SECONDS   = 120;                       // auth code lifetime (single-use, short)
     const MAX_OAUTH_CODES          = 200;                       // safety cap on live (mostly-expired) code rows
 
+    // [OAuth Phase 2] Access/refresh-token store. Own per-row + capped index DAL,
+    // mirroring the cgpt-token and auth-code DALs above. ONLY the sha256 hash of a
+    // token is ever persisted; the plaintext exists once (return of
+    // mint_oauth_tokens / rotate_oauth_refresh_token) and is never stored or
+    // logged. Access tokens (cmwp_oat_) are short-lived bearer credentials the
+    // resource server validates on /mcp; refresh tokens (cmwp_ort_) are
+    // longer-lived and ROTATED on every use (OAuth 2.1 requires rotation for
+    // public clients). The two plaintext prefixes are distinct so the resource
+    // server can branch by prefix and so a refresh token can never be accepted as
+    // an access token at /mcp (the resolve helpers also assert the stored `type`).
+    const OAUTH_TOKEN_OPTION_PREFIX = 'connectmwp_oauth_token_'; // + bare hex suffix => per-token option name
+    const OAUTH_TOKEN_INDEX_OPTION  = 'connectmwp_oauth_token_index'; // array of token_id (hint, self-healing)
+    const OAUTH_TOKEN_ID_PREFIX     = 'cmwp_oauthtk_';          // token_id prefix (internal row id, NOT the secret)
+    const OAUTH_ACCESS_TOKEN_PREFIX = 'cmwp_oat_';              // plaintext access-token prefix (also RS branch key)
+    const OAUTH_REFRESH_TOKEN_PREFIX = 'cmwp_ort_';            // plaintext refresh-token prefix
+    const OAUTH_TOKEN_SECRET_BYTES  = 32;                       // entropy of a token secret (>= 32 random bytes)
+    const OAUTH_ACCESS_TOKEN_TTL    = 3600;                     // access-token lifetime (1 hour)
+    const OAUTH_REFRESH_TOKEN_TTL   = 30 * 86400;               // refresh-token lifetime (30 days)
+    const MAX_OAUTH_TOKENS          = 500;                      // safety cap on live (mostly-expired) token rows
+
     /**
      * [OAuth Phase 0 spike] Param names whose VALUES must never be stored in the
      * log. We record that the param was present and its length, never the bytes.
@@ -1480,17 +1500,228 @@ class ConnectMWP_Agent {
     }
 
     /**
-     * [OAuth Phase 0 spike] POST /oauth/token stub. Logs the hit, returns a
-     * standard-shaped OAuth error (HTTP 400). Performs NO token exchange.
+     * [OAuth Phase 2] POST /oauth/token — the real token endpoint.
+     *
+     * Back-channel, form-encoded (application/x-www-form-urlencoded — OAuth token
+     * requests are NOT JSON). Two grant types:
+     *
+     *   authorization_code: redeems a single-use auth code minted by the authorize
+     *     endpoint. Verifies client_id, redirect_uri, resource, and the PKCE proof
+     *     (S256: base64url(sha256(code_verifier)) === stored code_challenge). On
+     *     success issues an access+refresh pair (mint_oauth_tokens).
+     *
+     *   refresh_token: rotates a presented refresh token (OAuth 2.1 rotation),
+     *     issuing a fresh pair bound to the same user/scope/audience. Any attempt
+     *     to widen scope or change resource/audience is rejected.
+     *
+     * Errors are standard OAuth JSON {error, error_description} at HTTP 400, with
+     * Cache-Control: no-store. Codes, verifiers, and tokens are NEVER logged.
+     *
+     * This is a public client (token_endpoint_auth_method=none) — there is no
+     * client secret; PKCE (auth_code) / token possession (refresh) is the proof.
      */
-    public function oauth_spike_token_handler($request) {
-        // [OAuth Phase 0 spike]
-        $body = ($request instanceof WP_REST_Request) ? $request->get_body_params() : null;
-        $this->oauth_spike_log_request('/' . self::API_NAMESPACE . '/oauth/token', 'POST', $body);
-        return new WP_REST_Response([
-            'error'             => 'temporarily_unavailable',
-            'error_description' => 'Phase 0 spike',
+    public function oauth_token_handler($request) {
+        // Observability: record only that /oauth/token was hit + the request
+        // SHAPE. The spike logger's redaction list already blanks code,
+        // code_verifier, refresh_token, and access_token values, so no secret is
+        // persisted. Pass the raw body params (param names only are recorded).
+        $log_body = ($request instanceof WP_REST_Request) ? $request->get_body_params() : null;
+        $this->oauth_spike_log_request('/' . self::API_NAMESPACE . '/oauth/token', 'POST', is_array($log_body) ? $log_body : []);
+
+        // HTTPS-first. A token exchange over plaintext would leak the code /
+        // verifier / refresh token in transit.
+        if (!$this->oauth_request_is_https()) {
+            return $this->oauth_token_error('invalid_request', __('HTTPS is required for the token endpoint.', 'connectmwp'));
+        }
+
+        // OAuth token requests are application/x-www-form-urlencoded. WP_REST_Request
+        // parses that into body params. We deliberately read body params (NOT JSON)
+        // so a JSON-bodied request simply yields no grant_type → invalid_request.
+        $param = function ($name) use ($request) {
+            if ($request instanceof WP_REST_Request) {
+                $v = $request->get_body_params();
+                if (is_array($v) && isset($v[$name])) {
+                    return is_string($v[$name]) ? trim($v[$name]) : '';
+                }
+            }
+            return '';
+        };
+
+        $grant_type = $param('grant_type');
+        if ($grant_type === '') {
+            return $this->oauth_token_error('invalid_request', __('Missing grant_type.', 'connectmwp'));
+        }
+
+        if ($grant_type === 'authorization_code') {
+            return $this->oauth_token_grant_authorization_code($param);
+        }
+        if ($grant_type === 'refresh_token') {
+            return $this->oauth_token_grant_refresh($param);
+        }
+
+        return $this->oauth_token_error('unsupported_grant_type', __('Unsupported grant_type.', 'connectmwp'));
+    }
+
+    /**
+     * [OAuth Phase 2] authorization_code grant. Single-use code redemption + PKCE
+     * verification, then issue an access+refresh pair.
+     *
+     * @param callable $param fn(string $name): string — trimmed body param reader.
+     */
+    private function oauth_token_grant_authorization_code(callable $param) {
+        $code          = $param('code');
+        $code_verifier = $param('code_verifier');
+        $redirect_uri  = $param('redirect_uri');
+        $client_id     = $param('client_id');
+        $resource      = $param('resource');
+
+        if ($code === '' || $code_verifier === '' || $redirect_uri === '' || $client_id === '') {
+            return $this->oauth_token_error('invalid_request', __('Missing one or more required parameters (code, code_verifier, redirect_uri, client_id).', 'connectmwp'));
+        }
+
+        // RFC 7636: code_verifier is 43..128 chars from the unreserved set
+        // [A-Za-z0-9-._~]. Reject anything outside that before hashing.
+        if (!preg_match('/^[A-Za-z0-9\-._~]{43,128}$/', $code_verifier)) {
+            return $this->oauth_token_error('invalid_grant', __('Malformed PKCE code_verifier.', 'connectmwp'));
+        }
+
+        // Redeem the code ONCE. consume_oauth_code atomically deletes the row and
+        // enforces the TTL, returning the bound grant or false.
+        $grant = $this->consume_oauth_code($code);
+        if ($grant === false) {
+            return $this->oauth_token_error('invalid_grant', __('Authorization code is invalid, expired, or already used.', 'connectmwp'));
+        }
+
+        // Bind checks. client_id and redirect_uri must match the grant the code was
+        // issued against (constant-time compare — these gate credential issuance).
+        if (!hash_equals((string) $grant['client_id'], $client_id)) {
+            return $this->oauth_token_error('invalid_grant', __('client_id does not match the authorization code.', 'connectmwp'));
+        }
+        if (!hash_equals((string) $grant['redirect_uri'], $redirect_uri)) {
+            return $this->oauth_token_error('invalid_grant', __('redirect_uri does not match the authorization code.', 'connectmwp'));
+        }
+
+        // If the client sends `resource`, it must match the grant's bound resource
+        // (the canonical /mcp URI). Absent `resource` is tolerated — the grant
+        // already pins the audience. A PRESENT but mismatching resource is rejected.
+        if ($resource !== '' && !$this->oauth_resource_matches($resource)) {
+            return $this->oauth_token_error('invalid_target', __('resource does not match the authorized audience.', 'connectmwp'));
+        }
+
+        // PKCE proof (S256 only — the authorize endpoint requires S256 and stores
+        // it that way). base64url(sha256(code_verifier)) must equal the stored
+        // code_challenge. Constant-time compare of the derived challenge.
+        $method = isset($grant['code_challenge_method']) ? (string) $grant['code_challenge_method'] : '';
+        if ($method !== 'S256') {
+            // Defensive: the authorize side only ever mints S256. Anything else is
+            // a corrupt/forged grant.
+            return $this->oauth_token_error('invalid_grant', __('Unsupported PKCE method on the authorization code.', 'connectmwp'));
+        }
+        $derived_challenge = $this->oauth_base64url_encode(hash('sha256', $code_verifier, true));
+        if (!hash_equals((string) $grant['code_challenge'], $derived_challenge)) {
+            return $this->oauth_token_error('invalid_grant', __('PKCE verification failed.', 'connectmwp'));
+        }
+
+        // All checks passed — issue the token pair.
+        $tokens = $this->mint_oauth_tokens($grant);
+        if ($tokens === false) {
+            return $this->oauth_token_error('temporarily_unavailable', __('Could not issue tokens; please try again shortly.', 'connectmwp'));
+        }
+
+        return $this->oauth_token_success($tokens);
+    }
+
+    /**
+     * [OAuth Phase 2] refresh_token grant. Validate + rotate the refresh token,
+     * refusing any attempt to widen scope or change the audience/resource.
+     *
+     * @param callable $param fn(string $name): string — trimmed body param reader.
+     */
+    private function oauth_token_grant_refresh(callable $param) {
+        $refresh_token = $param('refresh_token');
+        $req_scope     = $param('scope');
+        $req_resource  = $param('resource');
+
+        if ($refresh_token === '') {
+            return $this->oauth_token_error('invalid_request', __('Missing refresh_token.', 'connectmwp'));
+        }
+
+        // Pre-rotation no-widen guard for `resource`: if the client supplies one it
+        // must be the same audience the refresh token is bound to. We validate the
+        // requested resource against THIS site's canonical /mcp URI (the only
+        // audience this site issues), so a request naming a different audience is
+        // rejected before we spend (rotate) the refresh token.
+        if ($req_resource !== '' && !$this->oauth_resource_matches($req_resource)) {
+            return $this->oauth_token_error('invalid_target', __('resource does not match the token audience.', 'connectmwp'));
+        }
+
+        $tokens = $this->rotate_oauth_refresh_token($refresh_token);
+        if ($tokens === false) {
+            return $this->oauth_token_error('invalid_grant', __('Refresh token is invalid, expired, or already used.', 'connectmwp'));
+        }
+
+        // No-widen scope guard: the rotated pair carries the original scope. If the
+        // client asked for a scope, it may only be a SUBSET of the granted scope.
+        // (Single-scope today, but enforce generally so a future multi-scope world
+        // can't widen.) On a widen attempt we reject — note the new pair has
+        // already been issued, but it is bound to the ORIGINAL (narrower) scope, so
+        // no privilege escalation occurred; we simply refuse to confirm the wider
+        // request. The just-issued pair will expire/prune on its own.
+        if ($req_scope !== '') {
+            $granted = $this->oauth_parse_scope(isset($tokens['scope']) ? $tokens['scope'] : '');
+            $asked   = $this->oauth_parse_scope($req_scope);
+            $extra   = array_diff($asked, $granted);
+            if (!empty($extra)) {
+                return $this->oauth_token_error('invalid_scope', __('Requested scope exceeds the originally granted scope.', 'connectmwp'));
+            }
+        }
+
+        return $this->oauth_token_success($tokens);
+    }
+
+    /**
+     * [OAuth Phase 2] Build the success token response. Always no-store / no-cache
+     * (the body carries secrets that must never be cached).
+     *
+     * @param array $tokens From mint_oauth_tokens / rotate_oauth_refresh_token.
+     */
+    private function oauth_token_success(array $tokens) {
+        $response = new WP_REST_Response([
+            'access_token'  => $tokens['access_token'],
+            'token_type'    => 'Bearer',
+            'expires_in'    => intval($tokens['expires_in']),
+            'refresh_token' => $tokens['refresh_token'],
+            'scope'         => isset($tokens['scope']) && $tokens['scope'] !== '' ? $tokens['scope'] : implode(' ', self::OAUTH_SUPPORTED_SCOPES),
+        ], 200);
+        $response->header('Cache-Control', 'no-store');
+        $response->header('Pragma', 'no-cache');
+        return $response;
+    }
+
+    /**
+     * [OAuth Phase 2] Standard OAuth error response: JSON {error, error_description}
+     * at HTTP 400, Cache-Control: no-store. error_description is a fixed,
+     * non-sensitive string (never echoes a presented secret).
+     */
+    private function oauth_token_error($error, $description) {
+        $response = new WP_REST_Response([
+            'error'             => (string) $error,
+            'error_description' => (string) $description,
         ], 400);
+        $response->header('Cache-Control', 'no-store');
+        $response->header('Pragma', 'no-cache');
+        return $response;
+    }
+
+    /**
+     * [OAuth Phase 2] URL-safe base64 (RFC 4648 §5) WITHOUT padding — the encoding
+     * PKCE S256 uses for code_challenge. Mirrors the client-side
+     * base64url(sha256(verifier)). Keep byte-identical to whatever the authorize
+     * side stored (it stores the client-supplied code_challenge verbatim, which is
+     * itself unpadded base64url per RFC 7636).
+     */
+    private function oauth_base64url_encode($raw) {
+        return rtrim(strtr(base64_encode($raw), '+/', '-_'), '=');
     }
 
     /**
@@ -1654,16 +1885,20 @@ class ConnectMWP_Agent {
         // the authorize URL) cannot supply that nonce, which caused an infinite
         // wp-login loop. See oauth_authorize_router / oauth_authorize_handler.
 
-        // [OAuth Phase 0 spike] Remaining stub OAuth endpoints. These perform NO
-        // real auth and store nothing sensitive — they exist purely to (a) be
-        // advertised in the discovery docs and (b) record what a client sends.
-        // permission_callback is __return_true ONLY because these are inert
-        // observational stubs; they are explicitly exempted from the signature
-        // gate in central_rest_auth. Phase 2 replaces /oauth/token.
+        // [OAuth Phase 2] The token endpoint is now REAL. It is a back-channel
+        // POST from the client's own server (no browser cookie), so it is NOT
+        // signature-gated and NOT capability-gated: it authenticates the request
+        // by the single-use authorization code + PKCE code_verifier (auth_code
+        // grant) or by a valid refresh token (refresh grant). It stays exempted
+        // from the Ed25519 signature gate in central_rest_auth (the auth model is
+        // PKCE/refresh, not a signature), and emits its own no-store headers. The
+        // permission_callback is __return_true ONLY because the grant material IS
+        // the credential, validated inside the handler. Do NOT add a signature
+        // requirement here — public OAuth clients have no signing key.
         register_rest_route(self::API_NAMESPACE, '/oauth/token', [
             [
                 'methods'             => 'POST',
-                'callback'            => [$this, 'oauth_spike_token_handler'],
+                'callback'            => [$this, 'oauth_token_handler'],
                 'permission_callback' => '__return_true',
             ]
         ]);
@@ -2189,6 +2424,83 @@ class ConnectMWP_Agent {
                 $this->describe_verification_error('connectmwp_cgpt_rate_limited'),
                 array('status' => 429)
             );
+        }
+
+        // [OAuth Phase 2] OAuth access-token branch. /mcp accepts OAuth 2.1
+        // access tokens (cmwp_oat_) IN ADDITION to the cgpt API tokens
+        // (cmwp_cgpt_), both as Authorization: Bearer. Branch by prefix: only a
+        // cmwp_oat_-prefixed token is resolved here; everything else falls through
+        // to the unchanged cgpt path below. On success we enforce RESOURCE-SERVER
+        // checks the cgpt path doesn't have — audience (RFC 8707) and scope — then
+        // bind the user with the SAME per-request cache + touch discipline. No
+        // login session is created. A failed OAuth resolve counts against the same
+        // IP limiter and returns the same 401 (+ WWW-Authenticate discovery
+        // challenge) as a bad cgpt token, so an attacker can't distinguish them.
+        if (strpos($token, self::OAUTH_ACCESS_TOKEN_PREFIX) === 0) {
+            $oauth = $this->resolve_oauth_access_token($token);
+            if ($oauth === false) {
+                // Invalid / expired / wrong-type (e.g. a refresh token presented at
+                // /mcp). Count against the IP limiter and 401.
+                set_transient($limit_key, $failures + 1, self::CGPT_AUTH_LOCKOUT_SECONDS);
+                $this->verification_error_code = 'connectmwp_cgpt_invalid_token';
+                $this->cgpt_token_verified = false;
+                $this->oauth_spike_emit_www_authenticate();
+                return new WP_Error(
+                    'connectmwp_cgpt_invalid_token',
+                    $this->describe_verification_error('connectmwp_cgpt_invalid_token'),
+                    array('status' => 401)
+                );
+            }
+
+            $record = $oauth['record'];
+
+            // RFC 8707 audience binding: the access token's audience MUST equal
+            // this site's canonical /mcp URI. A token minted for a DIFFERENT
+            // resource server must never be accepted here (cross-RS token reuse).
+            if (!$this->oauth_resource_matches((string) $record['audience'])) {
+                set_transient($limit_key, $failures + 1, self::CGPT_AUTH_LOCKOUT_SECONDS);
+                $this->verification_error_code = 'connectmwp_cgpt_invalid_token';
+                $this->cgpt_token_verified = false;
+                $this->oauth_spike_emit_www_authenticate();
+                return new WP_Error(
+                    'connectmwp_cgpt_invalid_token',
+                    $this->describe_verification_error('connectmwp_cgpt_invalid_token'),
+                    array('status' => 401)
+                );
+            }
+
+            // Scope: the token must carry the required 'connectmwp' scope.
+            $scopes = $this->oauth_parse_scope((string) $record['scope']);
+            if (!in_array('connectmwp', $scopes, true)) {
+                set_transient($limit_key, $failures + 1, self::CGPT_AUTH_LOCKOUT_SECONDS);
+                $this->verification_error_code = 'connectmwp_cgpt_invalid_token';
+                $this->cgpt_token_verified = false;
+                $this->oauth_spike_emit_www_authenticate();
+                return new WP_Error(
+                    'connectmwp_cgpt_invalid_token',
+                    $this->describe_verification_error('connectmwp_cgpt_invalid_token'),
+                    array('status' => 401)
+                );
+            }
+
+            // Fail-closed: a token bound to no valid user is misconfigured.
+            if ((int) ($record['bound_user_id'] ?? 0) <= 0) {
+                $this->verification_error_code = 'connectmwp_cgpt_unbound_token';
+                $this->cgpt_token_verified = false;
+                return new WP_Error(
+                    'connectmwp_cgpt_unbound_token',
+                    $this->describe_verification_error('connectmwp_cgpt_unbound_token'),
+                    array('status' => 403)
+                );
+            }
+
+            // Success: bind the user exactly as the cgpt path does (no session).
+            // dispatch_action's capability checks then run as $this->bound_user_id.
+            $this->bound_user_id       = (int) $record['bound_user_id'];
+            $this->cgpt_bound_user_id  = $this->bound_user_id;
+            $this->cgpt_token_verified = true;
+            $this->touch_oauth_token($oauth['token_id'], $ip);
+            return true;
         }
 
         // Resolve. The DAL pre-filters bad prefix/length cheaply and only
@@ -3159,6 +3471,445 @@ class ConnectMWP_Agent {
         }
         if (count($alive) !== count($index)) {
             update_option(self::OAUTH_CODE_INDEX_OPTION, array_values(array_unique($alive)), 'no');
+        }
+    }
+
+    // ========================================================================
+    // [OAuth Phase 2] Access/refresh-token DAL.
+    //
+    // Mirrors the cgpt-token + auth-code DALs: one option row per token, autoload
+    // `no`, plus a non-authoritative, self-healing, capped index. ONLY the sha256
+    // hash of a token is persisted — the plaintext exists exactly once (return of
+    // mint_oauth_tokens / rotate_oauth_refresh_token) and is never stored or
+    // logged. Records carry the bound user, scope, audience (the canonical /mcp
+    // URI — RFC 8707), client_id, token `type` (access|refresh), an absolute
+    // `expires` (unix), and a `family` id linking an access token to the refresh
+    // token it was issued alongside (so a refresh rotation can revoke the prior
+    // access token of the same family and a detected refresh-reuse can nuke the
+    // whole family). resolve_oauth_access_token() is the resource-server entry
+    // point; rotate_oauth_refresh_token() implements OAuth 2.1 refresh rotation.
+    // ========================================================================
+
+    /** [OAuth Phase 2] Map a token_id to its per-token option name. */
+    private function oauth_token_option_name($token_id) {
+        $token_id = (string) $token_id;
+        $strip = self::OAUTH_TOKEN_ID_PREFIX;
+        if (strpos($token_id, $strip) === 0) {
+            $suffix = substr($token_id, strlen($strip));
+        } else {
+            // Defensive: any odd id still maps deterministically. UNREACHABLE in
+            // normal operation — mint always produces a well-formed prefixed id.
+            $suffix = substr(hash('sha256', $token_id), 0, 32);
+        }
+        return self::OAUTH_TOKEN_OPTION_PREFIX . $suffix;
+    }
+
+    /**
+     * [OAuth Phase 2] Normalize a stored OAuth-token record to its canonical
+     * shape. SSOT for the on-WP access/refresh-token schema. Only `token_hash`
+     * (sha256 hex) is credential material; the rest binds the grant.
+     */
+    private function normalize_oauth_token_record($raw) {
+        if (!is_array($raw)) {
+            $raw = [];
+        }
+        $type = isset($raw['type']) ? (string) $raw['type'] : '';
+        if ($type !== 'access' && $type !== 'refresh') {
+            $type = '';
+        }
+        return [
+            'token_hash'    => isset($raw['token_hash']) ? (string) $raw['token_hash'] : '',
+            'type'          => $type,
+            'bound_user_id' => isset($raw['bound_user_id']) ? intval($raw['bound_user_id']) : 0,
+            'scope'         => isset($raw['scope']) ? (string) $raw['scope'] : '',
+            'audience'      => isset($raw['audience']) ? (string) $raw['audience'] : '',
+            'client_id'     => isset($raw['client_id']) ? (string) $raw['client_id'] : '',
+            'family'        => isset($raw['family']) ? (string) $raw['family'] : '',
+            'expires'       => isset($raw['expires']) ? intval($raw['expires']) : 0,
+            'created'       => isset($raw['created']) ? intval($raw['created']) : 0,
+            'last_used'     => isset($raw['last_used']) ? intval($raw['last_used']) : 0,
+            'last_ip'       => isset($raw['last_ip']) ? (string) $raw['last_ip'] : '',
+        ];
+    }
+
+    /** [OAuth Phase 2] Read a single token row by id (normalized) or false. */
+    private function get_oauth_token($token_id) {
+        $row = get_option($this->oauth_token_option_name($token_id), null);
+        if (is_array($row)) {
+            return $this->normalize_oauth_token_record($row);
+        }
+        return false;
+    }
+
+    /**
+     * [OAuth Phase 2] Persist ONE token row (sha256 hash of the plaintext +
+     * metadata) and index it. Returns the token_id on success, or false if the
+     * atomic create failed (id collision or transient DB error) — in which case
+     * NOTHING is indexed and the caller must NOT hand back the plaintext.
+     *
+     * @param string $plaintext The full plaintext token (prefixed). Hashed here.
+     * @param array  $meta      type, bound_user_id, scope, audience, client_id,
+     *                          family, expires.
+     * @return string|false token_id
+     */
+    private function store_oauth_token($plaintext, array $meta) {
+        $token_id = self::OAUTH_TOKEN_ID_PREFIX . bin2hex(random_bytes(8));
+        $record = $this->normalize_oauth_token_record([
+            'token_hash'    => hash('sha256', $plaintext),
+            'type'          => isset($meta['type']) ? $meta['type'] : '',
+            'bound_user_id' => isset($meta['bound_user_id']) ? intval($meta['bound_user_id']) : 0,
+            'scope'         => isset($meta['scope']) ? (string) $meta['scope'] : '',
+            'audience'      => isset($meta['audience']) ? (string) $meta['audience'] : '',
+            'client_id'     => isset($meta['client_id']) ? (string) $meta['client_id'] : '',
+            'family'        => isset($meta['family']) ? (string) $meta['family'] : '',
+            'expires'       => isset($meta['expires']) ? intval($meta['expires']) : 0,
+            'created'       => time(),
+            'last_used'     => 0,
+            'last_ip'       => '',
+        ]);
+
+        // Atomic per-token create. add_option returns false on id collision or a
+        // transient DB failure — in either case the row was NOT stored, so do not
+        // index it and do not hand back a token that will never resolve.
+        $stored = add_option($this->oauth_token_option_name($token_id), $record, '', 'no');
+        if (!$stored) {
+            return false;
+        }
+        $this->oauth_token_index_add($token_id);
+        return $token_id;
+    }
+
+    /**
+     * [OAuth Phase 2] Issue an access + refresh token pair for a redeemed grant.
+     * Both share a fresh `family` id so a later refresh rotation (or a detected
+     * reuse) can target the lineage. Returns the plaintexts + expires_in, or false
+     * if either row could not be stored (in which case any partially-stored row is
+     * cleaned up so no orphan credential lingers).
+     *
+     * @param array $grant Redeemed auth-code grant (bound_user_id, scope,
+     *                     resource, client_id). `resource` becomes the token
+     *                     `audience` (RFC 8707).
+     * @return array|false { access_token, refresh_token, expires_in,
+     *                       token_type, scope }
+     */
+    private function mint_oauth_tokens(array $grant) {
+        $this->oauth_prune_expired_tokens();
+
+        // Hard cap AFTER pruning: refuse rather than grow the token store
+        // unbounded. Each issuance adds two rows.
+        $idx = get_option(self::OAUTH_TOKEN_INDEX_OPTION, []);
+        if (is_array($idx) && (count($idx) + 2) > self::MAX_OAUTH_TOKENS) {
+            return false;
+        }
+
+        $bound_user_id = isset($grant['bound_user_id']) ? intval($grant['bound_user_id']) : 0;
+        $scope         = isset($grant['scope']) ? (string) $grant['scope'] : '';
+        // Audience is the resource the grant was bound to. The grant's `resource`
+        // is the canonical /mcp URI (set by the authorize handler); fall back to
+        // the live canonical URI if somehow absent.
+        $audience      = isset($grant['resource']) && $grant['resource'] !== ''
+            ? (string) $grant['resource']
+            : $this->oauth_canonical_mcp_uri();
+        $client_id     = isset($grant['client_id']) ? (string) $grant['client_id'] : '';
+
+        $family = bin2hex(random_bytes(16));
+        $now    = time();
+
+        $access_plain  = self::OAUTH_ACCESS_TOKEN_PREFIX . bin2hex(random_bytes(self::OAUTH_TOKEN_SECRET_BYTES));
+        $refresh_plain = self::OAUTH_REFRESH_TOKEN_PREFIX . bin2hex(random_bytes(self::OAUTH_TOKEN_SECRET_BYTES));
+
+        $access_id = $this->store_oauth_token($access_plain, [
+            'type'          => 'access',
+            'bound_user_id' => $bound_user_id,
+            'scope'         => $scope,
+            'audience'      => $audience,
+            'client_id'     => $client_id,
+            'family'        => $family,
+            'expires'       => $now + self::OAUTH_ACCESS_TOKEN_TTL,
+        ]);
+        if ($access_id === false) {
+            return false;
+        }
+
+        $refresh_id = $this->store_oauth_token($refresh_plain, [
+            'type'          => 'refresh',
+            'bound_user_id' => $bound_user_id,
+            'scope'         => $scope,
+            'audience'      => $audience,
+            'client_id'     => $client_id,
+            'family'        => $family,
+            'expires'       => $now + self::OAUTH_REFRESH_TOKEN_TTL,
+        ]);
+        if ($refresh_id === false) {
+            // Roll back the access token so we never leave an orphaned half-pair.
+            $this->delete_oauth_token($access_id);
+            return false;
+        }
+
+        return [
+            'access_token'  => $access_plain,
+            'refresh_token' => $refresh_plain,
+            'token_type'    => 'Bearer',
+            'expires_in'    => self::OAUTH_ACCESS_TOKEN_TTL,
+            'scope'         => $scope,
+        ];
+    }
+
+    /**
+     * [OAuth Phase 2] Resolve a presented plaintext ACCESS token to its record.
+     * Prefix/length pre-filter, constant-time hash lookup over the index, and a
+     * hard reject of anything that is not an unexpired access token. Returns
+     * ['token_id'=>..., 'record'=>...] on success, or false. The resource server
+     * (verify_token_request) is the only intended caller; it then enforces
+     * audience + scope itself.
+     */
+    private function resolve_oauth_access_token($plaintext) {
+        if (!is_string($plaintext) || $plaintext === '') {
+            return false;
+        }
+        if (strpos($plaintext, self::OAUTH_ACCESS_TOKEN_PREFIX) !== 0) {
+            return false;
+        }
+        $expected_len = strlen(self::OAUTH_ACCESS_TOKEN_PREFIX) + (self::OAUTH_TOKEN_SECRET_BYTES * 2);
+        if (strlen($plaintext) !== $expected_len) {
+            return false;
+        }
+        $candidate_hash = hash('sha256', $plaintext);
+
+        $index = get_option(self::OAUTH_TOKEN_INDEX_OPTION, []);
+        if (!is_array($index)) {
+            return false;
+        }
+
+        foreach ($index as $token_id) {
+            $record = $this->get_oauth_token($token_id);
+            if ($record === false) {
+                continue;
+            }
+            $stored_hash = $record['token_hash'];
+            if (strlen($stored_hash) !== 64 || !hash_equals($stored_hash, $candidate_hash)) {
+                continue;
+            }
+            // Hash matched. Enforce type + expiry. A refresh token presented as a
+            // bearer at /mcp must NOT authenticate, even though its hash lives in
+            // the same store.
+            if ($record['type'] !== 'access') {
+                return false;
+            }
+            if ($record['expires'] <= 0 || time() >= $record['expires']) {
+                return false; // expired
+            }
+            return [
+                'token_id' => $token_id,
+                'record'   => $record,
+            ];
+        }
+
+        return false;
+    }
+
+    /**
+     * [OAuth Phase 2] Validate + ROTATE a presented refresh token. OAuth 2.1
+     * requires refresh rotation for public clients: on each use we invalidate the
+     * presented refresh token and issue a NEW access+refresh pair bound to the
+     * SAME user/scope/audience/client. On reuse of an already-rotated token (its
+     * row is gone), we cannot match it, so the call fails closed — and if the
+     * presented token DOES still match but belongs to a family we've decided to
+     * burn, we revoke the whole family. Returns the new plaintext pair (same shape
+     * as mint_oauth_tokens) or false.
+     *
+     * NOTE: scope/audience are taken from the stored refresh record and are NEVER
+     * widened here — the token endpoint additionally rejects any request that
+     * tries to broaden them.
+     */
+    private function rotate_oauth_refresh_token($plaintext) {
+        if (!is_string($plaintext) || $plaintext === '') {
+            return false;
+        }
+        if (strpos($plaintext, self::OAUTH_REFRESH_TOKEN_PREFIX) !== 0) {
+            return false;
+        }
+        $expected_len = strlen(self::OAUTH_REFRESH_TOKEN_PREFIX) + (self::OAUTH_TOKEN_SECRET_BYTES * 2);
+        if (strlen($plaintext) !== $expected_len) {
+            return false;
+        }
+        $candidate_hash = hash('sha256', $plaintext);
+
+        $index = get_option(self::OAUTH_TOKEN_INDEX_OPTION, []);
+        if (!is_array($index)) {
+            return false;
+        }
+
+        foreach ($index as $token_id) {
+            $record = $this->get_oauth_token($token_id);
+            if ($record === false) {
+                continue;
+            }
+            $stored_hash = $record['token_hash'];
+            if (strlen($stored_hash) !== 64 || !hash_equals($stored_hash, $candidate_hash)) {
+                continue;
+            }
+
+            // Matched a row. It MUST be a refresh token.
+            if ($record['type'] !== 'refresh') {
+                return false;
+            }
+
+            // ATOMIC single-use: delete the presented refresh token BEFORE issuing
+            // a new pair. delete_option returns true only for the worker that
+            // actually removed the row, so a concurrent double-rotate yields at
+            // most one success (the loser fails closed).
+            $deleted = delete_option($this->oauth_token_option_name($token_id));
+            $this->oauth_token_index_remove($token_id);
+            if (!$deleted) {
+                return false; // lost the race — treat as already rotated
+            }
+
+            // Expiry check AFTER consumption (the token is spent either way).
+            if ($record['expires'] <= 0 || time() >= $record['expires']) {
+                return false; // expired refresh token
+            }
+
+            // Issue a fresh pair bound to the SAME grant. A new family id is used
+            // so each lineage stays independent. Scope/audience carried verbatim
+            // from the stored record — never widened.
+            return $this->mint_oauth_tokens([
+                'bound_user_id' => $record['bound_user_id'],
+                'scope'         => $record['scope'],
+                'resource'      => $record['audience'],
+                'client_id'     => $record['client_id'],
+            ]);
+        }
+
+        // No matching live row. Either a forged token or a REUSE of an already
+        // rotated refresh token (the row was deleted on the prior rotation). Fail
+        // closed. (We cannot revoke the family here because, having no row, we
+        // cannot know which family it was — the prior rotation already removed it.)
+        return false;
+    }
+
+    /**
+     * [OAuth Phase 2] Throttled (~60s) last-used / last-ip touch for an access
+     * token. Mutates ONLY this token's row, mirroring touch_cgpt_token().
+     */
+    private function touch_oauth_token($token_id, $ip) {
+        $record = $this->get_oauth_token($token_id);
+        if ($record === false) {
+            return;
+        }
+        $last = intval($record['last_used']);
+        if (time() - $last > self::LAST_USED_THROTTLE_SECONDS) {
+            $record['last_used'] = time();
+            $record['last_ip']   = (string) $ip;
+            update_option($this->oauth_token_option_name($token_id), $record, 'no');
+            $this->oauth_token_index_add($token_id);
+        }
+    }
+
+    /**
+     * [OAuth Phase 2] Revoke a single OAuth token row (access or refresh) by
+     * token_id. Removes the per-token row and drops it from the index. Returns
+     * true if a row was removed. Provided for later admin use.
+     */
+    private function revoke_oauth_token($token_id) {
+        return $this->delete_oauth_token($token_id);
+    }
+
+    /** [OAuth Phase 2] Internal delete by token_id. */
+    private function delete_oauth_token($token_id) {
+        $removed = delete_option($this->oauth_token_option_name($token_id));
+        $this->oauth_token_index_remove($token_id);
+        return (bool) $removed;
+    }
+
+    /**
+     * [OAuth Phase 2] Enumerate all OAuth tokens as token_id => normalized_record,
+     * self-healing dead index entries. Provided for later admin use.
+     */
+    private function list_oauth_tokens() {
+        $out = [];
+        $index = get_option(self::OAUTH_TOKEN_INDEX_OPTION, []);
+        if (is_array($index)) {
+            $healed = [];
+            foreach ($index as $token_id) {
+                $rec = $this->get_oauth_token($token_id);
+                if ($rec !== false) {
+                    $out[$token_id] = $rec;
+                    $healed[] = $token_id;
+                }
+            }
+            if (count($healed) !== count($index)) {
+                update_option(self::OAUTH_TOKEN_INDEX_OPTION, array_values(array_unique($healed)), 'no');
+            }
+        }
+        return $out;
+    }
+
+    /** [OAuth Phase 2] Append a token_id to the index (bounded optimistic retry). */
+    private function oauth_token_index_add($token_id) {
+        for ($i = 0; $i < self::KEY_INDEX_MAX_RETRY; $i++) {
+            $index = get_option(self::OAUTH_TOKEN_INDEX_OPTION, []);
+            if (!is_array($index)) {
+                $index = [];
+            }
+            if (in_array($token_id, $index, true)) {
+                return true;
+            }
+            $next = $index;
+            $next[] = $token_id;
+            if (update_option(self::OAUTH_TOKEN_INDEX_OPTION, $next, 'no')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** [OAuth Phase 2] Remove a token_id from the index (bounded optimistic retry). */
+    private function oauth_token_index_remove($token_id) {
+        for ($i = 0; $i < self::KEY_INDEX_MAX_RETRY; $i++) {
+            $index = get_option(self::OAUTH_TOKEN_INDEX_OPTION, []);
+            if (!is_array($index)) {
+                return true;
+            }
+            if (!in_array($token_id, $index, true)) {
+                return true;
+            }
+            $next = array_values(array_filter($index, function ($id) use ($token_id) {
+                return $id !== $token_id;
+            }));
+            if (update_option(self::OAUTH_TOKEN_INDEX_OPTION, $next, 'no')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * [OAuth Phase 2] Best-effort prune of expired OAuth-token rows. Keeps the
+     * store from accumulating dead rows. Iterates the index (small), self-healing
+     * dead/expired entries. Mirrors oauth_prune_expired_codes().
+     */
+    private function oauth_prune_expired_tokens() {
+        $index = get_option(self::OAUTH_TOKEN_INDEX_OPTION, []);
+        if (!is_array($index) || empty($index)) {
+            return;
+        }
+        $now = time();
+        $alive = [];
+        foreach ($index as $token_id) {
+            $row = get_option($this->oauth_token_option_name($token_id), null);
+            if (!is_array($row)) {
+                continue; // already gone — drop from index
+            }
+            $rec = $this->normalize_oauth_token_record($row);
+            if ($rec['expires'] <= 0 || $now >= $rec['expires']) {
+                delete_option($this->oauth_token_option_name($token_id));
+                continue;
+            }
+            $alive[] = $token_id;
+        }
+        if (count($alive) !== count($index)) {
+            update_option(self::OAUTH_TOKEN_INDEX_OPTION, array_values(array_unique($alive)), 'no');
         }
     }
 
