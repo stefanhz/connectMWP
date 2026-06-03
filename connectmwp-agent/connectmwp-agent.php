@@ -267,6 +267,7 @@ class ConnectMWP_Agent {
     const OAUTH_SUPPORTED_SCOPES = ['connectmwp'];
 
     // CIMD (client_id_metadata_document) fetch hardening.
+    const OAUTH_CLIENT_ID_MAX_LEN = 2048;      // defense-in-depth: reject absurdly long client_id (a URL) before any parse/DNS/hash work
     const OAUTH_CIMD_MAX_BYTES   = 64 * 1024; // hard cap on a client metadata doc body
     const OAUTH_CIMD_TIMEOUT     = 5;          // seconds; wp_remote_get timeout for the CIMD fetch
     const OAUTH_CIMD_CACHE_TTL   = 600;        // default transient TTL (10 min) for a validated CIMD doc
@@ -448,14 +449,29 @@ class ConnectMWP_Agent {
             $urls['prm']
         );
 
-        add_filter('rest_post_dispatch', function ($response) use ($value) {
-            // Only stamp genuine 401 responses (the unauthenticated /mcp path);
-            // never a 200.
-            if ($response instanceof WP_REST_Response && (int) $response->get_status() === 401) {
+        $namespace = self::API_NAMESPACE;
+        add_filter('rest_post_dispatch', function ($response, $server, $request) use ($value, $namespace) {
+            // Only stamp genuine 401 responses (the unauthenticated path); never a 200.
+            if (!($response instanceof WP_REST_Response) || (int) $response->get_status() !== 401) {
+                return $response;
+            }
+            // Scope the RFC 9728 discovery challenge to the /mcp route ONLY (and its
+            // /mcp/<token> variant). The challenge advertises bearer-token OAuth, which
+            // is meaningless on the signature-authenticated endpoints (/enroll,
+            // /whoami, /posts, ...) — stamping it there would be a misleading header on
+            // an unrelated 401. We match the matched route, not the raw path, so query
+            // strings / trailing slashes don't matter.
+            if (!($request instanceof WP_REST_Request)) {
+                return $response;
+            }
+            $route = (string) $request->get_route();
+            $is_mcp = ($route === '/' . $namespace . '/mcp')
+                || (strpos($route, '/' . $namespace . '/mcp/') === 0);
+            if ($is_mcp) {
                 $response->header('WWW-Authenticate', $value);
             }
             return $response;
-        }, 10, 1);
+        }, 10, 3);
     }
 
     /** One-shot guard so the WWW-Authenticate filter is added once. */
@@ -790,13 +806,27 @@ class ConnectMWP_Agent {
      * (common on managed hosts). Mirrors the plugin's transport expectation.
      */
     private function oauth_request_is_https() {
+        return $this->is_https_request();
+    }
+
+    /**
+     * SSOT transport gate: whether the inbound request arrived over HTTPS.
+     *
+     * Every auth gate in the plugin (the two OAuth front-end handlers, the bearer
+     * token verifier, and the Ed25519 signature verifier) MUST agree on this, or
+     * a reverse-proxy site can half-work: OAuth authorize/token succeed but the
+     * resulting access token then fails an inconsistent HTTPS check at /mcp.
+     *
+     * PURELY ADDITIVE for non-proxy sites: is_behind_trusted_proxy() defaults OFF,
+     * so when the admin has NOT opted into proxy trust the X-Forwarded-Proto branch
+     * is unreachable and this returns exactly what is_ssl() returns. The forwarded
+     * header is honored ONLY when is_behind_trusted_proxy() is true (same discipline
+     * as get_client_ip) — otherwise a client could spoof the header to defeat the gate.
+     */
+    private function is_https_request(): bool {
         if (is_ssl()) {
             return true;
         }
-        // Only trust X-Forwarded-Proto when we KNOW we sit behind a trusted reverse
-        // proxy (same discipline as get_client_ip). Otherwise a client could spoof
-        // the header to defeat the HTTPS gate. is_behind_trusted_proxy() is the
-        // SSOT for "may I trust forwarding headers?" (default OFF).
         if ($this->is_behind_trusted_proxy()
             && isset($_SERVER['HTTP_X_FORWARDED_PROTO'])
             && strtolower(trim((string) wp_unslash($_SERVER['HTTP_X_FORWARDED_PROTO']))) === 'https') {
@@ -1136,6 +1166,14 @@ class ConnectMWP_Agent {
     private function resolve_oauth_client($client_id) {
         if (!is_string($client_id) || $client_id === '') {
             return new WP_Error('cmwp_oauth_client', __('Missing client_id.', 'connectmwp'));
+        }
+
+        // Defense-in-depth: a client_id is a URL to a metadata document. Reject an
+        // absurdly long value BEFORE any wp_parse_url / DNS (gethostbynamel) / hash
+        // work so a hostile string can't drive unnecessary resolution/parsing cost.
+        // Same "unrecognized application" error path as a malformed client_id.
+        if (strlen($client_id) > self::OAUTH_CLIENT_ID_MAX_LEN) {
+            return new WP_Error('cmwp_oauth_client', __('client_id must be an https URL with a path to a metadata document.', 'connectmwp'));
         }
 
         $parts = wp_parse_url($client_id);
@@ -2022,8 +2060,10 @@ class ConnectMWP_Agent {
             return $this->signature_verified;
         }
 
-        // 1. Enforce HTTPS
-        if (!is_ssl()) {
+        // 1. Enforce HTTPS (shared SSOT gate; on a non-proxy site this is
+        // byte-identical to is_ssl() — the forwarded-proto branch is unreachable
+        // unless the admin opted into proxy trust).
+        if (!$this->is_https_request()) {
             $this->signature_verified = false;
             return false;
         }
@@ -2235,8 +2275,10 @@ class ConnectMWP_Agent {
         // so a cache hit never returns true with bound_user_id == 0.
         $this->bound_user_id = 0;
 
-        // VR-5: Enforce HTTPS first.
-        if (!is_ssl()) {
+        // VR-5: Enforce HTTPS first (shared SSOT gate so the bearer-token verifier
+        // agrees with the OAuth authorize/token handlers — otherwise a reverse-proxy
+        // site can mint a token via OAuth and then have it rejected here).
+        if (!$this->is_https_request()) {
             $this->verification_error_code = 'connectmwp_cgpt_insecure_transport';
             $this->cgpt_token_verified = false;
             return new WP_Error(
