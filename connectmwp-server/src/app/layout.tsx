@@ -12,9 +12,36 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const SITE_URL = "https://connectmwp.com";
+const TITLE = "connectMWP — Decentralized AI-to-WordPress Bridge";
+const DESCRIPTION =
+  "Connect local AI clients (Claude Desktop, Cursor, Claude Code, ChatGPT) directly to your self-hosted WordPress sites over a signed, session-less connection. No login. No central server.";
+
 export const metadata: Metadata = {
-  title: "connectMWP — Decentralized AI-to-WordPress Bridge",
-  description: "Connect local AI clients (Claude Desktop, Cursor, Claude Code) directly to your self-hosted WordPress sites securely and privately.",
+  metadataBase: new URL(SITE_URL),
+  title: TITLE,
+  description: DESCRIPTION,
+  openGraph: {
+    type: "website",
+    url: SITE_URL,
+    siteName: "connectMWP",
+    title: TITLE,
+    description: DESCRIPTION,
+    images: [
+      {
+        url: "/og-image.png",
+        width: 1200,
+        height: 630,
+        alt: "connectMWP — let your own AI client publish to your WordPress site over a signed, session-less connection.",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: TITLE,
+    description: DESCRIPTION,
+    images: ["/og-image.png"],
+  },
 };
 
 export default function RootLayout({

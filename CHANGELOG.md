@@ -4,6 +4,26 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2.3.2 — 2026-06-04
+
+**Public site — real branding for launch.** Pre-launch polish on connectmwp.com: the marketing site now carries the connectMWP brand mark instead of the default Next.js scaffold, and shared links render a proper social-share card. No plugin, MCP, auth, signing, OAuth, token, or content behavior changed — this release only touches the central marketing site (`connectmwp-server`); the plugin and MCP client versions move in lockstep with no functional change.
+
+### Changed
+
+- **connectmwp-server — the favicon is now the connectMWP chain-link mark**, not the stock Next.js icon. Shipped three ways via the Next.js app-icon file convention so it renders everywhere: a multi-size `favicon.ico` (16–256px, legacy browsers + bookmarks), a vector `icon.svg` (sharp on modern browsers), and a 180px `apple-icon.png` (iOS home screen).
+
+### Added
+
+- **connectmwp-server — social-share (OpenGraph + Twitter) card.** A shared `connectmwp.com` link now previews a branded 1200×630 card (chain-link mark, tagline) on X/LinkedIn/Slack/etc. instead of a blank box. Wired via `metadata.openGraph` / `metadata.twitter` (`summary_large_image`) + `metadataBase` in the root layout, served from `/og-image.png`.
+
+### Removed
+
+- **connectmwp-server — deleted the five unused `create-next-app` scaffold graphics** (`next.svg`, `vercel.svg`, `file.svg`, `globe.svg`, `window.svg`) ahead of the repo going public — they were unreferenced clutter.
+
+### Unchanged (explicitly preserved)
+
+- The plugin and MCP client are byte-for-byte unchanged apart from the lockstep `Version:` header / `package.json` bump; the download zip is repacked only to carry the new header (sha `a3e53b41…`, both copies identical). No auth, signing, OAuth, token, DAL, or tool behavior changed.
+
 ## 2.3.1 — 2026-06-03
 
 **Settings page — connections consolidated into one table.** Follow-up to the 2.3.0 redesign. In 2.3.0 each client tab carried its own connection list; this release replaces those three per-tab lists with a **single "Your connections" table below the setup tabs**, so every connection is visible in one place. The tabs are now setup-only. Render-layer change only — no auth, signing, OAuth, token, or DAL behavior changed.
