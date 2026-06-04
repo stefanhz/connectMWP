@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="38%" r="62%">
+      <stop offset="0%" stop-color="#232338"/>
+      <stop offset="100%" stop-color="#0d0d15"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#f97316" stop-opacity="0.30"/>
+      <stop offset="70%" stop-color="#f97316" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <ellipse cx="128" cy="124" rx="78" ry="58" fill="url(#glow)"/>
+  <circle cx="128" cy="128" r="94" fill="none" stroke="#f97316" stroke-opacity="0.18" stroke-width="2"/>
+  <!-- Chain link: two interlocking links = "connected" -->
+  <svg x="28" y="28" width="200" height="200" viewBox="0 0 200 200" fill="none">
+    <defs>
+      <mask id="interlock">
+        <rect width="200" height="200" fill="#fff"/>
+        <g transform="rotate(-45 100 100)">
+          <rect x="92" y="74" width="76" height="52" rx="26" fill="#000"/>
+        </g>
+      </mask>
+    </defs>
+    <g transform="rotate(-45 100 100)" fill="none" stroke-width="19" stroke-linecap="round">
+      <rect x="36" y="74" width="76" height="52" rx="26" stroke="#f97316" mask="url(#interlock)"/>
+      <rect x="88" y="74" width="76" height="52" rx="26" stroke="#fdba74"/>
+      <path d="M62 74 a26 26 0 0 0 -26 26 v0 a26 26 0 0 0 26 26" stroke="#f97316"/>
+    </g>
+  </svg>
+</svg>
