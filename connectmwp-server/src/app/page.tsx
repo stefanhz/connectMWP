@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import ClientPage from './ClientPage';
-import { parseFaqMarkdown } from '@/lib/markdown';
+import { parseFaqMarkdown, applyConfigTokens } from '@/lib/markdown';
 
 // T067: render at build time so content/faq.md is read during static generation
 // (where the file is present + traced) and baked into static HTML — never read
@@ -52,7 +52,7 @@ export default async function Page() {
   let faqs: Faq[] = [];
 
   try {
-    const content = await fs.readFile(faqPath, 'utf-8');
+    const content = applyConfigTokens(await fs.readFile(faqPath, 'utf-8'));
     faqs = parseFaqMarkdown(content);
 
     if (faqs.length === 0) {

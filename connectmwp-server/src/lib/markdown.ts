@@ -1,3 +1,26 @@
+import config from '@/config.json';
+
+// Site links live in ONE place (src/config.json), never hardcoded in source or
+// markdown. Authors write `{{TOKEN}}` placeholders in the .md files; this map
+// resolves them to the canonical URLs at render time. Add a token here when a
+// new config-driven link is introduced.
+const CONFIG_TOKENS: Record<string, string> = {
+  '{{DONATE_URL}}': config.links.donate,
+  '{{COMPANY_URL}}': config.links.company,
+  '{{REPO_URL}}': config.links.repo,
+  '{{SUPPORT_EMAIL}}': config.supportEmail,
+};
+
+/**
+ * Replace `{{TOKEN}}` placeholders in raw markdown with values from
+ * src/config.json BEFORE parsing. Unknown tokens are left verbatim (visible in
+ * output) so a typo surfaces instead of silently vanishing. Call this on the
+ * raw file content right after reading it, ahead of parseMarkdown/parseFaqMarkdown.
+ */
+export function applyConfigTokens(markdown: string): string {
+  return markdown.replace(/\{\{[A-Z0-9_]+\}\}/g, (m) => CONFIG_TOKENS[m] ?? m);
+}
+
 export function parseMarkdown(markdown: string): string {
   // Pre-process to ensure double newlines exist before and after list blocks
   const text = markdown

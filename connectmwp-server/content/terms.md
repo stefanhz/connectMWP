@@ -17,4 +17,4 @@ connectMWP provides an open-source WordPress Plugin (`connectmwp`) and a local M
 The software is provided "as is", without warranty of any kind, express or implied. In no event shall the authors or copyright holders be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software.
 
 ## 5. Contact & Support
-For support inquiries, you can contact us at [support@connectmwp.com](mailto:support@connectmwp.com).
+For support inquiries, you can contact us at [{{SUPPORT_EMAIL}}](mailto:{{SUPPORT_EMAIL}}).

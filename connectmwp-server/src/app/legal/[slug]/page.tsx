@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import Link from 'next/link';
 import { Metadata } from 'next';
-import { parseMarkdown } from '@/lib/markdown';
+import { parseMarkdown, applyConfigTokens } from '@/lib/markdown';
 import { PageShell, GlassCard } from '@/components/Surfaces';
 import pkg from '../../../../package.json';
 
@@ -46,7 +46,7 @@ export default async function LegalPage({ params }: PageProps) {
       throw new Error('Invalid or unauthorized slug parameter.');
     }
     const filePath = path.join(process.cwd(), 'content', `${slug}.md`);
-    const rawContent = await fs.readFile(filePath, 'utf-8');
+    const rawContent = applyConfigTokens(await fs.readFile(filePath, 'utf-8'));
     parsedHtml = parseMarkdown(rawContent);
   } catch {
     parsedHtml = `<h1>Page Not Found</h1><p>The requested legal page could not be located.</p>`;

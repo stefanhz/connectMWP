@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import pkg from '../../package.json';
+import config from '@/config.json';
 import { PAIRING_COMMAND } from '@/lib/constants';
 import { PageShell, GlassCard } from '@/components/Surfaces';
 
@@ -56,18 +57,12 @@ export default function ClientPage({ faqs }: ClientPageProps) {
           </div>
         </div>
 
-        <div className="flex justify-center">
-          <div className="inline-flex items-center gap-2 px-4 py-2 bg-amber-500/8 border border-amber-500/25 rounded-[30px] text-[12.5px] text-amber-400 mb-6 font-medium leading-normal text-left">
-            <span>⚠️</span> Active Development — Use at your own risk
-          </div>
-        </div>
-
-        <h1 className="text-3xl font-extrabold mb-3 tracking-tight bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-transparent text-center block mx-auto">
+        <h1 className="text-3xl font-extrabold mb-3 mt-4 tracking-tight bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-transparent text-center block mx-auto">
           Connect My WordPress
         </h1>
 
         <p className="text-[15px] leading-relaxed text-zinc-400 mb-6 text-center">
-          Bridge your local AI clients (Claude Desktop, Cursor, etc.) directly to your WordPress sites. Secure, 100% private, and session-less.
+          Bridge your AI clients — Claude, Cursor, Cline, ChatGPT, Gemini and more — directly to your WordPress sites. Secure, 100% private, and session-less.
         </p>
 
         <div className="text-[13.5px] text-amber-400 mb-7 p-3 bg-amber-400/5 rounded-lg border border-dashed border-amber-400/20 leading-normal text-center">
@@ -141,12 +136,12 @@ export default function ClientPage({ faqs }: ClientPageProps) {
           <span>•</span>
           <Link href="/legal/terms" className="text-zinc-400 no-underline hover:text-white transition-colors">Terms of Service</Link>
           <span>•</span>
-          <a href="mailto:support@connectmwp.com" className="text-zinc-400 no-underline hover:text-white transition-colors">Support</a>
+          <a href={`mailto:${config.supportEmail}`} className="text-zinc-400 no-underline hover:text-white transition-colors">Support</a>
           <span>•</span>
-          <a href="https://buy.stripe.com/aFa8wQ0rH2PQ4Msama5kk0l" target="_blank" rel="noopener noreferrer" className="text-amber-400 font-semibold hover:text-amber-500 transition-colors">☕ Buy me a coffee</a>
+          <a href={config.links.donate} target="_blank" rel="noopener noreferrer" className="text-amber-400 font-semibold hover:text-amber-500 transition-colors">☕ Buy me a coffee</a>
         </div>
         <div className="mb-4">
-          Brought to you by <a href="https://2morrow.ai" target="_blank" rel="noopener noreferrer" className="text-amber-400 no-underline hover:text-amber-500 transition-colors">2morrow.ai</a>
+          Brought to you by <a href={config.links.company} target="_blank" rel="noopener noreferrer" className="text-amber-400 no-underline hover:text-amber-500 transition-colors">2morrow.ai</a>
         </div>
         <div className="text-[11px] opacity-60">
           connectMWP Client v{pkg.version}

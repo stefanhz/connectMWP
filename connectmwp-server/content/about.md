@@ -11,6 +11,6 @@ connectMWP bridges this gap by providing:
 3. Multi-site config mapping allowing you to manage 10+ sites from a single running AI context.
 
 ## Brought to you by
-connectMWP is a project by [2morrow.ai](https://2morrow.ai).
+connectMWP is a project by [2morrow.ai]({{COMPANY_URL}}).
 
-Support the development: [Buy me a coffee](https://buy.stripe.com/aFa8wQ0rH2PQ4Msama5kk0l)
+Support the development: [Buy me a coffee]({{DONATE_URL}})

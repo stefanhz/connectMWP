@@ -4,6 +4,28 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2.3.3 — 2026-06-04
+
+**Public site — content brought up to date for all clients, links de-hardcoded.** Pre-launch content pass on connectmwp.com. The site copy and FAQ were written when only the Claude/stdio path existed; this release updates them to cover all three connection methods (device pairing, ChatGPT OAuth, API token), corrects an inaccurate claim about how competing tools authenticate, removes the "active development" warning, and moves every external link into a single config file so none are hardcoded. Marketing-site-only (`connectmwp-server`); the plugin and MCP client move in lockstep with no functional change. Verified with a full production build.
+
+### Changed
+
+- **connectmwp-server — FAQ + landing copy now cover every supported client.** The "what is connectMWP" line, the hero, and the requirements section now name Claude Desktop/Code, Cursor, Cline, **ChatGPT, and Gemini/Antigravity**, and a new FAQ entry ("Which AI clients are supported, and how does each connect?") explains the three connection methods — device pairing (stdio), ChatGPT OAuth, and per-site API token — and points to the plugin's Settings page. The requirements section now makes clear that Node.js is needed **only** for desktop/stdio clients; ChatGPT and token clients connect remotely with no local install.
+- **connectmwp-server — corrected the "why we exist" accuracy.** The FAQ no longer says competing tools (incl. Automattic's official adapter) "require active WordPress user sessions" — they authenticate with **Application Passwords / OAuth**, which are login-identity-tied and get blocked at the REST API by 2FA/security plugins. The reworded copy is accurate *and* sharpens connectMWP's real differentiator (session-less, per-request signature auth).
+- **connectmwp-server — privacy policy corrected to the v2 (decentralized) architecture.** The policy previously described the central site as a "stateless router during the initial setup handshake" (v1 OAuth-era language). It now states accurately that `connectmwp.com` serves only the info pages + plugin download and is never in the pairing/auth/publishing path; the credential-storage section now distinguishes the device **public key** from the SHA-256-hashed API/OAuth tokens, and notes the private key never leaves the user's machine.
+
+### Removed
+
+- **connectmwp-server — the "⚠️ Active Development — Use at your own risk" banner** was removed from the landing page.
+
+### Internal
+
+- **connectmwp-server — all external links moved to `src/config.json`** (donation, company, repo, support email) — never hardcoded in source or markdown. Components read from config; markdown content uses `{{TOKEN}}` placeholders resolved at render time by a new `applyConfigTokens()` helper. (Closes task T088 and its second instance.)
+
+### Unchanged (explicitly preserved)
+
+- The plugin and MCP client are byte-for-byte unchanged apart from the lockstep version bump; the download zip is repacked only to carry the new header (sha `57e98ed3…`, both copies identical). No auth, signing, OAuth, token, DAL, or tool behavior changed.
+
 ## 2.3.2 — 2026-06-04
 
 **Public site — real branding for launch.** Pre-launch polish on connectmwp.com: the marketing site now carries the connectMWP brand mark instead of the default Next.js scaffold, and shared links render a proper social-share card. No plugin, MCP, auth, signing, OAuth, token, or content behavior changed — this release only touches the central marketing site (`connectmwp-server`); the plugin and MCP client versions move in lockstep with no functional change.
