@@ -30,7 +30,7 @@ To the maximum extent permitted by law, you agree to indemnify and hold harmless
 connectMWP is an independent project. It is **not** affiliated with, sponsored by, or endorsed by the WordPress Foundation, Automattic Inc., Anthropic, OpenAI, Google, or any other company whose products or trademarks are referenced. "WordPress" is a trademark of the WordPress Foundation; "Claude" is a trademark of Anthropic; "ChatGPT" of OpenAI; "Gemini" of Google; and all other marks belong to their respective owners. Such marks are referenced only to describe compatibility.
 
 ## 8. Governing law
-These Terms are governed by the laws of **[GOVERNING JURISDICTION — your country / state]**, without regard to its conflict-of-laws rules, and any dispute arising from them or from your use of the Software will be subject to the courts of that jurisdiction.
+These Terms are governed by the laws of the **State of Colorado, United States**, without regard to its conflict-of-laws rules, and any dispute arising from them or from your use of the Software will be subject to the state and federal courts located in Colorado.
 
 ## 9. Changes to these Terms
 We may update these Terms from time to time; the "last updated" date above will change accordingly. Your continued use of the Software after a change constitutes acceptance of the updated Terms.

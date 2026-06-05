@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP
  * Plugin URI: https://connectmwp.com
  * Description: Securely let your own local AI client (Claude, Cursor) publish to this WordPress site over a signed, session-less Ed25519 connection — no login, no central server.
- * Version: 2.3.4
+ * Version: 2.3.6
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Stefan Heinz, 2morrow.ai
@@ -1008,14 +1008,14 @@ class ConnectMWP_Agent {
      *     internal address);
      *   - small timeout + response-size cap (limit_response_size).
      *
-     * RESIDUAL RISK (DNS rebinding TOCTOU): we resolve + screen the host here,
-     * then WP_Http resolves it AGAIN when it opens the socket. A hostile DNS
-     * server could return a public IP to our gethostbynamel() probe and a private
-     * IP to the actual fetch. Fully closing this requires pinning the screened IP
-     * into the connection (e.g. CURLOPT_RESOLVE / a custom transport), which the
-     * WP HTTP API does not expose portably. Documented for the Phase 1 security
-     * review; the redirection=>0 + scheme/size caps reduce but do not eliminate
-     * it. A future hardening could pin the resolved IP via a curl 'resolve' opt.
+     * DNS-rebinding TOCTOU CLOSED (T084): we resolve + screen the host here, then
+     * pin the screened addresses into the actual fetch via cURL's CURLOPT_RESOLVE
+     * (host:port => screened IPs), so the transport connects to an already-
+     * validated address instead of performing a second, attacker-controllable DNS
+     * resolution at socket-open time. The URL host is unchanged, so SNI + TLS
+     * certificate verification still target the real hostname. On the rare host
+     * with no cURL transport the pin action never fires and we fall back to the
+     * screen-only behavior (still protected by redirection=>0 + scheme/size caps).
      *
      * @param string $url
      * @param int    $max_bytes
@@ -1070,14 +1070,33 @@ class ConnectMWP_Agent {
             }
         }
 
-        $response = wp_remote_get($url, [
-            'timeout'             => intval($timeout),
-            'redirection'         => 0,                 // never follow redirects
-            'limit_response_size' => intval($max_bytes),
-            'sslverify'           => true,
-            'headers'             => ['Accept' => 'application/json'],
-            'user-agent'          => 'connectMWP/' . self::version() . ' (+OAuth CIMD fetch)',
-        ]);
+        // DNS-REBINDING CLOSE (T084): pin the screened addresses into the fetch.
+        // Every resolved IP passed oauth_ip_is_public() above; pin the host to
+        // that exact set via CURLOPT_RESOLVE so cURL connects to a validated
+        // address rather than re-resolving the host (which a hostile DNS server
+        // could rebind to a private/loopback IP between our screen and the socket
+        // open). Comma-listing all screened IPs preserves cURL's normal failover.
+        // The hook is scoped to THIS request and removed in finally{}.
+        $pinned_ips = implode(',', $ips);
+        $pin_port   = !empty($parts['port']) ? (int) $parts['port'] : 443;
+        $pin_curl   = static function ($handle) use ($host, $pin_port, $pinned_ips) {
+            if (function_exists('curl_setopt') && defined('CURLOPT_RESOLVE')) {
+                curl_setopt($handle, CURLOPT_RESOLVE, ["{$host}:{$pin_port}:{$pinned_ips}"]);
+            }
+        };
+        add_action('http_api_curl', $pin_curl, 10, 1);
+        try {
+            $response = wp_remote_get($url, [
+                'timeout'             => intval($timeout),
+                'redirection'         => 0,                 // never follow redirects
+                'limit_response_size' => intval($max_bytes),
+                'sslverify'           => true,
+                'headers'             => ['Accept' => 'application/json'],
+                'user-agent'          => 'connectMWP/' . self::version() . ' (+OAuth CIMD fetch)',
+            ]);
+        } finally {
+            remove_action('http_api_curl', $pin_curl, 10);
+        }
 
         if (is_wp_error($response)) {
             return new WP_Error('cmwp_oauth_fetch', __('Could not reach the application metadata document.', 'connectmwp'));

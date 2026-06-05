@@ -4,6 +4,30 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2.3.6 — 2026-06-04
+
+**Security: closed the residual DNS-rebinding SSRF in the OAuth metadata fetch (T084).** The plugin's OAuth Authorization Server fetches a ChatGPT client's metadata document (CIMD) during the admin-authenticated consent flow. It screened the target host's resolved IPs against private/loopback ranges, but then let the HTTP layer re-resolve DNS when opening the socket — a hostile DNS server could return a public IP to the screen and a private/loopback IP to the actual fetch (a classic rebinding TOCTOU). This was a knowingly-accepted residual in 2.2.0 (admin-gated, no exfiltration channel); it is now closed. Lockstep release; plugin-only code change.
+
+### Security
+
+- **connectmwp-agent — the validated IP is now pinned through the CIMD fetch.** `oauth_safe_http_get()` pins the already-screened address set into the request via cURL's `CURLOPT_RESOLVE` (scoped to that one request, removed immediately after), so the transport connects to a validated IP instead of re-resolving the host. The URL host is unchanged, so SNI + TLS certificate verification still target the real hostname; all screened IPs are comma-listed to preserve normal failover. On the rare host with no cURL transport, the pin is skipped and the prior screen-only behavior (plus `redirection => 0` and scheme/size caps) applies as a documented fallback. No protocol, DAL, or token behavior changed.
+
+### Note
+
+- **Live-verification owed (T084 → to-be-tested):** confirmed by code inspection + PHP lint here, but the full rebinding defense should be exercised against a live OAuth round-trip during testing. The companion DoS finding (T082, OAuth prune O(N) scan) was intentionally **not** bundled into this release — see the session notes: it is a multi-site OAuth-token-DAL schema change that should be done where a live ChatGPT OAuth issue/refresh/consume round-trip can verify it, not shipped blind.
+
+## 2.3.5 — 2026-06-04
+
+**Terms of service — governing-law jurisdiction filled in.** Completes the one blank left in the 2.3.4 terms rewrite. Marketing-site-only (`connectmwp-server`); plugin and MCP client move in lockstep with no functional change.
+
+### Changed
+
+- **connectmwp-server — the Terms' governing-law clause now names the State of Colorado, United States** (state + federal courts located in Colorado), replacing the `[GOVERNING JURISDICTION]` placeholder.
+
+### Unchanged (explicitly preserved)
+
+- Plugin and MCP client byte-for-byte unchanged apart from the lockstep version bump; zip repacked only for the header (sha `87ebab04…`, both copies identical). No auth/signing/OAuth/token/DAL/tool behavior changed.
+
 ## 2.3.4 — 2026-06-04
 
 **Legal pages rewritten + over-broad claims softened (pre-launch).** The privacy policy and terms of service were brought up to the v2 decentralized reality and made more defensible, and a few absolute marketing claims were dialed back to language that can't be read as a guarantee. Marketing-site-only (`connectmwp-server`); plugin and MCP client move in lockstep with no functional change. Verified with a full production build. **Note for the operator:** one blank remains in the Terms — the governing-law jurisdiction — and the legal docs name "Stefan Heinz (2morrow.ai)" as the provider (operating as an individual, not a liability-shielding entity).
