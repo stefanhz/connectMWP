@@ -75,7 +75,7 @@ WP side: **Settings → connectMWP → Paired Clients** now shows a row with the
 with the same site URL safely overwrites both the local config entry and the
 private key file (temp-file + rename — failed re-pair preserves the working key).
 
-**Steps after revoking a key on WP** (e.g., `cmwp_key_3a661f1bc68cb205`):
+**Steps after revoking a key on WP** (e.g., `cmwp_key_xxxxxxxxxxxxxxxx`):
 
 1. WP Admin → **Settings → connectMWP** → click **Generate Pairing Code** again
    (revoked keys can never be reused; you always mint a new one). New 10-minute one-shot command appears.

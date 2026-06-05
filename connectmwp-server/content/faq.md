@@ -20,7 +20,7 @@ For device-key clients (Claude, Cursor, Cline), connectMWP uses strong cryptogra
 - Pairing is completed locally using a single-use enrollment code generated inside your WordPress settings page (**Settings → connectMWP**).
 - The local client generates an Ed25519 cryptographic keypair at pairing time and uploads only the **public key** to your site.
 - The **private key never leaves your local machine**, and no secret keys or passwords are stored in your WordPress database.
-- Every API call is verified using a detached cryptographic signature, preventing token interception or theft.
+- Every API call is verified using a detached cryptographic signature, which helps prevent token interception or theft.
 
 Remote clients that can't run the local signer (ChatGPT, Gemini, Antigravity) instead use a revocable, per-site OAuth connection or API token. Whichever method you use, **you have full, absolute control** — revoke or delete any connected client from your WordPress settings page, and all future access stops immediately.
 

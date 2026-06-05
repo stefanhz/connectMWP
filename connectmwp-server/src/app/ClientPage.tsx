@@ -62,7 +62,7 @@ export default function ClientPage({ faqs }: ClientPageProps) {
         </h1>
 
         <p className="text-[15px] leading-relaxed text-zinc-400 mb-6 text-center">
-          Bridge your AI clients — Claude, Cursor, Cline, ChatGPT, Gemini and more — directly to your WordPress sites. Secure, 100% private, and session-less.
+          Bridge your AI clients — Claude, Cursor, Cline, ChatGPT, Gemini and more — directly to your WordPress sites. Secure, private, and session-less.
         </p>
 
         <div className="text-[13.5px] text-amber-400 mb-7 p-3 bg-amber-400/5 rounded-lg border border-dashed border-amber-400/20 leading-normal text-center">

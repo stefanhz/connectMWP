@@ -4,6 +4,20 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2.3.4 — 2026-06-04
+
+**Legal pages rewritten + over-broad claims softened (pre-launch).** The privacy policy and terms of service were brought up to the v2 decentralized reality and made more defensible, and a few absolute marketing claims were dialed back to language that can't be read as a guarantee. Marketing-site-only (`connectmwp-server`); plugin and MCP client move in lockstep with no functional change. Verified with a full production build. **Note for the operator:** one blank remains in the Terms — the governing-law jurisdiction — and the legal docs name "Stefan Heinz (2morrow.ai)" as the provider (operating as an individual, not a liability-shielding entity).
+
+### Changed
+
+- **connectmwp-server — privacy policy rewritten** to match the decentralized design and standard data-protection expectations: names the responsible party (Stefan Heinz / 2morrow.ai), carries a "Last updated" date, states plainly that the central site is never in the pairing/auth/publishing path, that the website host records only standard security request logs (IP/browser/time) under legitimate interest, that there are **no analytics cookies or trackers** (verified — the site loads none), distinguishes the device **public key** from SHA-256-hashed API/OAuth tokens, adds a GDPR/CCPA rights section + an explicit "we do not sell your data," and a third-party-links + policy-changes section.
+- **connectmwp-server — terms of service rewritten** for defensibility: names the provider, anchors the "as is / no warranty / no liability" language to the **GPLv2 §11–§12** disclaimer the Software is already licensed under, and adds sections for user responsibility for AI content, indemnification, a trademark disclaimer (not affiliated with/endorsed by the WordPress Foundation, Automattic, Anthropic, OpenAI, or Google), governing law (placeholder pending the operator's jurisdiction), and changes/contact.
+- **connectmwp-server — softened absolute claims** that could be read as guarantees: the landing hero "Secure, **100%** private" → "Secure, private"; the FAQ "**preventing** token interception or theft" → "**helps prevent** token interception or theft." ("100% free" is unchanged — it is literally true.)
+
+### Unchanged (explicitly preserved)
+
+- The plugin and MCP client are byte-for-byte unchanged apart from the lockstep version bump; the download zip is repacked only to carry the new header (sha `82323ebb…`, both copies identical). No auth, signing, OAuth, token, DAL, or tool behavior changed.
+
 ## 2.3.3 — 2026-06-04
 
 **Public site — content brought up to date for all clients, links de-hardcoded.** Pre-launch content pass on connectmwp.com. The site copy and FAQ were written when only the Claude/stdio path existed; this release updates them to cover all three connection methods (device pairing, ChatGPT OAuth, API token), corrects an inaccurate claim about how competing tools authenticate, removes the "active development" warning, and moves every external link into a single config file so none are hardcoded. Marketing-site-only (`connectmwp-server`); the plugin and MCP client move in lockstep with no functional change. Verified with a full production build.

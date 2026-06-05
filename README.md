@@ -1,7 +1,7 @@
 # connectMWP
 
-> **Verified against:** connectMWP **v2.2.0** (all three components, lockstep).
-> **Last reviewed:** 2026-06-02.
+> **Verified against:** connectMWP **v2.3.3** (all three components, lockstep).
+> **Last reviewed:** 2026-06-04.
 > **Re-verify when:** the client connection model changes (new auth types, new client categories), the pairing CLI surface changes, the ChatGPT OAuth flow changes, or the `/mcp` endpoint URL or connector URL format changes.
 
 connectMWP is a secure, decentralized Model Context Protocol (MCP) server that connects AI clients directly to self-hosted WordPress sites — letting you draft content, upload media, and manage posts from your AI workspace.
