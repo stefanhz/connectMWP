@@ -28,34 +28,61 @@ import dns from 'dns/promises';
  * dual-stack representation (T140 hardening).
  */
 export function isPrivateIp(ip) {
-  // IPv4-mapped IPv6 form (`::ffff:1.2.3.4`) — strip prefix, recurse on the
-  // embedded IPv4 address. Common attacker bypass; rejected explicitly.
-  const mappedMatch = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
-  if (mappedMatch) {
-    return isPrivateIp(mappedMatch[1]);
+  const addr = String(ip).trim().toLowerCase();
+
+  // IPv4-mapped IPv6, DOTTED form (`::ffff:1.2.3.4`) — strip prefix, recurse on
+  // the embedded IPv4. Common attacker bypass; rejected explicitly.
+  const mappedDotted = addr.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mappedDotted) {
+    return isPrivateIp(mappedDotted[1]);
+  }
+  // IPv4-mapped IPv6, HEX-GROUPED form (`::ffff:7f00:1` = 127.0.0.1). getaddrinfo
+  // rarely emits this, but a hostile resolver could return it to slip the dotted
+  // check above — reconstruct the embedded IPv4 from the two 16-bit groups and
+  // recurse so the mapped private target is still caught (T092).
+  const mappedHex = addr.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedHex) {
+    const hi = parseInt(mappedHex[1], 16);
+    const lo = parseInt(mappedHex[2], 16);
+    const v4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    return isPrivateIp(v4);
   }
 
   // IPv4 checks
-  if (/^(127\.|10\.|169\.254\.|192\.168\.)/.test(ip)) {
+  if (/^(127\.|10\.|169\.254\.|192\.168\.)/.test(addr)) {
     return true;
   }
   // 172.16.0.0/12
-  if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip)) {
+  if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(addr)) {
+    return true;
+  }
+  // 100.64.0.0/10 — carrier-grade NAT (RFC 6598); also Tailscale's range. A
+  // request that resolves here can reach a tailnet / CGNAT-internal host (T092).
+  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(addr)) {
+    return true;
+  }
+  // 198.18.0.0/15 — benchmarking range (RFC 2544); never a legitimate fetch.
+  if (/^198\.1[89]\./.test(addr)) {
     return true;
   }
   // 0.0.0.0/8 — "this host" address; not usable as a remote target but
   // sometimes resolves on misconfigured services. Block defensively.
-  if (/^0\./.test(ip)) {
+  if (/^0\./.test(addr)) {
     return true;
   }
 
-  // IPv6 checks
-  // ::1 = loopback
-  // ::  = unspecified
-  // fe80::/10 = link-local
-  // fc00::/7 = unique-local (covers fc and fd prefixes)
-  if (ip === '::1' || ip === '::' || ip.toLowerCase().startsWith('fe80:')
-      || ip.toLowerCase().startsWith('fc') || ip.toLowerCase().startsWith('fd')) {
+  // IPv6: normalize a fully-EXPANDED all-zero-but-last form
+  // (`0:0:0:0:0:0:0:1` / `0:0:0:0:0:0:0:0`) so an un-compressed loopback /
+  // unspecified can't bypass the exact-match checks below (T092).
+  const groups = addr.split(':');
+  if (groups.length === 8 && groups.slice(0, 7).every((g) => /^0+$/.test(g))) {
+    if (/^0*1$/.test(groups[7])) return true; // ::1 loopback
+    if (/^0+$/.test(groups[7])) return true;  // :: unspecified
+  }
+  // ::1 = loopback, :: = unspecified, fe80::/10 = link-local (fe80–febf),
+  // fc00::/7 = unique-local (fc/fd prefixes).
+  if (addr === '::1' || addr === '::' || /^fe[89ab]/.test(addr)
+      || addr.startsWith('fc') || addr.startsWith('fd')) {
     return true;
   }
 
@@ -138,11 +165,11 @@ export function validateImageMagicNumbers(buffer) {
       (buffer[0] === 0x4D && buffer[1] === 0x4D && buffer[2] === 0x00 && buffer[3] === 0x2A)) {
     return 'tiff';
   }
-  // SVG / XML (check if starts with <?xml or <svg, case insensitive or containing <svg)
-  const head = buffer.slice(0, Math.min(buffer.length, 512)).toString('utf-8').trim();
-  if (/^<svg/i.test(head) || /^<\?xml/i.test(head) && head.includes('<svg')) {
-    return 'svg';
-  }
-
-  throw new Error('File magic number verification failed. Only valid image files (PNG, JPEG, GIF, WebP, SVG, BMP, TIFF) are allowed.');
+  // SVG is DELIBERATELY NOT accepted (T091). SVG is XML, not a raster image, and
+  // is a well-known stored-XSS carrier: an SVG with embedded <script>/event
+  // handlers uploaded to the WP media library and served as image/svg+xml runs
+  // in the site origin when its attachment URL is opened. A prompt-injected LLM
+  // could supply such a file via upload_media. Raster formats cover the real use
+  // case; if SVG is ever needed it must be sanitized server-side before storage.
+  throw new Error('File magic number verification failed. Only valid raster image files (PNG, JPEG, GIF, WebP, BMP, TIFF) are allowed.');
 }

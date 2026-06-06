@@ -4,6 +4,44 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2.3.9 — 2026-06-05
+
+**Backlog clearance from the paired audits: cross-language drift gate, version-SSOT for two more literals, and one auth-gate + one warning hardening.** Continuation of the 2.3.8 audit-remediation work — closes the remaining self-contained findings that need no live-WP/Stefan-only steps. Plugin + tooling change.
+
+### Added
+
+- **Cross-language SSOT drift gate (`scripts/check-cross-lang.mjs`, T094 / arch M-2).** A new check that fails the build/commit when the two duplicated cross-language contracts drift: the `MEDIA_MAX_BYTES` upload cap (PHP plugin ⇄ Node `lib/constants.js`) and the MCP tool **name** surface (PHP `mcp_tool_definitions()` ⇄ Node `index.js` `ListTools`), accounting for the one deliberate asymmetry (`connectmwp_upload_media` is Node-only — ChatGPT can't upload). Wired into the pre-commit hook alongside the version drift gate. Negative-tested: it correctly catches a changed cap and an added/renamed tool. Converts a "kept in sync by documentation" discipline into an enforced gate.
+
+### Changed
+
+- **Two more version literals are now propagated from `/VERSION` (no more hand-maintained drift).** `scripts/sync-version.mjs` now also rewrites + `--check`-gates (a) the WordPress.org readme **`Stable tag`** (was stale at `2.2.0` — this also unblocks the wp.org submission, which requires the Stable tag to match the released version) and (b) — from 2.3.8 — the MCP `FALLBACK_VERSION`. The propagator now manages five targets: two `package.json`s, the plugin header, `FALLBACK_VERSION`, and the readme `Stable tag`.
+
+### Security
+
+- **connectmwp-agent — enrollment HTTPS bypass no longer trusts the client `Host` header (T093 / security L-1).** `enroll_client_handler()` previously skipped the HTTPS requirement when `HTTP_HOST` matched `localhost`/`.local`/`.test`. `Host` is client-controllable, so a remote caller could send `Host: localhost` to attempt plaintext enrollment (still gated by a valid admin-minted single-use code, so low real risk). The localhost bypass is now gated **solely on a loopback `REMOTE_ADDR`** (`127.0.0.1`/`::1`), which cannot be forged when talking directly to PHP. Production enrollment is always HTTPS; only a genuine loopback dev request is affected.
+- **connectmwp-agent — strengthened the path-token log-exposure warning (T087).** The API-token card's URL-embedded-token warning now explicitly says to **revoke immediately if you suspect the URL was logged or shared** (in addition to the existing "appears in access logs / rotate periodically" guidance). The path-token fallback remains OFF by default and opt-in; OPERATIONS §9 already carries the mirrored warning. Closes T087.
+
+### Note
+
+- **Verification:** all five version targets sync + drift-gate green; the cross-language gate passes and was negative-tested (catches cap + tool-name drift, exit 1); `php -l` clean; both plugin zips byte-identical at 2.3.9. The enrollment-gate change is to-be-tested on a live enroll (T093). The N+1 finding (T083) was closed as not-reproducible in 2.3.8. Reports: `_internal/SECURITY-REVIEW-REPORT_2026-06-05_20-15.md`, `_internal/ARCH-REVIEW-REPORT_2026-06-05_20-31.md`.
+
+## 2.3.8 — 2026-06-05
+
+**Security + maintainability hardening from a paired security + architecture audit (top-3 combined findings).** A ruthless 8-lens security review and an 8-lens Staff-Engineer architecture review were run against 2.3.7; both found **no critical issues** (the decentralized, session-less, secure-by-default design held up). This release closes the three highest impact-×-effort items that span both reports. MCP-client + tooling change; the plugin is unchanged except its version header.
+
+### Security
+
+- **connectmwp-mcp — SVG is no longer accepted by the media-upload validator (T091).** `validateImageMagicNumbers()` previously accepted SVG. SVG is XML, not a raster image, and is a known stored-XSS carrier: a `<script>`-bearing SVG uploaded to the WordPress media library and served as `image/svg+xml` executes in the site origin when its attachment URL is opened — reachable via a prompt-injected LLM driving `upload_media`. SVG is now rejected (default-deny); the six raster formats (PNG/JPEG/GIF/WebP/BMP/TIFF) are unchanged. If SVG support is ever wanted it must be sanitized server-side before storage.
+- **connectmwp-mcp — tightened the client SSRF private-range screen (T092).** `isPrivateIp()` now also blocks `100.64.0.0/10` (carrier-grade NAT / Tailscale) and `198.18.0.0/15` (benchmarking), reconstructs and screens the **hex-grouped** IPv4-mapped IPv6 form (`::ffff:7f00:1` = 127.0.0.1), normalizes the fully-expanded loopback/unspecified form (`0:0:0:0:0:0:0:1`), and widens link-local matching to the full `fe80::/10`. These close residual ways a prompt-injected `image_url` could reach an internal host on the user's own machine/LAN. Cloud-metadata (`169.254.169.254`), Docker (`172.16/12`), and the DNS-rebind pin were already covered and are unchanged.
+
+### Changed
+
+- **connectmwp-mcp / tooling — `FALLBACK_VERSION` is no longer a hand-maintained hardcode (T085 / arch M-3).** The MCP client's last-resort version literal (used only if the runtime `package.json` read fails) had drifted stale to `1.2.4`. It is now propagated from the repo-root `/VERSION` SSOT by `scripts/sync-version.mjs` and gated by the pre-commit `--check` drift hook, exactly like the two `package.json`s and the plugin header. One fewer second-source-of-truth to drift.
+
+### Note
+
+- **Verification:** the SSRF + SVG changes are unit-verified by `_internal/verify/p2_test.sh` (existing) plus 18 targeted new-case assertions (CGNAT/benchmark/hex-mapped/expanded-loopback blocked, public IPs allowed, SVG rejected, PNG accepted); the version-sync drift gate is green across all four targets. The end-to-end `upload_media` path through a live MCP client + WP remains owed during normal testing (T091/T092 → to-be-tested). The prior-flagged N+1 (T083) was independently found **not reproducible** in current code and is closed. Full reports: `_internal/SECURITY-REVIEW-REPORT_2026-06-05_20-15.md`, `_internal/ARCH-REVIEW-REPORT_2026-06-05_20-31.md`.
+
 ## 2.3.7 — 2026-06-05
 
 **Performance/Security: OAuth code + token pruning is now O(1) on the index instead of O(N) per-row reads (T082).** Every time the plugin's OAuth server minted an auth code or issued/rotated a token, it pruned expired rows by scanning the index and calling `get_option()` for **every** entry to read its expiry — N database reads on the hot mint/rotate path. An attacker could amplify this by flooding the site with valid-looking-but-never-redeemed codes/tokens to drag out every subsequent prune (a denial-of-service lever); under normal load it was just needless latency. The expiry now lives **inside** the index record, so a prune reads a single option and never touches the per-row entries. Lockstep release; plugin-only code change.

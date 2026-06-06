@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP
  * Plugin URI: https://connectmwp.com
  * Description: Securely let your own local AI client (Claude, Cursor) publish to this WordPress site over a signed, session-less Ed25519 connection — no login, no central server.
- * Version: 2.3.7
+ * Version: 2.3.9
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Stefan Heinz, 2morrow.ai
@@ -4617,9 +4617,15 @@ class ConnectMWP_Agent {
      * Handle Public Key Enrollment
      */
     public function enroll_client_handler(WP_REST_Request $request) {
-        // Enforce SSL unless it is localhost
+        // Enforce SSL unless this is a genuine loopback request (local dev over
+        // plain HTTP). T093: the localhost check is gated SOLELY on a loopback
+        // REMOTE_ADDR (un-forgeable when talking directly to PHP) — NOT on the
+        // HTTP_HOST header, which is client-controllable and must never gate a
+        // security decision (a remote attacker could send `Host: localhost` to
+        // enroll over plaintext). Production enrollment is always HTTPS; this
+        // bypass only ever applies to a real 127.0.0.1/::1 caller.
         $client_ip = $this->get_client_ip();
-        $is_localhost = in_array($client_ip, ['127.0.0.1', '::1', 'localhost'], true) || (isset($_SERVER['HTTP_HOST']) && preg_match('/localhost|\.local|\.test/i', $_SERVER['HTTP_HOST']));
+        $is_localhost = in_array($client_ip, ['127.0.0.1', '::1'], true);
         if (!is_ssl() && !$is_localhost) {
             return new WP_REST_Response(['success' => false, 'error' => 'HTTPS is required for enrollment.'], 403);
         }
@@ -6817,7 +6823,7 @@ class ConnectMWP_Agent {
                     <input type="checkbox" id="cmwp-cgpt-path-toggle" <?php checked($path_token_enabled); ?> />
                     <span>Enable URL-embedded token fallback (only if your host strips Authorization headers)</span>
                 </label>
-                <p class="cmwp-cgpt-pathwarn">⚠ The URL-embedded form puts your token in the address, so it can appear in server/CDN access logs. Use it only if the normal (header) method fails, and revoke + regenerate the token periodically.</p>
+                <p class="cmwp-cgpt-pathwarn">⚠ The URL-embedded form puts your token in the address, so it can appear in server/CDN/proxy access logs. Use it only if the normal (header) method fails, rotate the token periodically, and <strong>revoke it immediately if you suspect the URL was logged or shared</strong>.</p>
             </div>
 
             <p class="cmwp-tz-note" style="margin-top:14px;">Your active API tokens are listed in <strong>Your connections</strong> below, where you can revoke any of them.</p>

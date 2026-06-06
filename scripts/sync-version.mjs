@@ -35,6 +35,18 @@ const PKG_TARGETS = [
 const PHP_TARGET = 'connectmwp-agent/connectmwp-agent.php';
 // Matches the plugin docblock header line, e.g. " * Version: 2.0.24"
 const PHP_HEADER_RE = /^(\s*\*\s*Version:\s*)(.+?)(\s*)$/m;
+// The MCP client's last-resort version literal, used only if the runtime
+// package.json read fails. It is a SECOND version source, so it is propagated
+// from VERSION here (T085) instead of being a hand-maintained hardcode that
+// drifts (it was stale at 1.2.4). Matches: export const FALLBACK_VERSION = '2.3.8';
+const JS_TARGET = 'connectmwp-mcp/lib/constants.js';
+const JS_FALLBACK_RE = /^(export const FALLBACK_VERSION\s*=\s*['"])([^'"]+)(['"]\s*;?\s*)$/m;
+// The WordPress.org plugin readme "Stable tag" — by convention this points at
+// the current released version, so it is a FOURTH version literal that drifts
+// (it was stale at 2.2.0). Propagated from VERSION here + gated by --check so a
+// wp.org submission can never ship a mismatched Stable tag. Matches: "Stable tag: 2.3.9"
+const README_TARGET = 'connectmwp-agent/readme.txt';
+const README_STABLE_RE = /^(Stable tag:\s*)(.+?)(\s*)$/m;
 
 function fail(msg) {
   console.error(`[sync-version] ERROR: ${msg}`);
@@ -102,10 +114,60 @@ function writePhpVersion(version) {
   return true;
 }
 
+function readJsFallbackVersion() {
+  const abs = join(ROOT, JS_TARGET);
+  let text;
+  try {
+    text = readFileSync(abs, 'utf8');
+  } catch (e) {
+    fail(`cannot read ${JS_TARGET}: ${e.message}`);
+  }
+  const m = text.match(JS_FALLBACK_RE);
+  if (!m) fail(`could not find a "FALLBACK_VERSION" literal in ${JS_TARGET}`);
+  return m[2].trim();
+}
+
+function writeJsFallbackVersion(ver) {
+  const abs = join(ROOT, JS_TARGET);
+  const text = readFileSync(abs, 'utf8');
+  const m = text.match(JS_FALLBACK_RE);
+  if (!m) fail(`could not find a "FALLBACK_VERSION" literal in ${JS_TARGET}`);
+  if (m[2].trim() === ver) return false;
+  const next = text.replace(JS_FALLBACK_RE, `$1${ver}$3`);
+  writeFileSync(abs, next);
+  return true;
+}
+
+function readReadmeStableTag() {
+  const abs = join(ROOT, README_TARGET);
+  let text;
+  try {
+    text = readFileSync(abs, 'utf8');
+  } catch (e) {
+    fail(`cannot read ${README_TARGET}: ${e.message}`);
+  }
+  const m = text.match(README_STABLE_RE);
+  if (!m) fail(`could not find a "Stable tag:" line in ${README_TARGET}`);
+  return m[2].trim();
+}
+
+function writeReadmeStableTag(ver) {
+  const abs = join(ROOT, README_TARGET);
+  const text = readFileSync(abs, 'utf8');
+  const m = text.match(README_STABLE_RE);
+  if (!m) fail(`could not find a "Stable tag:" line in ${README_TARGET}`);
+  if (m[2].trim() === ver) return false;
+  const next = text.replace(README_STABLE_RE, `$1${ver}$3`);
+  writeFileSync(abs, next);
+  return true;
+}
+
 function currentTargets() {
   return [
     ...PKG_TARGETS.map((rel) => ({ file: rel, found: readPkgVersion(rel) })),
     { file: PHP_TARGET, found: readPhpVersion() },
+    { file: JS_TARGET, found: readJsFallbackVersion() },
+    { file: README_TARGET, found: readReadmeStableTag() },
   ];
 }
 
@@ -140,6 +202,14 @@ for (const rel of PKG_TARGETS) {
 }
 if (writePhpVersion(version)) {
   console.log(`[sync-version] updated ${PHP_TARGET} header -> ${version}`);
+  changed++;
+}
+if (writeJsFallbackVersion(version)) {
+  console.log(`[sync-version] updated ${JS_TARGET} FALLBACK_VERSION -> ${version}`);
+  changed++;
+}
+if (writeReadmeStableTag(version)) {
+  console.log(`[sync-version] updated ${README_TARGET} Stable tag -> ${version}`);
   changed++;
 }
 console.log(

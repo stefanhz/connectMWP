@@ -13,3 +13,13 @@ if [ -f "$ROOT/scripts/sync-version.mjs" ]; then
     exit 1
   fi
 fi
+# Cross-language SSOT drift gate (T094): MEDIA_MAX_BYTES + MCP tool-name parity
+# between the PHP plugin and the Node MCP client.
+if [ -f "$ROOT/scripts/check-cross-lang.mjs" ]; then
+  if ! node "$ROOT/scripts/check-cross-lang.mjs"; then
+    echo ""
+    echo "pre-commit BLOCKED: cross-language SSOT drift detected."
+    echo "Align the MEDIA_MAX_BYTES cap / MCP tool definitions across PHP + JS, then re-stage."
+    exit 1
+  fi
+fi
