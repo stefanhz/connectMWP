@@ -4,6 +4,20 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2.3.7 — 2026-06-05
+
+**Performance/Security: OAuth code + token pruning is now O(1) on the index instead of O(N) per-row reads (T082).** Every time the plugin's OAuth server minted an auth code or issued/rotated a token, it pruned expired rows by scanning the index and calling `get_option()` for **every** entry to read its expiry — N database reads on the hot mint/rotate path. An attacker could amplify this by flooding the site with valid-looking-but-never-redeemed codes/tokens to drag out every subsequent prune (a denial-of-service lever); under normal load it was just needless latency. The expiry now lives **inside** the index record, so a prune reads a single option and never touches the per-row entries. Lockstep release; plugin-only code change.
+
+### Changed
+
+- **connectmwp-agent — expiry-in-index for the OAuth code/token DALs.** The two index options (`connectmwp_oauth_code_index`, `connectmwp_oauth_token_index`) changed shape from a flat list of ids to a map `id => expiry (unix)`. `oauth_prune_expired_codes()` / `oauth_prune_expired_tokens()` now judge liveness from the index alone — zero per-row reads in the steady state. The atomic per-row `add_option`/`delete_option` storage discipline, the single-use/replay guarantees, refresh rotation, and the OAuth protocol surface are all unchanged.
+- **Backward-compatible self-migration (no migration step, no downtime).** A shared `oauth_normalize_index()` helper tolerates the legacy flat-list shape: existing sites keep working immediately, and the first prune/add/remove/list after the update reads each legacy row once to backfill its expiry, then rewrites the index in the new shape. Every reader (code consume, access-token resolve, refresh peek/rotate, admin list) is shape-agnostic via `array_keys()`, so they work correctly during the migration window. After the first prune cycle the whole index is O(1).
+- **Minor tradeoff (documented):** a dead-but-unexpired row — one whose `delete_option` succeeded but whose index removal lost its bounded-retry race — now lingers until its own expiry rather than being swept by prune. The admin "Connected apps" list still self-heals by reading rows. Codes' 120-second TTL makes this immaterial; tokens are bounded by their own expiry.
+
+### Note
+
+- **Live-verification owed (T082 → to-be-tested):** validated here by `php -l` and a standalone harness (`_internal/verify/t082_oauth_index_test.php`, 25 assertions) that loads the real plugin class against an in-memory option store and proves (a) new-shape prune does zero per-row reads, (b) legacy-shape prune backfills once then is O(1), (c) consume/resolve/peek work on a legacy-shaped index, and (d) a real mint→consume round-trip. It does **not** exercise a live WP DB, real concurrency, or a live ChatGPT OAuth issue/refresh/consume round-trip — that remains owed before deploy, per the deliberate deferral in the Session #12 notes.
+
 ## 2.3.6 — 2026-06-04
 
 **Security: closed the residual DNS-rebinding SSRF in the OAuth metadata fetch (T084).** The plugin's OAuth Authorization Server fetches a ChatGPT client's metadata document (CIMD) during the admin-authenticated consent flow. It screened the target host's resolved IPs against private/loopback ranges, but then let the HTTP layer re-resolve DNS when opening the socket — a hostile DNS server could return a public IP to the screen and a private/loopback IP to the actual fetch (a classic rebinding TOCTOU). This was a knowingly-accepted residual in 2.2.0 (admin-gated, no exfiltration channel); it is now closed. Lockstep release; plugin-only code change.

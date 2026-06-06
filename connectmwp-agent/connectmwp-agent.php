@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP
  * Plugin URI: https://connectmwp.com
  * Description: Securely let your own local AI client (Claude, Cursor) publish to this WordPress site over a signed, session-less Ed25519 connection — no login, no central server.
- * Version: 2.3.6
+ * Version: 2.3.7
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Stefan Heinz, 2morrow.ai
@@ -277,7 +277,7 @@ class ConnectMWP_Agent {
     // token DAL). ONLY the sha256 hash of a code is ever persisted; the plaintext
     // code exists once (return of mint_oauth_code) and is never stored or logged.
     const OAUTH_CODE_OPTION_PREFIX = 'connectmwp_oauth_code_'; // + bare hex suffix => per-code option name
-    const OAUTH_CODE_INDEX_OPTION  = 'connectmwp_oauth_code_index'; // array of code_id (hint, self-healing)
+    const OAUTH_CODE_INDEX_OPTION  = 'connectmwp_oauth_code_index'; // map code_id => expiry (unix); legacy flat-list tolerated, self-healing
     const OAUTH_CODE_ID_PREFIX     = 'cmwp_oauthc_';           // code_id prefix (internal row id, NOT the secret)
     const OAUTH_CODE_SECRET_BYTES  = 32;                        // entropy of the auth-code secret (>= 32 random bytes)
     const OAUTH_CODE_TTL_SECONDS   = 120;                       // auth code lifetime (single-use, short)
@@ -294,7 +294,7 @@ class ConnectMWP_Agent {
     // server can branch by prefix and so a refresh token can never be accepted as
     // an access token at /mcp (the resolve helpers also assert the stored `type`).
     const OAUTH_TOKEN_OPTION_PREFIX = 'connectmwp_oauth_token_'; // + bare hex suffix => per-token option name
-    const OAUTH_TOKEN_INDEX_OPTION  = 'connectmwp_oauth_token_index'; // array of token_id (hint, self-healing)
+    const OAUTH_TOKEN_INDEX_OPTION  = 'connectmwp_oauth_token_index'; // map token_id => expiry (unix); legacy flat-list tolerated, self-healing
     const OAUTH_TOKEN_ID_PREFIX     = 'cmwp_oauthtk_';          // token_id prefix (internal row id, NOT the secret)
     const OAUTH_ACCESS_TOKEN_PREFIX = 'cmwp_oat_';              // plaintext access-token prefix (also RS branch key)
     const OAUTH_REFRESH_TOKEN_PREFIX = 'cmwp_ort_';            // plaintext refresh-token prefix
@@ -3329,8 +3329,8 @@ class ConnectMWP_Agent {
         // Enforce the hard cap AFTER pruning: if still at/over MAX_OAUTH_CODES,
         // refuse rather than let the code store grow unbounded. The caller maps
         // this transient-capacity error to a temporarily_unavailable redirect.
-        $idx = get_option(self::OAUTH_CODE_INDEX_OPTION, []);
-        if (is_array($idx) && count($idx) >= self::MAX_OAUTH_CODES) {
+        $idx = $this->oauth_normalize_index(get_option(self::OAUTH_CODE_INDEX_OPTION, []));
+        if (count($idx) >= self::MAX_OAUTH_CODES) {
             return new WP_Error('cmwp_oauth_code_capacity', __('Too many pending authorization codes; try again shortly.', 'connectmwp'));
         }
 
@@ -3353,7 +3353,8 @@ class ConnectMWP_Agent {
         if (!$stored) {
             return new WP_Error('cmwp_oauth_code_store', __('Could not store the authorization code.', 'connectmwp'));
         }
-        $this->oauth_code_index_add($code_id);
+        // Index carries the absolute expiry so prune never re-reads this row.
+        $this->oauth_code_index_add($code_id, $record['created'] + self::OAUTH_CODE_TTL_SECONDS);
 
         return $plaintext;
     }
@@ -3381,12 +3382,11 @@ class ConnectMWP_Agent {
         }
         $candidate_hash = hash('sha256', $code);
 
-        $index = get_option(self::OAUTH_CODE_INDEX_OPTION, []);
-        if (!is_array($index)) {
-            return false;
-        }
+        // Shape-agnostic: array_keys() yields the code_ids whether the option is
+        // the new id=>expiry map or the legacy flat list.
+        $index = $this->oauth_normalize_index(get_option(self::OAUTH_CODE_INDEX_OPTION, []));
 
-        foreach ($index as $code_id) {
+        foreach (array_keys($index) as $code_id) {
             $row = get_option($this->oauth_code_option_name($code_id), null);
             if (!is_array($row)) {
                 continue;
@@ -3417,19 +3417,51 @@ class ConnectMWP_Agent {
         return false;
     }
 
-    /** [OAuth Phase 1] Append a code_id to the index (bounded optimistic retry). */
-    private function oauth_code_index_add($code_id) {
-        for ($i = 0; $i < self::KEY_INDEX_MAX_RETRY; $i++) {
-            $index = get_option(self::OAUTH_CODE_INDEX_OPTION, []);
-            if (!is_array($index)) {
-                $index = [];
+    /**
+     * [OAuth Phase 1/2] Normalize a code/token index option to its canonical
+     * shape: an associative map `id (string) => expiry (int, unix seconds)`.
+     *
+     * Tolerates the LEGACY flat-list shape `[0 => id, 1 => id, …]` written by
+     * plugins <= 2.3.6 (before expiry-in-index, T082): such entries come back
+     * with a placeholder expiry of 0 ("unknown"), and the prune/add/remove/list
+     * paths backfill the real expiry and rewrite the option in the new shape on
+     * first touch — so a site self-migrates with no discrete migration step. The
+     * discriminator is the VALUE type: an int value is a new-shape expiry (its
+     * key is the id); a string value is a legacy id (its key is a meaningless
+     * list index). This keeps every reader shape-agnostic via array_keys().
+     */
+    private function oauth_normalize_index($raw) {
+        $out = [];
+        if (!is_array($raw)) {
+            return $out;
+        }
+        foreach ($raw as $k => $v) {
+            if (is_string($k) && $k !== '' && is_int($v)) {
+                $out[$k] = $v;            // new shape: id => expiry
+            } elseif (is_string($v) && $v !== '') {
+                if (!isset($out[$v])) {
+                    $out[$v] = 0;         // legacy flat entry: id, expiry unknown
+                }
             }
-            if (in_array($code_id, $index, true)) {
+        }
+        return $out;
+    }
+
+    /**
+     * [OAuth Phase 1] Upsert a code_id => expiry entry into the index (bounded
+     * optimistic retry). The absolute expiry (unix) is carried IN the index so
+     * oauth_prune_expired_codes() can judge liveness without reading the per-code
+     * row (the T082 fix). Idempotent: a re-add with the same expiry is a no-op.
+     */
+    private function oauth_code_index_add($code_id, $expiry) {
+        $expiry = intval($expiry);
+        for ($i = 0; $i < self::KEY_INDEX_MAX_RETRY; $i++) {
+            $index = $this->oauth_normalize_index(get_option(self::OAUTH_CODE_INDEX_OPTION, []));
+            if (isset($index[$code_id]) && $index[$code_id] === $expiry) {
                 return true;
             }
-            $next = $index;
-            $next[] = $code_id;
-            if (update_option(self::OAUTH_CODE_INDEX_OPTION, $next, 'no')) {
+            $index[$code_id] = $expiry;
+            if (update_option(self::OAUTH_CODE_INDEX_OPTION, $index, 'no')) {
                 return true;
             }
         }
@@ -3439,17 +3471,12 @@ class ConnectMWP_Agent {
     /** [OAuth Phase 1] Remove a code_id from the index (bounded optimistic retry). */
     private function oauth_code_index_remove($code_id) {
         for ($i = 0; $i < self::KEY_INDEX_MAX_RETRY; $i++) {
-            $index = get_option(self::OAUTH_CODE_INDEX_OPTION, []);
-            if (!is_array($index)) {
+            $index = $this->oauth_normalize_index(get_option(self::OAUTH_CODE_INDEX_OPTION, []));
+            if (!isset($index[$code_id])) {
                 return true;
             }
-            if (!in_array($code_id, $index, true)) {
-                return true;
-            }
-            $next = array_values(array_filter($index, function ($id) use ($code_id) {
-                return $id !== $code_id;
-            }));
-            if (update_option(self::OAUTH_CODE_INDEX_OPTION, $next, 'no')) {
+            unset($index[$code_id]);
+            if (update_option(self::OAUTH_CODE_INDEX_OPTION, $index, 'no')) {
                 return true;
             }
         }
@@ -3459,30 +3486,49 @@ class ConnectMWP_Agent {
     /**
      * [OAuth Phase 1] Best-effort prune of expired auth-code rows. Keeps the
      * store from accumulating dead rows (codes are TTL'd and single-use, but a
-     * never-exchanged code would otherwise linger). Cheap: iterates the index,
-     * which is small. Self-heals dead index entries as it goes.
+     * never-exchanged code would otherwise linger).
+     *
+     * T082: the expiry now lives IN the index (id => expiry), so the common case
+     * reads ONLY the single index option — no per-row get_option(). The one
+     * exception is a LEGACY entry (expiry 0, written before this release): its
+     * row is read once to backfill the real expiry, then it is migrated into the
+     * new shape. After the first prune cycle the whole index is O(1) to scan.
+     * (Tradeoff vs the old version: a dead-but-unexpired row — i.e. one whose
+     * delete_option succeeded but whose index_remove lost its retry race — now
+     * lingers until its own expiry instead of being swept here; list_oauth_tokens
+     * still self-heals the admin view. Codes' 120s TTL makes this immaterial.)
      */
     private function oauth_prune_expired_codes() {
-        $index = get_option(self::OAUTH_CODE_INDEX_OPTION, []);
-        if (!is_array($index) || empty($index)) {
+        $raw = get_option(self::OAUTH_CODE_INDEX_OPTION, []);
+        if (!is_array($raw) || empty($raw)) {
             return;
         }
-        $now = time();
-        $alive = [];
-        foreach ($index as $code_id) {
-            $row = get_option($this->oauth_code_option_name($code_id), null);
-            if (!is_array($row)) {
-                continue; // already gone — drop from index
+        $index   = $this->oauth_normalize_index($raw);
+        $now     = time();
+        $next    = [];
+        $changed = false;
+        foreach ($index as $code_id => $expiry) {
+            if ($expiry <= 0) {
+                // Legacy entry: read the row ONCE to backfill its expiry, then
+                // migrate to the new shape. Only un-migrated entries pay this.
+                $changed = true;
+                $row = get_option($this->oauth_code_option_name($code_id), null);
+                if (is_array($row)) {
+                    $rec    = $this->normalize_oauth_code_record($row);
+                    $expiry = ($rec['created'] > 0) ? ($rec['created'] + self::OAUTH_CODE_TTL_SECONDS) : 0;
+                } else {
+                    $expiry = 0; // row already gone — fall through to drop
+                }
             }
-            $rec = $this->normalize_oauth_code_record($row);
-            if ($rec['created'] <= 0 || ($now - $rec['created']) > self::OAUTH_CODE_TTL_SECONDS) {
+            if ($expiry <= 0 || $now >= $expiry) {
                 delete_option($this->oauth_code_option_name($code_id));
+                $changed = true;
                 continue;
             }
-            $alive[] = $code_id;
+            $next[$code_id] = $expiry;
         }
-        if (count($alive) !== count($index)) {
-            update_option(self::OAUTH_CODE_INDEX_OPTION, array_values(array_unique($alive)), 'no');
+        if ($changed) {
+            update_option(self::OAUTH_CODE_INDEX_OPTION, $next, 'no');
         }
     }
 
@@ -3587,7 +3633,8 @@ class ConnectMWP_Agent {
         if (!$stored) {
             return false;
         }
-        $this->oauth_token_index_add($token_id);
+        // Index carries the absolute expiry so prune never re-reads this row.
+        $this->oauth_token_index_add($token_id, $record['expires']);
         return $token_id;
     }
 
@@ -3609,8 +3656,8 @@ class ConnectMWP_Agent {
 
         // Hard cap AFTER pruning: refuse rather than grow the token store
         // unbounded. Each issuance adds two rows.
-        $idx = get_option(self::OAUTH_TOKEN_INDEX_OPTION, []);
-        if (is_array($idx) && (count($idx) + 2) > self::MAX_OAUTH_TOKENS) {
+        $idx = $this->oauth_normalize_index(get_option(self::OAUTH_TOKEN_INDEX_OPTION, []));
+        if ((count($idx) + 2) > self::MAX_OAUTH_TOKENS) {
             return false;
         }
 
@@ -3688,12 +3735,11 @@ class ConnectMWP_Agent {
         }
         $candidate_hash = hash('sha256', $plaintext);
 
-        $index = get_option(self::OAUTH_TOKEN_INDEX_OPTION, []);
-        if (!is_array($index)) {
-            return false;
-        }
+        // Shape-agnostic: array_keys() yields the token_ids whether the option is
+        // the new id=>expiry map or the legacy flat list.
+        $index = $this->oauth_normalize_index(get_option(self::OAUTH_TOKEN_INDEX_OPTION, []));
 
-        foreach ($index as $token_id) {
+        foreach (array_keys($index) as $token_id) {
             $record = $this->get_oauth_token($token_id);
             if ($record === false) {
                 continue;
@@ -3743,12 +3789,11 @@ class ConnectMWP_Agent {
         }
         $candidate_hash = hash('sha256', $plaintext);
 
-        $index = get_option(self::OAUTH_TOKEN_INDEX_OPTION, []);
-        if (!is_array($index)) {
-            return false;
-        }
+        // Shape-agnostic: array_keys() yields the token_ids whether the option is
+        // the new id=>expiry map or the legacy flat list.
+        $index = $this->oauth_normalize_index(get_option(self::OAUTH_TOKEN_INDEX_OPTION, []));
 
-        foreach ($index as $token_id) {
+        foreach (array_keys($index) as $token_id) {
             $record = $this->get_oauth_token($token_id);
             if ($record === false) {
                 continue;
@@ -3801,12 +3846,11 @@ class ConnectMWP_Agent {
         }
         $candidate_hash = hash('sha256', $plaintext);
 
-        $index = get_option(self::OAUTH_TOKEN_INDEX_OPTION, []);
-        if (!is_array($index)) {
-            return false;
-        }
+        // Shape-agnostic: array_keys() yields the token_ids whether the option is
+        // the new id=>expiry map or the legacy flat list.
+        $index = $this->oauth_normalize_index(get_option(self::OAUTH_TOKEN_INDEX_OPTION, []));
 
-        foreach ($index as $token_id) {
+        foreach (array_keys($index) as $token_id) {
             $record = $this->get_oauth_token($token_id);
             if ($record === false) {
                 continue;
@@ -3868,7 +3912,8 @@ class ConnectMWP_Agent {
             $record['last_used'] = time();
             $record['last_ip']   = (string) $ip;
             update_option($this->oauth_token_option_name($token_id), $record, 'no');
-            $this->oauth_token_index_add($token_id);
+            // Re-assert index presence; expiry is unchanged by a touch.
+            $this->oauth_token_index_add($token_id, $record['expires']);
         }
     }
 
@@ -3894,36 +3939,40 @@ class ConnectMWP_Agent {
      */
     private function list_oauth_tokens() {
         $out = [];
-        $index = get_option(self::OAUTH_TOKEN_INDEX_OPTION, []);
-        if (is_array($index)) {
-            $healed = [];
-            foreach ($index as $token_id) {
-                $rec = $this->get_oauth_token($token_id);
-                if ($rec !== false) {
-                    $out[$token_id] = $rec;
-                    $healed[] = $token_id;
-                }
+        $index  = $this->oauth_normalize_index(get_option(self::OAUTH_TOKEN_INDEX_OPTION, []));
+        $healed = [];
+        foreach ($index as $token_id => $expiry) {
+            $rec = $this->get_oauth_token($token_id);
+            if ($rec !== false) {
+                $out[$token_id] = $rec;
+                // Preserve the known expiry; backfill a legacy (0) entry from the
+                // row so the rewrite below migrates it into the new shape.
+                $healed[$token_id] = ($expiry > 0) ? $expiry : intval($rec['expires']);
             }
-            if (count($healed) !== count($index)) {
-                update_option(self::OAUTH_TOKEN_INDEX_OPTION, array_values(array_unique($healed)), 'no');
-            }
+        }
+        // Rewrite only when the live/migrated map differs (dead rows dropped or a
+        // legacy entry backfilled) — array == compares key=>value, order-agnostic.
+        if ($healed != $index) {
+            update_option(self::OAUTH_TOKEN_INDEX_OPTION, $healed, 'no');
         }
         return $out;
     }
 
-    /** [OAuth Phase 2] Append a token_id to the index (bounded optimistic retry). */
-    private function oauth_token_index_add($token_id) {
+    /**
+     * [OAuth Phase 2] Upsert a token_id => expiry entry into the index (bounded
+     * optimistic retry). The absolute expiry (unix) is carried IN the index so
+     * oauth_prune_expired_tokens() can judge liveness without reading the
+     * per-token row (the T082 fix). Idempotent: re-add with same expiry is a no-op.
+     */
+    private function oauth_token_index_add($token_id, $expiry) {
+        $expiry = intval($expiry);
         for ($i = 0; $i < self::KEY_INDEX_MAX_RETRY; $i++) {
-            $index = get_option(self::OAUTH_TOKEN_INDEX_OPTION, []);
-            if (!is_array($index)) {
-                $index = [];
-            }
-            if (in_array($token_id, $index, true)) {
+            $index = $this->oauth_normalize_index(get_option(self::OAUTH_TOKEN_INDEX_OPTION, []));
+            if (isset($index[$token_id]) && $index[$token_id] === $expiry) {
                 return true;
             }
-            $next = $index;
-            $next[] = $token_id;
-            if (update_option(self::OAUTH_TOKEN_INDEX_OPTION, $next, 'no')) {
+            $index[$token_id] = $expiry;
+            if (update_option(self::OAUTH_TOKEN_INDEX_OPTION, $index, 'no')) {
                 return true;
             }
         }
@@ -3933,17 +3982,12 @@ class ConnectMWP_Agent {
     /** [OAuth Phase 2] Remove a token_id from the index (bounded optimistic retry). */
     private function oauth_token_index_remove($token_id) {
         for ($i = 0; $i < self::KEY_INDEX_MAX_RETRY; $i++) {
-            $index = get_option(self::OAUTH_TOKEN_INDEX_OPTION, []);
-            if (!is_array($index)) {
+            $index = $this->oauth_normalize_index(get_option(self::OAUTH_TOKEN_INDEX_OPTION, []));
+            if (!isset($index[$token_id])) {
                 return true;
             }
-            if (!in_array($token_id, $index, true)) {
-                return true;
-            }
-            $next = array_values(array_filter($index, function ($id) use ($token_id) {
-                return $id !== $token_id;
-            }));
-            if (update_option(self::OAUTH_TOKEN_INDEX_OPTION, $next, 'no')) {
+            unset($index[$token_id]);
+            if (update_option(self::OAUTH_TOKEN_INDEX_OPTION, $index, 'no')) {
                 return true;
             }
         }
@@ -3951,31 +3995,42 @@ class ConnectMWP_Agent {
     }
 
     /**
-     * [OAuth Phase 2] Best-effort prune of expired OAuth-token rows. Keeps the
-     * store from accumulating dead rows. Iterates the index (small), self-healing
-     * dead/expired entries. Mirrors oauth_prune_expired_codes().
+     * [OAuth Phase 2] Best-effort prune of expired OAuth-token rows. Mirrors
+     * oauth_prune_expired_codes(): T082 stores the expiry IN the index (id =>
+     * expiry), so the common case reads ONLY the single index option — no per-row
+     * get_option(). A LEGACY entry (expiry 0) is read once to backfill its expiry
+     * and migrate it to the new shape; after the first cycle the scan is O(1).
      */
     private function oauth_prune_expired_tokens() {
-        $index = get_option(self::OAUTH_TOKEN_INDEX_OPTION, []);
-        if (!is_array($index) || empty($index)) {
+        $raw = get_option(self::OAUTH_TOKEN_INDEX_OPTION, []);
+        if (!is_array($raw) || empty($raw)) {
             return;
         }
-        $now = time();
-        $alive = [];
-        foreach ($index as $token_id) {
-            $row = get_option($this->oauth_token_option_name($token_id), null);
-            if (!is_array($row)) {
-                continue; // already gone — drop from index
+        $index   = $this->oauth_normalize_index($raw);
+        $now     = time();
+        $next    = [];
+        $changed = false;
+        foreach ($index as $token_id => $expiry) {
+            if ($expiry <= 0) {
+                // Legacy entry: read the row ONCE to backfill, then migrate.
+                $changed = true;
+                $row = get_option($this->oauth_token_option_name($token_id), null);
+                if (is_array($row)) {
+                    $rec    = $this->normalize_oauth_token_record($row);
+                    $expiry = intval($rec['expires']);
+                } else {
+                    $expiry = 0; // row already gone — fall through to drop
+                }
             }
-            $rec = $this->normalize_oauth_token_record($row);
-            if ($rec['expires'] <= 0 || $now >= $rec['expires']) {
+            if ($expiry <= 0 || $now >= $expiry) {
                 delete_option($this->oauth_token_option_name($token_id));
+                $changed = true;
                 continue;
             }
-            $alive[] = $token_id;
+            $next[$token_id] = $expiry;
         }
-        if (count($alive) !== count($index)) {
-            update_option(self::OAUTH_TOKEN_INDEX_OPTION, array_values(array_unique($alive)), 'no');
+        if ($changed) {
+            update_option(self::OAUTH_TOKEN_INDEX_OPTION, $next, 'no');
         }
     }
 
