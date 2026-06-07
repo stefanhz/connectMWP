@@ -1,10 +1,10 @@
 === connectMWP ===
-Contributors: (your-wordpress-org-username)
+Contributors: stefhz
 Tags: mcp, rest-api, ai, publishing, automation
 Requires at least: 6.0
-Tested up to: 6.8
+Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.3.9
+Stable tag: 2.3.10
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -66,6 +66,21 @@ Yes. Those tools police login state, and this plugin never establishes one.
 
 == Changelog ==
 
+= 2.3.10 =
+* Documentation refresh only — no code or behavior change.
+
+= 2.3.8 =
+* Security hardening: the companion client now refuses SVG uploads (a known cross-site-scripting carrier) and blocks a wider set of private/internal network ranges. Plugin auth path unchanged.
+
+= 2.3.0 =
+* Redesigned the Settings → connectMWP page into a client-first switchboard: pick your AI client family (Claude/Cursor/Cline, ChatGPT, or Antigravity/Gemini/other) and see one merged "Your connections" table with per-row revoke.
+
+= 2.2.0 =
+* Added ChatGPT support. The plugin now acts as its own OAuth 2.1 server so ChatGPT can connect directly to your site — no API key to paste, no central server. Sign in as an administrator and approve on the consent screen.
+
+= 2.1.0 =
+* Added an API-token connection method for remote MCP clients that support a custom auth header (Antigravity, Gemini CLI, and similar). Generate a per-site token in Settings → connectMWP and paste it into the client. The Ed25519 signature path for Claude/Cursor/Cline is unchanged.
+
 = 2.0.36 =
 * Distribution: the plugin is now packaged as `connectmwp.zip` and installs to a `connectmwp/` folder (matching the directory slug). No code or behavior change.
 
@@ -87,6 +102,9 @@ Yes. Those tools police login state, and this plugin never establishes one.
 (Earlier history is maintained in the project CHANGELOG.)
 
 == Upgrade Notice ==
+
+= 2.3.10 =
+Documentation refresh only. No functional change from 2.3.9.
 
 = 2.0.36 =
 Packaging only — plugin folder is now `connectmwp`. No functional change.

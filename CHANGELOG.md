@@ -4,6 +4,29 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2.3.10 — 2026-06-07
+
+**Documentation-only release: refreshed every version anchor + the npm package README to current, ahead of the public repo + domain launch.** No code, auth, or behavior change in any component. Triggered by the discovery that several public-facing docs still carried stale `Verified against:` stamps (the repo `README.md` at 2.3.3, `CLAUDE.md`/`OPERATIONS.md` at 2.2.0, and the **npm package README** at 2.0.33 — already live on npmjs.com inside the 2.3.9 tarball). Because npm versions are immutable (a published version's README cannot be overwritten), refreshing the npm page requires a new version number — hence this lockstep bump rather than a re-publish of 2.3.9.
+
+### Changed
+
+- **All public-facing doc version anchors refreshed to current** — `README.md`, `connectmwp-mcp/README.md` (the npm package page), `CLAUDE.md`, and `OPERATIONS.md`. Each doc's body was re-verified accurate against the shipped code before its stamp was advanced (the connection-model, pairing-CLI, OAuth, and tool-surface content was already correct; only the stamps had drifted).
+- **`CLAUDE.md` + `OPERATIONS.md` — corrected a factual drift in the version-SSOT description.** Both said `sync-version.mjs` propagates to 3 targets; it has propagated to 5 since 2.3.9 (added the readme `Stable tag` + `FALLBACK_VERSION`). Both now also document the `check-cross-lang.mjs` pre-commit gate.
+
+### Documentation (internal)
+
+- **`_internal/ARCHITECTURE.md` — added the 2.3.7–2.3.9 audit-remediation hardening** (T082 OAuth-prune O(1), T091 SVG default-deny, T092 expanded SSRF screen, T093 enroll loopback-only bypass, T094 cross-language drift gate) to the change banner and the §8 hardening checklist; the anchor previously claimed 2.3.9 without that content being present.
+- **`_internal/FEATURE_NOTES.md` — logged the one user-visible change** from the 2.3.7–2.3.9 line (SVG uploads now refused).
+- **`SUPPORT_TRAINING.md` — flagged OUT OF DATE** (predates the API-token and ChatGPT-OAuth connection methods entirely); banner points readers to README / ARCHITECTURE §4.8–4.9 / OPERATIONS §9–10 pending a full rewrite. Intentionally left at its 2.0.33 anchor.
+
+### Bumped
+
+- All three components → 2.3.10 (lockstep). Plugin re-packaged (header + readme `Stable tag` only; no source change).
+
+### Note
+
+- **Verification:** all five version targets sync + drift-gate green; cross-language gate green; both plugin zips byte-identical at 2.3.10. No source logic changed in any component.
+
 ## 2.3.9 — 2026-06-05
 
 **Backlog clearance from the paired audits: cross-language drift gate, version-SSOT for two more literals, and one auth-gate + one warning hardening.** Continuation of the 2.3.8 audit-remediation work — closes the remaining self-contained findings that need no live-WP/Stefan-only steps. Plugin + tooling change.

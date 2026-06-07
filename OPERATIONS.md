@@ -1,7 +1,7 @@
 # connectMWP — Operations Runbook
 
-> **Verified against:** connectMWP **v2.2.0** (all three components, lockstep).
-> **Last reviewed:** 2026-06-02.
+> **Verified against:** connectMWP **v2.3.10** (all three components, lockstep).
+> **Last reviewed:** 2026-06-07.
 > **Re-verify when:** the MCP CLI surface changes (`add-site`/`remove-site`/`set-default`/`list-sites` flags), the plugin auth flow changes, the release/publish process changes, the `connectmwp_trust_proxy` / `CONNECTMWP_TRUST_PROXY` trusted-proxy setting changes, the API-token flow (`/mcp` endpoint, settings card, per-site cap) changes, the ChatGPT OAuth flow (`/connectmwp-oauth/authorize`, `/oauth/token`, the Connected-apps card) changes, or component versions drift out of lockstep.
 
 Project-internal operational guide. **Not user-facing** — for that, see `README.md`.
@@ -121,11 +121,12 @@ The version Single Source of Truth is the repo-root **`/VERSION`** file (since v
 
 ```bash
 echo "2.0.X" > VERSION                 # the ONLY version you hand-edit
-node scripts/sync-version.mjs          # writes it into both package.json files + the plugin Version: header
-node scripts/sync-version.mjs --check  # gate: exits non-zero on any drift
+node scripts/sync-version.mjs          # writes all 5 literals: both package.json + plugin Version: header + readme.txt Stable tag + FALLBACK_VERSION (lib/constants.js)
+node scripts/sync-version.mjs --check  # gate: exits non-zero on any version drift
+node scripts/check-cross-lang.mjs      # gate: MEDIA_MAX_BYTES pair + Node⇄PHP tool-name parity (also pre-commit-wired)
 ```
 
-The plugin no longer carries a `const VERSION` — its settings UI reads its own header at runtime via `get_file_data()`, so there is nothing else to touch. A git pre-commit hook runs `--check` and BLOCKS any commit where the literals have drifted; install it once per clone with `bash scripts/install-hooks.sh`. (Doc `Verified against:` anchors + README version mentions are deliberately NOT script-managed — refresh those in Step 3 / the doc-review step.)
+The plugin no longer carries a `const VERSION` — its settings UI reads its own header at runtime via `get_file_data()`, so there is nothing else to touch. A git pre-commit hook runs both `sync-version.mjs --check` (version drift) and `check-cross-lang.mjs` (the `MEDIA_MAX_BYTES` pair + the Node⇄PHP tool-name set) and BLOCKS any commit where they've drifted; install it once per clone with `bash scripts/install-hooks.sh`. (Doc `Verified against:` anchors + README version mentions are deliberately NOT script-managed — refresh those in Step 3 / the doc-review step.)
 
 Semver guidance: patch for fixes/tweaks/config; minor for new features; major for breaking changes.
 
