@@ -1,65 +1,92 @@
 # connectMWP Support Training & Troubleshooting Manual
 
-> **Verified against:** connectMWP **v2.0.33** (all three components, lockstep).
-> **Last reviewed:** 2026-05-30.
-> **Re-verify when:** the pairing flow, signature headers, capability scoping, REST/AJAX fallback behavior, or any user-visible error message changes.
->
-> ⚠️ **OUT OF DATE (flagged 2026-06-07; code is at v2.3.10).** This manual predates two entire connection methods shipped after v2.0.33 and does **not** cover them: the **API-token path** (`cmwp_cgpt_` bearer for Antigravity / Gemini CLI, v2.1.0) and **ChatGPT OAuth 2.1** (v2.2.0). It also predates the v2.3.x audit hardening. The stdio Ed25519 pairing content below is still accurate, but for anything about **ChatGPT, API tokens, or OAuth**, defer to `README.md` (user-facing setup), `_internal/ARCHITECTURE.md` §4.8–4.9 (authoritative auth), and `OPERATIONS.md` §9–10 (operator runbooks). A full rewrite is scheduled — do not train a support bot on this file as-is.
->
-> **v2.0.15-v2.0.16 UX changes worth knowing for support:** after a successful pairing, the customer's terminal prints a friendly multi-line summary (`✓ Connected to "<site>" / ✓ Acting as: <user> — <role> / ✓ Can: <capabilities>`) confirming identity + capabilities. The plugin's settings page shows a green "Connection Status" banner with paired-client count, a "What now?" panel for ~1 hour after the most-recent pairing (with test prompt + multi-AI-client note), and highlights the newest row in the Paired Clients table. As of v2.0.16, the page also auto-updates without manual refresh: while a pairing code is visible, JS polls every 3s, and on successful pairing the card flips to "🎉 Pairing successful!" and the page reloads automatically. If a customer says "is it connected?" you can ask them to revisit Settings → connectMWP — the banner answers it.
+> **Verified against:** connectMWP **v2.3.10** (all three components, lockstep).
+> **Last reviewed:** 2026-06-07.
+> **Re-verify when:** any connection method changes (stdio pairing, API-token flow, or ChatGPT OAuth), the signature/auth headers, capability scoping, REST/AJAX fallback behavior, the Settings → connectMWP page layout, or any user-visible error message changes.
 
-This document gives customer support agents (and any AI support bot trained on this material) the technical background, security context, and troubleshooting steps needed to resolve customer inquiries. It describes the **v2 architecture** — session-less Ed25519 signature authentication. Any reference you see in older notes to "tokens", `connectmwp_tk_...`, or a browser-based OAuth handshake is from the obsolete v1 design and should be ignored.
+This document gives customer support agents (and any AI support bot trained on this material) the technical background, security context, and troubleshooting steps needed to resolve customer inquiries. It describes the **v2 architecture** — session-less authentication with **three connection methods** depending on the customer's AI client. Any reference you see in older notes to v1 "tokens" (`connectmwp_tk_...`) or a browser-based OAuth handshake *that ran on connectmwp.com* is from the obsolete v1 design and should be ignored. (The v2 ChatGPT OAuth in §2C is different — it runs on the customer's *own* WordPress site, not a central server.)
 
 ---
 
 ## 1. Core Architecture & Philosophy
 
-connectMWP is a **decentralized, serverless bridge** between a user's local AI editor (e.g. Claude Desktop, Claude Code, Cursor) and their self-hosted WordPress site.
+connectMWP is a **decentralized bridge** between a user's AI client and their self-hosted WordPress site.
 
-### Key Concept: The Daily Traffic Path is Local
+### Key Concept: No Central Server in the Daily Path
 
-Unlike typical integration services (e.g. Zapier), **no central server sits in the traffic path for daily publishing operations**.
-
-* **Local MCP Server:** The AI client spawns a local Model Context Protocol (MCP) server process on the user's computer (`connectmwp-mcp`, installed via `npx -y connectmwp-mcp`) and communicates with it over standard input/output (stdio).
-* **Direct Communication:** That local server signs each request with the user's own Ed25519 private key and sends it directly to the WordPress REST API over HTTPS.
-* **Central Site Out of the Daily Path:** `connectmwp.com` exists only as marketing/onboarding and to host the downloadable plugin zip. Once a customer is paired, the central site is **never contacted** during normal publishing operations.
+Unlike typical integration services (e.g. Zapier), **no central server sits in the traffic path for daily publishing operations.** The AI client talks straight to the customer's WordPress site over HTTPS. `connectmwp.com` exists only as marketing/onboarding and to host the downloadable plugin zip — once a customer is connected, the central site is **never contacted** during normal publishing.
 
 ```
-[ Local AI Client ] <---> [ Local MCP Server (signer) ]
-                                 |
-                        (Direct HTTPS, Ed25519-signed)
-                                 |
-                                 v
-                     [ User's WordPress Site ]
-                     (verifies signature, no login session)
+[ AI Client ] <--- direct HTTPS, authenticated per-request ---> [ User's WordPress Site ]
+                                                                 (verifies auth, no login session)
 ```
+
+This holds for **all three** connection methods below — including ChatGPT OAuth, where the OAuth server is the customer's *own* WordPress plugin, not a connectMWP server.
 
 ### Support Insight: Security Shield
 
 If a customer asks about data privacy or server uptime:
 
-* **Zero-Knowledge:** We do not collect, store, or ever see the customer's WordPress credentials, website database, posts, or private signing key. The private key is generated on the customer's machine during pairing and never leaves it.
-* **Compromise Immunity:** Even if `connectmwp.com` goes offline or is compromised, customer publishing pipelines are unaffected. The site config (`~/.connectmwp.json`) and the private key file (`~/.connectmwp/<hostname>.ed25519`) live on the customer's machine; the customer's WordPress database stores only the **public** key — useless to an attacker for forging requests.
-* **2FA / Security-Plugin Friendly:** connectMWP authenticates each request via a cryptographic signature checked in the plugin's `permission_callback`. It **never creates a WordPress login session**, so security plugins like Wordfence, Solid Security, miniOrange, and WP 2FA have nothing to intercept or revoke — by design.
+* **Zero-Knowledge:** We do not collect, store, or ever see the customer's WordPress credentials, database, posts, or private signing key. For the stdio method, the private key is generated on the customer's machine during pairing and never leaves it.
+* **Compromise Immunity:** Even if `connectmwp.com` goes offline or is compromised, customer publishing pipelines are unaffected — nothing in the daily path touches it.
+* **2FA / Security-Plugin Friendly:** connectMWP authenticates each request without ever creating a WordPress **login session**, so security plugins like Wordfence, Solid Security, miniOrange, and WP 2FA have no login event to intercept or revoke — by design. This is true across all three methods.
 
 ---
 
-## 2. The Multi-Site System
+## 2. The Three Connection Methods
 
-connectMWP supports managing multiple WordPress sites from a single AI session.
+Which method a customer uses is determined by **their AI client**, not by preference. A customer can use more than one (e.g. Claude via pairing + ChatGPT via OAuth on the same site).
 
-### Configuration Storage
+| Method | For which clients | How auth works | Set up by |
+|---|---|---|---|
+| **A. Stdio + Ed25519 pairing** | Claude Desktop, Claude Code, Cursor, Cline | Local signed requests (private key on the customer's machine) | One-time terminal pairing command per site |
+| **B. API token (Bearer)** | Antigravity, Gemini CLI, other remote MCP clients that support a custom auth header | A per-site bearer token (`cmwp_cgpt_…`) the customer pastes into the client | Generate a token in WP Admin, paste it into the client |
+| **C. ChatGPT OAuth 2.1** | ChatGPT | The plugin acts as its own OAuth server; the customer signs in as admin and approves | Add a connector in ChatGPT, sign in, approve consent — no token pasted |
 
-All site records are saved in the customer's home directory:
+> **All three settle in WP Admin → Settings → connectMWP.** That page is a **client-first switchboard**: three client-family tabs (Claude·Cursor·Cline / ChatGPT / Antigravity·Gemini·other) for setup, plus **one merged "Your connections" table** listing every active connection regardless of method (with a **Type** column and a **per-row Revoke** button). When a customer says "is it connected?" or "how do I disconnect X?", that table is the answer.
 
-* **JSON config:** `~/.connectmwp.json` on macOS/Linux (Windows equivalent: `%USERPROFILE%\.connectmwp.json`). Stores a list of site URLs, the associated `key_id`, the path to the private key, an optional label, and a `defaultSite` reference.
-* **Private keys:** `~/.connectmwp/<hostname>.ed25519` per paired site, mode `0600`. These files are sensitive — treat them like SSH private keys; do **not** ask customers to share their contents in support tickets.
+### 2A. Stdio + Ed25519 pairing (Claude / Cursor / Cline)
 
-### Support Scenarios & Fixes
+* The AI client spawns a local MCP server process (`connectmwp-mcp`, run via `npx -y connectmwp-mcp`) and talks to it over stdio.
+* That local server signs **every** request with the customer's Ed25519 private key and sends it directly to the WordPress REST API.
+* Setup is two steps: register the server once per machine, then pair each site once. See §3 (multi-site) and §4 (security mechanism) for the details and the pairing flow.
 
-* **How the AI knows which site to edit:** Tools accept an optional `site` parameter (e.g., `connectmwp_create_post(site: "blog.com", ...)`). If omitted, the tool defaults to the site configured as `defaultSite` in `~/.connectmwp.json`.
+### 2B. API token (Antigravity, Gemini CLI, other header-capable remote clients)
 
-* **Managing Sites via CLI:** Support can walk customers through these local terminal commands:
+* The plugin hosts a remote MCP endpoint at `POST /wp-json/connectmwp/v1/mcp`. The client authenticates with a per-site bearer token.
+* **Setup:** WP Admin → Settings → connectMWP → **API token** card → choose the WordPress user the client will act as, optionally label it, **Generate token**. The token (`cmwp_cgpt_<hex>`) is **shown once** and cannot be recovered — if lost, revoke and generate a new one. The customer pastes it into their client as `Authorization: Bearer <token>` alongside the connector URL.
+* **Per-site cap: 20 tokens.** Revoke unused ones from the same card (and they appear in the merged "Your connections" table).
+* **If the host strips `Authorization`:** there is an opt-in (off by default) URL-embedded-token fallback — the token rides in the URL path (`/mcp/<token>`) instead of a header. Warn customers that URL-embedded tokens can show up in server/CDN access logs; they should rotate periodically and **revoke immediately if they suspect the URL was logged or shared**.
+* **Blast radius:** a token is roughly equivalent to a WordPress Application Password for the bound user on that one site. The Ed25519 stdio path remains the stronger, replay-protected channel.
+* **Media upload is NOT available over this path** (it is multipart-only). A `connectmwp_upload_media` call over the remote endpoint returns a clear "not supported, use a local client" message.
+
+### 2C. ChatGPT OAuth 2.1
+
+* **Why OAuth and not a token?** ChatGPT's connector UI offers only OAuth / No-Auth / Mixed — there is **no API-key field**. So the plugin acts as its own OAuth 2.1 Authorization + Resource Server, directly on the customer's site (no central server).
+* **Setup (customer side):** In ChatGPT → Settings → Apps (Connectors), enable Developer mode, create a connector, set the URL to `https://<site>/wp-json/connectmwp/v1/mcp`, set Authentication to **OAuth**, click **Sign in** → they're sent to their own site's login → sign in as an **administrator** → review and **Approve** on the consent screen.
+* **Disconnecting:** WP Admin → Settings → connectMWP → the ChatGPT tab / the merged "Your connections" table → **Revoke** (Type = OAuth).
+* **Media upload is NOT available** to ChatGPT (it can't send multipart over the remote endpoint).
+* Access tokens are `cmwp_oat_…` internally; the customer never sees or pastes them.
+
+---
+
+## 3. The Multi-Site System
+
+connectMWP supports managing multiple WordPress sites. How that's stored depends on the method:
+
+* **Stdio method (A):** all site records live in the customer's home directory and are managed via the CLI.
+* **API-token (B) and ChatGPT OAuth (C):** "multi-site" means adding one connector/token **per site** in the client (Antigravity/Gemini/ChatGPT). There is no local `~/.connectmwp.json` for these methods — each site is a separate connector entry in the client, and each site's WP Admin shows that connection in its "Your connections" table.
+
+### Stdio configuration storage
+
+* **JSON config:** `~/.connectmwp.json` (Windows: `%USERPROFILE%\.connectmwp.json`). Stores each site URL, its `key_id`, the path to the private key, an optional label, and a `defaultSite` reference. Mode `0600`.
+* **Private keys:** `~/.connectmwp/<hostname>.ed25519` per paired site, mode `0600`. These are sensitive — treat them like SSH private keys; do **not** ask customers to share their contents in tickets.
+
+### Stdio support scenarios
+
+* **How the AI knows which site to edit:** tools accept an optional `site` parameter (e.g. `connectmwp_create_post(site: "blog.com", ...)`). If omitted, the tool uses `defaultSite`.
+
+* **Managing sites via CLI** (walk customers through these local terminal commands):
 
   | Action | Command |
   |---|---|
@@ -68,104 +95,104 @@ All site records are saved in the customer's home directory:
   | Change default site | `npx -y connectmwp-mcp set-default --site "https://blog.com"` |
   | Remove a site from config | `npx -y connectmwp-mcp remove-site --site "https://blog.com"` |
 
-* **Adding a site requires a pairing code** generated in WP Admin → **Settings → connectMWP → Generate Pairing Code**. Codes are single-use and expire after 10 minutes. The same `add-site --enroll` command is used to (a) connect a new site and (b) re-connect a site whose key was revoked — there is no separate "update" command. Re-pairing safely overwrites the existing local key and config entry (via a temp-file + rename pattern, so a failed re-pair never destroys a working key).
+* **Adding a site requires a pairing code** generated in WP Admin → **Settings → connectMWP → Generate Pairing Code** (Claude·Cursor·Cline tab). Codes are single-use and expire after 10 minutes. The same `add-site --enroll` command both (a) connects a new site and (b) re-connects a site whose key was revoked — there is no separate "update" command. Re-pairing safely overwrites the existing local key and config entry (temp-file + rename, so a failed re-pair never destroys a working key).
 
-* **Removing a site** via `remove-site` only deletes the local JSON entry; it does **not** revoke the key on the WP side and does **not** delete the local private key file. To fully decommission a pairing, the customer should also revoke the key in WP Admin → Settings → connectMWP → Paired Clients.
+* **Removing a site** via `remove-site` only deletes the local JSON entry; it does **not** revoke the key on the WP side and does **not** delete the local private key file. To fully decommission a pairing, the customer should also revoke the connection in WP Admin → Settings → connectMWP → "Your connections".
 
 ---
 
-## 3. Security Mechanism (Safe for Support Staff)
+## 4. Security Mechanism (Safe for Support Staff)
 
-connectMWP implements robust defense layers. When customers experience authentication issues, they are often triggering one of these protections.
+When customers experience authentication issues, they are often triggering one of these protections.
 
-### Custom Authentication Headers (Edge-Proxy Survival)
+### Stdio (A): custom authentication headers (edge-proxy survival)
 
-Every signed request carries three custom HTTP headers:
+Every signed request carries these custom HTTP headers:
 
 | Header | Purpose |
 |---|---|
 | `X-ConnectMWP-Key` | The `key_id` of the paired client making the request |
 | `X-ConnectMWP-Timestamp` | Unix epoch seconds (must be within ±300s of the WP server clock) |
+| `X-ConnectMWP-Nonce` | A fresh per-request UUID (since v2.0.19) — makes every signature unique, closing the replay window |
 | `X-ConnectMWP-Signature` | Base64-encoded Ed25519 detached signature over the canonical request |
-| `X-ConnectMWP-Body-Hash` *(uploads only)* | SHA-256 of the multipart file payload — added in v2.0.10, prevents upload tampering |
+| `X-ConnectMWP-Body-Hash` *(uploads only)* | SHA-256 of the multipart file payload — prevents upload tampering |
 
-**Why custom headers?** Popular managed hosts (Kinsta, SiteGround, WP Engine, etc.) and many WAFs strip the standard `Authorization` header at the edge before it reaches PHP. Custom headers bypass that restriction cleanly.
+**Why custom headers?** Managed hosts (Kinsta, SiteGround, WP Engine, etc.) and many WAFs strip the standard `Authorization` header at the edge before it reaches PHP. Custom headers bypass that cleanly. (The API-token method (B) *does* use `Authorization: Bearer` — which is why it has the URL-path fallback for hosts that strip it; see §2B.)
 
-### Replay Attack Protection
+### Replay attack protection (stdio path)
 
-The WordPress plugin checks every incoming request for replay attempts:
+* **Clock skew window:** the timestamp must match the WordPress server clock within **5 minutes (300s)** either direction.
+* **Per-request nonce:** every request carries a unique UUID; a missing nonce is rejected outright (`connectmwp_missing_nonce`).
+* **Signature replay cache:** each successful signature hash is stored as a transient (`cmwp_sig_<hash>`, ~360s TTL); a repeat is rejected.
+* **Per-request static cache:** some hosts invoke `permission_callback` multiple times per request; the plugin caches its verdict in PHP memory so the second invocation doesn't falsely flag a replay.
+* **Verification order:** HTTPS → key lookup → timestamp window → signature verify → replay check → capability check. The signature is verified **before** the replay check, so a bogus signature is rejected without touching the database.
 
-* **Clock Skew Window:** The timestamp must match the WordPress server's clock within **5 minutes (300 seconds)** in either direction.
-* **Signature Replay Cache:** Each successful request's signature hash (`sha256(signature)`) is stored as a transient option (`cmwp_sig_<hash>`) with a ~360-second TTL. If the same signature comes in twice, the second one is rejected.
-* **Per-Request Static Cache:** Some hosts invoke `permission_callback` multiple times in a single HTTP request (security-plugin filters + REST dispatch quirks). The plugin caches the verification verdict in PHP memory so the second invocation reuses the result instead of falsely flagging a replay.
-* **Verification Order:** HTTPS → key lookup → timestamp window → signature verify → replay check → capability check. The signature is verified **before** the replay check, so a request with a bogus signature is rejected without ever touching the database options.
+### API token (B) verification
 
-### One-Time Pairing Flow
+The token is verified by `verify_token_request`: HTTPS-only → token lookup by id → constant-time hash compare → per-IP rate limit → "bound user still exists / still has caps" guard → capability check. **No login session is created** — same thesis as the signature path.
 
-Pairing is **entirely local** — no browser redirects, no central token exchange:
+### ChatGPT OAuth (C) verification
 
-1. Customer opens WP Admin → **Settings → connectMWP** → clicks **Generate Pairing Code**.
-2. WP renders a terminal command containing the site URL + a single-use 10-minute pairing code, bound to the WordPress admin user who issued it.
-3. Customer pastes the command into their terminal. The MCP client generates an Ed25519 keypair on their machine, uploads only the **public** key to `/wp-json/connectmwp/v1/enroll`, and stores the private key locally (mode `0600`).
-4. The plugin validates the pairing code, stores the public key against the issuing admin's user account, and returns a `key_id`. The customer's local config records `{ site, key_id, private_key_path, label }`.
+Standard OAuth 2.1: authorization-code + PKCE, short-lived access tokens (`cmwp_oat_`) with refresh rotation, verified on every `/mcp` call. The admin consent step is where the customer grants access; revoking in the "Your connections" table invalidates it.
 
-**Support implications:**
+### One-time pairing flow (stdio only)
 
-* Pairing codes are **one-shot** — if the customer ran it once successfully, the same code cannot be used again. They must generate a new code in WP Admin if they want to re-pair.
-* Pairing codes **expire after 10 minutes** — if a customer waits too long between generating and running, they'll see `Pairing failed: enrollment code expired` or similar.
-* The private key **never leaves the customer's machine**. Support should never ask customers to send the contents of their `~/.connectmwp/<host>.ed25519` file. If they need to reset the pairing for any reason, the path is: revoke key in WP Admin → generate new pairing code → run `add-site --enroll` again.
+1. Customer opens WP Admin → **Settings → connectMWP** → **Generate Pairing Code**.
+2. WP renders a terminal command containing the site URL + a single-use 10-minute code, bound to the issuing admin user.
+3. Customer pastes it into their terminal. The MCP client generates an Ed25519 keypair locally, uploads only the **public** key to `/wp-json/connectmwp/v1/enroll`, and stores the private key locally (mode `0600`).
+4. The plugin validates the code, stores the public key against the issuing admin's account, returns a `key_id`. The customer's local config records `{ site, key_id, private_key_path, label }`.
 
-### Capability Scoping (Least Privilege)
+**Support implications:** codes are one-shot and expire in 10 minutes; the private key never leaves the customer's machine (never ask them to send it); to reset, revoke in WP Admin → generate a new code → run `add-site --enroll` again.
 
-The MCP server has **no inherent privileges** — each paired key is bound to a specific WordPress user account, and every operation is checked against that user's WordPress capabilities (`edit_posts`, `publish_posts`, `upload_files`, `manage_categories`, etc.). The plugin does this WITHOUT calling `wp_set_current_user` — there's no login session, just per-operation capability checks against the bound user ID.
+### Capability scoping (least privilege — all methods)
 
-* **Practical effect for support:** if a customer paired connectMWP using a non-administrator account, the tools will only succeed for operations that account can already perform manually in WP Admin. A subscriber-level account cannot create posts via connectMWP, just as they couldn't create posts by clicking around in WP Admin.
+No connection has inherent privileges. Each is **bound to a specific WordPress user**, and every operation is checked against that user's capabilities (`edit_posts`, `publish_posts`, `upload_files`, `manage_categories`, etc.) **without** `wp_set_current_user` — there's no login session, just per-operation checks.
 
-### Outbound Fetch and SSRF Protections (Local MCP Client)
+* **Practical effect:** if a customer connected using a non-administrator account, the tools only succeed for operations that account could already perform manually. A subscriber can't create posts via connectMWP, just as they couldn't in WP Admin.
 
-* **Host Filtering:** When the AI uploads media by URL, the local MCP client blocks fetches to loopback (`127.0.0.1`, `::1`), link-local (`169.254.0.0/16`), and RFC1918 private IP ranges. This prevents Server-Side Request Forgery against the customer's local network.
-* **File Upload Filters:** Uploaded media is restricted to approved image extensions (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.bmp`, `.tiff`) and capped at **10 MB** per file to protect memory resources.
+### Outbound fetch / SSRF protections (local MCP client, stdio path)
+
+* **Host filtering:** when the AI uploads media by URL, the local client blocks fetches to loopback, link-local, RFC1918 private ranges, carrier-grade NAT (`100.64.0.0/10`), and other internal/reserved ranges — preventing SSRF against the customer's local network. (Hardened further in v2.3.8.)
+* **File-type filter — SVG is REJECTED.** Uploaded media is restricted to raster image types: `.png`, `.jpg`/`.jpeg`, `.gif`, `.webp`, `.bmp`, `.tiff`. **SVG is deliberately refused** (since v2.3.8) because SVG is XML and a known cross-site-scripting carrier. If a customer asks why their SVG upload fails, this is expected — tell them to use PNG/JPG/WebP, or upload the SVG manually via WP Admin → Media if they trust it.
+* **Size cap:** **10 MB** per file (enforced identically on client and plugin). For larger media, upload directly via WP Admin → Media.
 
 ---
 
-## 4. Troubleshooting Support Guide (FAQ Matrix)
+## 5. Troubleshooting Support Guide (FAQ Matrix)
 
 | Customer Issue | Root Cause | Actionable Solution for Agent |
 | :--- | :--- | :--- |
-| **"Pairing failed: enrollment code expired" / "invalid enrollment code"** | The pairing code is single-use, 10-min TTL. They waited too long, ran it twice, or typo. | Ask them to log into WP Admin → **Settings → connectMWP** → click **Generate Pairing Code** again, copy the new command, and run it right away. *Reassure them that any working key for this site is still safe — the v2.0.11 safety fix ensures a failed re-pair never destroys an existing pairing.* |
-| **"Signature verification failed" / 401 on every request** | Most commonly: clock skew between the customer's machine and the WordPress server (>±300s). Less commonly: the key was revoked on the WP side. | 1. Ask the customer to check their system clock: macOS **System Settings → General → Date & Time → Set time and date automatically** = ON; Windows **Settings → Time & Language** = automatic. <br>2. If clocks are correct, check WP Admin → Settings → connectMWP → Paired Clients — is the row for their key_id still present and not revoked? If revoked, re-pair (see row 1). <br>3. If still failing, ask the host to verify NTP sync on the WP server. |
-| **"Pairing failed: HTTP 401" or 403** when running `add-site --enroll` | The plugin isn't active on the WP site, OR a host firewall is blocking the `/wp-json/connectmwp/v1/enroll` endpoint. | 1. Confirm the connectMWP plugin is installed and **Active** in WP Admin → Plugins. <br>2. Visit `https://<their-site>/wp-json/connectmwp/v1/enroll` in a browser — a working install returns a JSON `405` or similar; a blocked endpoint returns the host's 403/404 page. If blocked, the customer needs to whitelist `/wp-json/connectmwp/*` in their security plugin or WAF. |
-| **"REST API Blocked"** (401/403/404 from regular content tools, not enroll) | Hosting security suites or WAFs (Sucuri, Cloudflare, Wordfence) are blocking WordPress REST routes. | **connectMWP automatically falls back to Admin-AJAX** — the local MCP client retries the same operation via `/wp-admin/admin-ajax.php` with the same signature headers. Usually no action required. If both REST and AJAX fail, the customer needs to whitelist `/wp-json/connectmwp/*` and `/wp-admin/admin-ajax.php` in their security plugin. |
-| **"Command not found: npx / node"** | Node.js is not installed or not in the customer's shell PATH. | Ask them to install Node.js 18+ from [nodejs.org](https://nodejs.org). On macOS, `brew install node` also works. Verify with `node --version` (should be `v18.x` or higher). |
-| **"Claude cannot find tools" / MCP server not loading** | The MCP server registration failed or the IDE needs a restart. | 1. Confirm registration was run: `claude mcp add connectmwp -- npx -y connectmwp-mcp` (the `--` is important). <br>2. Verify the registration: `claude mcp list` should show `connectmwp` with status `connected`. <br>3. Fully quit Claude Desktop (⌘Q on macOS — not just close window) and relaunch. <br>4. If still failing, check Claude Desktop's MCP log file for `npm error 404` (the npm package failed to resolve) or `Server disconnected` — share the log lines with the dev team. |
-| **"Permission Denied" or capability errors** | The WordPress user account whose admin paired connectMWP doesn't have sufficient capabilities for the requested operation. | connectMWP acts with the **exact capabilities of the WordPress user who initiated the pairing**. Confirm that user has role **Administrator** or **Editor**, with the right caps for the operation. Re-pair from an account with appropriate privileges if needed. |
-| **"Upload failed" — file too large or wrong type** | The customer is trying to upload a file >10 MB or a non-image extension. | The 10 MB cap and image-only extensions are deliberate safety limits. For larger media, the customer must upload directly via WP Admin → Media. |
-| **"Cached response showing stale data"** (very rare; was a CRITICAL bug fix in v2.0.12) | Their managed host's edge cache (LiteSpeed common on SiteGround / NameHero) is caching signed responses. | They need to update to v2.0.12 or newer (current is v2.0.18). After updating, they should also **purge the LiteSpeed cache** in WP Admin → LiteSpeed Cache → Toolbox → Purge All; cached entries can persist up to 7 days otherwise. |
+| **"Pairing failed: enrollment code expired / invalid"** *(stdio)* | Code is single-use, 10-min TTL — waited too long, ran it twice, or typo. | WP Admin → **Settings → connectMWP → Generate Pairing Code** again, copy the new command, run it right away. *Reassure: a failed re-pair never destroys an existing working key.* |
+| **"Signature verification failed" / 401 on every request** *(stdio)* | Usually clock skew (>±300s) between the customer's machine and the WP server. Less commonly: the key was revoked. | 1. Check the customer's system clock is set to update automatically (macOS: System Settings → General → Date & Time; Windows: Settings → Time & Language). <br>2. If clocks are fine, check WP Admin → Settings → connectMWP → "Your connections" — is their key still listed (not revoked)? If revoked, re-pair. <br>3. Still failing → ask the host to verify NTP sync on the server. |
+| **"Pairing failed: HTTP 401/403"** when running `add-site --enroll` | Plugin inactive, OR a host firewall blocks `/wp-json/connectmwp/v1/enroll`. | 1. Confirm the connectMWP plugin is **Active** (WP Admin → Plugins). <br>2. Visit `https://<site>/wp-json/connectmwp/v1/enroll` in a browser — a working install returns a JSON error (e.g. 405); a blocked endpoint returns the host's 403/404 page. If blocked, whitelist `/wp-json/connectmwp/*` in the security plugin/WAF. |
+| **API-token client (Antigravity/Gemini) gets 401** | Wrong/old token, token revoked, bound user lost capabilities, or the host strips `Authorization`. | 1. Re-generate the token (WP Admin → Settings → connectMWP → **API token** card) and re-paste — tokens are shown once and can't be recovered. <br>2. Confirm the bound WordPress user still exists and has the needed role. <br>3. If the host strips `Authorization`, enable the opt-in URL-path-token fallback in the same card (and advise rotating it, since URL tokens can appear in logs). |
+| **ChatGPT "couldn't connect" / login loop / consent error** | Not signed in as an **administrator**, connector URL wrong, or consent not approved. | 1. The connector URL must be `https://<site>/wp-json/connectmwp/v1/mcp` with Authentication = **OAuth**. <br>2. On **Sign in**, they must log into **their own site** as an **Administrator** and click **Approve** on the consent screen. <br>3. To start fresh, revoke the OAuth connection in WP Admin → Settings → connectMWP → "Your connections", then re-add the connector in ChatGPT. |
+| **"REST API Blocked"** (401/403/404 from content tools, not enroll) *(stdio)* | Security suites/WAFs (Sucuri, Cloudflare, Wordfence) block WP REST routes. | **connectMWP auto-falls back to Admin-AJAX** (`/wp-admin/admin-ajax.php`) with the same signature headers — usually no action needed. If both fail, whitelist `/wp-json/connectmwp/*` and `/wp-admin/admin-ajax.php`. |
+| **"Command not found: npx / node"** *(stdio)* | Node.js not installed / not on PATH. | Install Node.js 18+ from [nodejs.org](https://nodejs.org) (macOS: `brew install node`). Verify with `node --version` (≥ v18). *Note: only the stdio clients need Node — ChatGPT and API-token clients need no local install.* |
+| **"Claude can't find tools" / MCP server not loading** *(stdio)* | Registration failed or the IDE needs a restart. | 1. Confirm registration: `claude mcp add connectmwp -- npx -y connectmwp-mcp` (the `--` matters). <br>2. `claude mcp list` should show `connectmwp` connected. <br>3. Fully quit Claude (⌘Q, not just close) and relaunch. <br>4. Still failing → check Claude's MCP log for `npm error 404` or `Server disconnected` and share with the dev team. |
+| **"Permission denied" / capability errors** *(any method)* | The bound WordPress user lacks capabilities for the operation. | connectMWP acts with the **exact capabilities of the bound user**. Confirm that user is Administrator or Editor with the right caps. Re-connect from an account with appropriate privileges if needed. |
+| **"Upload failed — file too large or wrong type"** | File > 10 MB, or an SVG (now rejected), or a non-image type. | The 10 MB cap and **raster-image-only** rule (no SVG, since v2.3.8) are deliberate safety limits. For larger media or SVG, upload directly via WP Admin → Media. *Media upload is also unavailable to ChatGPT and API-token clients — only the stdio clients can upload.* |
+| **"Cached response showing stale data"** (rare) | A managed host's edge cache (LiteSpeed on SiteGround/NameHero) is caching signed responses. | Ensure the plugin is current, then purge the cache: WP Admin → LiteSpeed Cache → Toolbox → Purge All. (Resolved in-plugin since v2.0.12; cached entries can otherwise persist up to 7 days.) |
 
 ---
 
-## 5. Escalation & Diagnostic Information
+## 6. Escalation & Diagnostic Information
 
-If a support agent cannot resolve the issue, escalate to engineering with the following information collected from the customer:
+If you can't resolve the issue, escalate to engineering with:
 
-1. **Software versions:**
-   * Plugin: WP Admin → Plugins → connectMWP → version shown next to the plugin name.
-   * MCP client: `npx -y connectmwp-mcp --version` (if supported) OR `cat ~/.npm/_npx/*/node_modules/connectmwp-mcp/package.json | grep version`.
-   * Node: `node --version`.
+1. **Connection method** — stdio pairing (Claude/Cursor/Cline), API token (Antigravity/Gemini), or ChatGPT OAuth. This determines almost everything else.
 
-2. **Site environment:**
-   * WordPress version (Dashboard → At a Glance).
-   * Hosting provider (SiteGround / Kinsta / Cloudways / VPS / etc.).
-   * Active security plugins (Wordfence, Solid Security, miniOrange, etc.).
-   * Whether LiteSpeed Cache, WP Rocket, or similar caching is active.
+2. **Software versions:**
+   * Plugin: WP Admin → Plugins → connectMWP → version next to the name.
+   * MCP client *(stdio only)*: `npx -y connectmwp-mcp --version`, or check the installed `package.json` version.
+   * Node *(stdio only)*: `node --version`.
 
-3. **Exact error message** as it appeared in:
-   * The customer's terminal (for CLI errors).
-   * Claude Desktop's MCP log (`~/Library/Logs/Claude/mcp.log` on macOS, equivalent path on Windows).
-   * The browser's developer-tools Network tab if the issue is in WP Admin.
+3. **Site environment:** WordPress version (Dashboard → At a Glance), hosting provider, active security plugins, and whether LiteSpeed/WP Rocket/other caching is active.
 
-4. **Reproduction steps** — what they ran, what they expected, what actually happened.
+4. **Exact error message** as it appeared in: the terminal (CLI errors), the AI client's MCP log (Claude on macOS: `~/Library/Logs/Claude/mcp.log`), or the browser dev-tools Network tab (WP Admin issues / ChatGPT OAuth).
 
-**What NOT to ask the customer for:** their private key file contents (`~/.connectmwp/<host>.ed25519`), their WordPress admin password, or screenshots of their pairing code (codes are single-use anyway, but treat them as secrets while live).
+5. **Reproduction steps** — what they ran, expected, and actually got.
 
-For confirmed bugs or feature gaps, escalation goes to the project's GitHub issues at <https://github.com/stefanhz/connectMWP/issues> with the diagnostic info above attached.
+**What NOT to ask the customer for:** their private key file contents (`~/.connectmwp/<host>.ed25519`), their WordPress admin password, an API token over an insecure channel, or screenshots of a live pairing code (treat these as secrets).
+
+For confirmed bugs or feature gaps, escalation goes to the project's GitHub issues at <https://github.com/stefanhz/connectMWP/issues> with the diagnostics above attached.
