@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP
  * Plugin URI: https://connectmwp.com
  * Description: Securely let your own local AI client (Claude, Cursor) publish to this WordPress site over a signed, session-less Ed25519 connection — no login, no central server.
- * Version: 2.3.10
+ * Version: 2.3.11
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Stefan Heinz, 2morrow.ai
@@ -334,14 +334,14 @@ class ConnectMWP_Agent {
      * exit immediately (before WP's main query / template). No auth, no secrets.
      */
     public function oauth_wellknown_router() {
-        $raw_uri = isset($_SERVER['REQUEST_URI']) ? (string) wp_unslash($_SERVER['REQUEST_URI']) : '';
+        $raw_uri = isset($_SERVER['REQUEST_URI']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'])) : '';
         if ($raw_uri === '') {
             return;
         }
 
         // Path only (strip query string), normalized — no decoding tricks needed
         // because we only ever compare a fixed ASCII prefix.
-        $path = parse_url($raw_uri, PHP_URL_PATH);
+        $path = wp_parse_url($raw_uri, PHP_URL_PATH);
         if (!is_string($path) || $path === '') {
             return;
         }
@@ -510,12 +510,12 @@ class ConnectMWP_Agent {
      * and POST. The handler always renders HTML or 302-redirects and exit()s.
      */
     public function oauth_authorize_router() {
-        $raw_uri = isset($_SERVER['REQUEST_URI']) ? (string) wp_unslash($_SERVER['REQUEST_URI']) : '';
+        $raw_uri = isset($_SERVER['REQUEST_URI']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'])) : '';
         if ($raw_uri === '') {
             return;
         }
 
-        $path = parse_url($raw_uri, PHP_URL_PATH);
+        $path = wp_parse_url($raw_uri, PHP_URL_PATH);
         if (!is_string($path) || $path === '') {
             return;
         }
@@ -549,7 +549,7 @@ class ConnectMWP_Agent {
      */
     public function oauth_authorize_handler($request = null) {
         $method = isset($_SERVER['REQUEST_METHOD'])
-            ? strtoupper((string) wp_unslash($_SERVER['REQUEST_METHOD']))
+            ? strtoupper(sanitize_text_field(wp_unslash($_SERVER['REQUEST_METHOD'])))
             : 'GET';
 
         // (1) HTTPS required. Authorization codes and login sessions must never
@@ -779,12 +779,14 @@ class ConnectMWP_Agent {
         $get = function ($key) {
             // Prefer POST (the consent submission echoes every param as a hidden
             // field) over GET, then unslash. Every value is re-validated downstream.
+            // phpcs:disable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- The OAuth authorize POST is nonce-verified in oauth_authorize_handler() before any state change; these params (state, redirect_uri, code_challenge) MUST be preserved verbatim for PKCE / exact redirect-URI matching and are strictly validated downstream.
             if (isset($_POST[$key]) && is_scalar($_POST[$key])) {
                 return (string) wp_unslash($_POST[$key]);
             }
             if (isset($_GET[$key]) && is_scalar($_GET[$key])) {
                 return (string) wp_unslash($_GET[$key]);
             }
+            // phpcs:enable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
             return '';
         };
 
@@ -829,7 +831,7 @@ class ConnectMWP_Agent {
         }
         if ($this->is_behind_trusted_proxy()
             && isset($_SERVER['HTTP_X_FORWARDED_PROTO'])
-            && strtolower(trim((string) wp_unslash($_SERVER['HTTP_X_FORWARDED_PROTO']))) === 'https') {
+            && strtolower(trim(sanitize_text_field(wp_unslash($_SERVER['HTTP_X_FORWARDED_PROTO'])))) === 'https') {
             return true;
         }
         return false;
@@ -1081,6 +1083,7 @@ class ConnectMWP_Agent {
         $pin_port   = !empty($parts['port']) ? (int) $parts['port'] : 443;
         $pin_curl   = static function ($handle) use ($host, $pin_port, $pinned_ips) {
             if (function_exists('curl_setopt') && defined('CURLOPT_RESOLVE')) {
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.curl_curl_setopt -- No wp_remote_get equivalent for CURLOPT_RESOLVE; this pins the pre-screened IP via WordPress's own http_api_curl hook to close the OAuth CIMD DNS-rebinding SSRF (T084) without bypassing wp_remote_get.
                 curl_setopt($handle, CURLOPT_RESOLVE, ["{$host}:{$pin_port}:{$pinned_ips}"]);
             }
         };
@@ -1332,7 +1335,9 @@ class ConnectMWP_Agent {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
-<title><?php echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['client_name'])); ?></title>
+<title><?php
+/* translators: %s: the connecting application's display name */
+echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['client_name'])); ?></title>
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -1409,7 +1414,9 @@ class ConnectMWP_Agent {
       </div>
     </form>
 
-    <p class="cmwp-oauth-foot"><?php echo esc_html(sprintf(__('Signed in as %s. Only site administrators can approve connections.', 'connectmwp'), wp_get_current_user()->user_login)); ?></p>
+    <p class="cmwp-oauth-foot"><?php
+    /* translators: %s: the logged-in administrator's username */
+    echo esc_html(sprintf(__('Signed in as %s. Only site administrators can approve connections.', 'connectmwp'), wp_get_current_user()->user_login)); ?></p>
   </div>
 </body>
 </html>
@@ -2020,6 +2027,7 @@ class ConnectMWP_Agent {
      */
     private function send_rest_nocache_headers() {
         if (!defined('DONOTCACHEPAGE')) {
+            // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedConstantFound -- DONOTCACHEPAGE is the de-facto cache-bypass constant honored by WP page caches; its name is fixed by that convention, not ours.
             define('DONOTCACHEPAGE', true);
         }
         if (function_exists('nocache_headers')) {
@@ -2030,6 +2038,7 @@ class ConnectMWP_Agent {
             header('X-LiteSpeed-Cache-Control: no-cache', true);
         }
         // Authoritative LiteSpeed control hook.
+        // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- 'litespeed_control_set_nocache' is LiteSpeed Cache's own published action; the name is owned by that plugin.
         do_action('litespeed_control_set_nocache', 'connectmwp signed api response');
     }
 
@@ -2108,6 +2117,7 @@ class ConnectMWP_Agent {
             }
         }
 
+        // phpcs:disable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotValidated -- Session-less machine endpoint: every header/body/query value below is authenticated by a detached Ed25519 signature over the canonical string (step 6) and strictly format-checked (timestamp skew, RFC-4122 nonce regex, key lookup). Values MUST be byte-preserved or the canonical string cannot reconstruct; a WP nonce is structurally impossible (no browser session) and is replaced by signature + cross-request replay cache.
         if (empty($key_id) && isset($_SERVER['HTTP_X_CONNECTMWP_KEY'])) {
             $key_id = $_SERVER['HTTP_X_CONNECTMWP_KEY'];
         }
@@ -2205,6 +2215,7 @@ class ConnectMWP_Agent {
             $raw_body = file_get_contents('php://input');
             $body_hash = hash('sha256', $raw_body ?? '');
         }
+        // phpcs:enable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotValidated
 
         // Canonical field order MUST match the MCP client's reconstruction in
         // callWordPress / callWordPressAjax (connectmwp-mcp/index.js). The
@@ -2355,12 +2366,14 @@ class ConnectMWP_Agent {
         }
 
         // Non-REST fallback for either header (mirrors verify_request_signature).
+        // phpcs:disable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Bearer / custom token, compared against a stored sha256 hash in verify_token_request() and therefore byte-preserved. The endpoint is authenticated by the token itself, not a nonce.
         if ($authorization === '' && isset($_SERVER['HTTP_AUTHORIZATION'])) {
             $authorization = $_SERVER['HTTP_AUTHORIZATION'];
         }
         if ($custom_token === '' && isset($_SERVER['HTTP_X_CONNECTMWP_TOKEN'])) {
             $custom_token = $_SERVER['HTTP_X_CONNECTMWP_TOKEN'];
         }
+        // phpcs:enable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash
 
         $token = '';
         if ($authorization !== '') {
@@ -2609,6 +2622,7 @@ class ConnectMWP_Agent {
     private function prune_expired_signatures() {
         global $wpdb;
         $now = time();
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Prepared via $wpdb->prepare(); bounded maintenance DELETE of expired rows, no applicable persistent-cache layer.
         $wpdb->query(
             $wpdb->prepare(
                 "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s AND CAST(option_value AS UNSIGNED) < %d",
@@ -2879,6 +2893,7 @@ class ConnectMWP_Agent {
         $prefix = self::KEY_OPTION_PREFIX;
         // Escape LIKE metacharacters in the prefix (notably `_`).
         $like = $wpdb->esc_like($prefix) . '%';
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Prepared via $wpdb->prepare() + esc_like(); a direct option-name lookup by prefix the WP options API cannot express, with no cacheable surface.
         $names = $wpdb->get_col(
             $wpdb->prepare(
                 "SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s AND option_name != %s",
@@ -3232,6 +3247,7 @@ class ConnectMWP_Agent {
         $prefix = self::CGPT_TOKEN_OPTION_PREFIX;
         // Escape LIKE metacharacters in the prefix (notably `_`).
         $like = $wpdb->esc_like($prefix) . '%';
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Prepared via $wpdb->prepare() + esc_like(); a direct option-name lookup by prefix the WP options API cannot express, with no cacheable surface.
         $names = $wpdb->get_col(
             $wpdb->prepare(
                 "SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s AND option_name != %s",
@@ -4106,6 +4122,7 @@ class ConnectMWP_Agent {
      * upgrade behavior is unchanged and forged headers can never be trusted.
      */
     private function get_client_ip() {
+        // phpcs:disable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Every candidate is validated by filter_var(FILTER_VALIDATE_IP); forwarded headers are honored ONLY behind an explicitly opted-in trusted proxy (default OFF). This is internal request metadata, not user form input — no nonce applies.
         $remote = (!empty($_SERVER['REMOTE_ADDR']) && filter_var($_SERVER['REMOTE_ADDR'], FILTER_VALIDATE_IP))
             ? $_SERVER['REMOTE_ADDR'] : '';
 
@@ -4123,6 +4140,7 @@ class ConnectMWP_Agent {
                 return trim($_SERVER['HTTP_X_REAL_IP']);
             }
         }
+        // phpcs:enable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash
 
         // Default path. The no-REMOTE_ADDR fallback collapses onto a single
         // deterministic 'unknown' bucket — acceptable: REMOTE_ADDR is present on
@@ -4644,7 +4662,7 @@ class ConnectMWP_Agent {
             }
         }
         if (empty($custom_code) && isset($_SERVER['HTTP_X_CONNECTMWP_ENROLL_CODE'])) {
-            $custom_code = $_SERVER['HTTP_X_CONNECTMWP_ENROLL_CODE'];
+            $custom_code = sanitize_text_field(wp_unslash($_SERVER['HTTP_X_CONNECTMWP_ENROLL_CODE']));
         }
         if (empty($custom_code)) {
             $params = $request->get_json_params();
@@ -5077,6 +5095,7 @@ class ConnectMWP_Agent {
         require_once(ABSPATH . 'wp-admin/includes/file.php');
         require_once(ABSPATH . 'wp-admin/includes/media.php');
 
+        // phpcs:disable WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.InputNotValidated, WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- This REST handler runs only after central_rest_auth → verify_request_signature() (Ed25519); the uploaded bytes are further bound by a sha256 body-hash compared below, and $_FILES is consumed by WordPress's own media pipeline. No nonce: session-less signed endpoint.
         if (empty($_FILES['file'])) {
             return new WP_REST_Response(['success' => false, 'error' => 'No file uploaded'], 400);
         }
@@ -5088,6 +5107,7 @@ class ConnectMWP_Agent {
         // Validate multipart file signature body hash
         $file_hash = hash_file('sha256', $_FILES['file']['tmp_name']);
         $expected_hash = $_SERVER['HTTP_X_CONNECTMWP_BODY_HASH'] ?? $_SERVER['X_CONNECTMWP_BODY_HASH'] ?? '';
+        // phpcs:enable WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.InputNotValidated, WordPress.Security.ValidatedSanitizedInput.MissingUnslash
         if (empty($expected_hash)) {
             if (function_exists('getallheaders')) {
                 $headers = getallheaders();
@@ -5245,6 +5265,7 @@ class ConnectMWP_Agent {
             // verbatim upstream-message passthrough in the codebase and a future
             // WP/filter could enrich it with internals. Operator gets detail in
             // the log; client gets a fixed, intent-revealing string.
+            // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- intentional server-side operator diagnostic (T066); detail stays in the log, never echoed to the client.
             error_log('connectmwp: wp_insert_term(category) failed: ' . $term->get_error_message());
             return new WP_REST_Response(['success' => false, 'error' => 'Could not create the category (it may already exist).'], 400);
         }
@@ -5277,6 +5298,7 @@ class ConnectMWP_Agent {
         $term = wp_insert_term($name, 'post_tag', $args);
         if (is_wp_error($term)) {
             // (T066) See create_category_handler — never echo the raw WP_Error.
+            // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- intentional server-side operator diagnostic (T066); detail stays in the log, never echoed to the client.
             error_log('connectmwp: wp_insert_term(post_tag) failed: ' . $term->get_error_message());
             return new WP_REST_Response(['success' => false, 'error' => 'Could not create the tag (it may already exist).'], 400);
         }
@@ -5292,6 +5314,7 @@ class ConnectMWP_Agent {
      * Admin-AJAX Handler (Fallback endpoint)
      */
     public function handle_ajax_request() {
+        // phpcs:disable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- The signature is verified at verify_request_signature(null) below before any action runs; per-action params are re-validated inside dispatch_action()/the *_handler callbacks. Session-less signed endpoint, so no WP nonce.
         $action = isset($_REQUEST['connectmwp_action']) ? sanitize_key($_REQUEST['connectmwp_action']) : '';
         if (empty($action)) {
             wp_send_json_error(['error' => 'Missing action'], 400);
@@ -5306,7 +5329,7 @@ class ConnectMWP_Agent {
             ], 401);
         }
 
-        $request = new WP_REST_Request($_SERVER['REQUEST_METHOD']);
+        $request = new WP_REST_Request(isset($_SERVER['REQUEST_METHOD']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_METHOD'])) : 'GET');
         foreach ($_REQUEST as $k => $v) {
             if ($k !== 'action' && $k !== 'connectmwp_action') {
                 $request->set_param($k, $v);
@@ -5319,6 +5342,7 @@ class ConnectMWP_Agent {
         if (in_array($action, ['get_post', 'update_post', 'delete_post'], true)) {
             $request->set_param('id', isset($_REQUEST['post_id']) ? intval($_REQUEST['post_id']) : 0);
         }
+        // phpcs:enable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash
 
         $res = $this->dispatch_action($action, $request);
 
@@ -5850,13 +5874,13 @@ class ConnectMWP_Agent {
 
     public function render_settings_page() {
         if (!current_user_can('manage_options')) {
-            wp_die(__('You do not have sufficient privileges to access this page.'));
+            wp_die(esc_html__('You do not have sufficient privileges to access this page.', 'connectmwp'));
         }
 
         // Process revocation of keys
         if (isset($_POST['connectmwp_action']) && $_POST['connectmwp_action'] === 'revoke_key' && isset($_POST['key_id'])) {
             check_admin_referer('connectmwp_revoke_key');
-            $key_id_to_revoke = sanitize_text_field($_POST['key_id']);
+            $key_id_to_revoke = sanitize_text_field(wp_unslash($_POST['key_id']));
             // Confirm existence first so the success notice stays accurate, then
             // delete the per-key row + index entry + legacy fallback (T039 DAL).
             if ($this->get_key($key_id_to_revoke) !== false) {
@@ -6358,15 +6382,16 @@ class ConnectMWP_Agent {
             <?php endif; ?>
 
             <?php if ($show_what_now && $most_recent):
-                $recent_user    = esc_html($most_recent['user_display'] ?? $most_recent['user_login']);
-                $recent_login   = esc_html($most_recent['user_login']);
-                $recent_roles   = !empty($most_recent['user_roles']) ? esc_html(implode(', ', $most_recent['user_roles'])) : 'no roles';
-                $site_title_safe = esc_html(html_entity_decode(get_bloginfo('name'), ENT_QUOTES, 'UTF-8'));
+                // Raw values; escaped at output below (WP late-escaping convention).
+                $recent_user    = $most_recent['user_display'] ?? $most_recent['user_login'];
+                $recent_login   = $most_recent['user_login'];
+                $recent_roles   = !empty($most_recent['user_roles']) ? implode(', ', $most_recent['user_roles']) : 'no roles';
+                $site_title_safe = html_entity_decode(get_bloginfo('name'), ENT_QUOTES, 'UTF-8');
                 ?>
                 <section class="cmwp-whatnow">
                     <h3>🎉 You just paired <?php echo esc_html($most_recent['label']); ?> — what now?</h3>
                     <ol>
-                        <li>Your AI client can now read &amp; write <strong><?php echo $site_title_safe; ?></strong> as <strong><?php echo $recent_user; ?></strong> (<code><?php echo $recent_login; ?></code>, role: <?php echo $recent_roles; ?>).</li>
+                        <li>Your AI client can now read &amp; write <strong><?php echo esc_html($site_title_safe); ?></strong> as <strong><?php echo esc_html($recent_user); ?></strong> (<code><?php echo esc_html($recent_login); ?></code>, role: <?php echo esc_html($recent_roles); ?>).</li>
                         <li><strong>Test the connection:</strong> ask your AI <em>"list the tags on this site using connectMWP"</em>. The first time it uses each tool, your AI may ask for one-time permission — that's normal.</li>
                         <li><strong>If your AI doesn't see the connection</strong>, fully quit and relaunch the AI client (⌘Q on macOS, not just close the window).</li>
                         <li><strong>Want to use this site from another AI client on the same Mac?</strong> (Claude Desktop, Cursor, Antigravity, etc.) Register the same MCP server in each — <code>npx -y connectmwp-mcp</code>. They share this pairing; no new code needed.</li>

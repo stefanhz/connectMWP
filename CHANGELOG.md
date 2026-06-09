@@ -4,6 +4,30 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2.3.11 — 2026-06-08
+
+**WordPress.org submission-readiness pass on the plugin.** Triggered by running the official **Plugin Check** plugin against `connectmwp-agent.php` (11 errors, 87 warnings) plus a guideline/FAQ review. No change to the auth path, request behavior, or the canonical signing string — **`_internal/verify/interop_test.sh` re-verified byte-identical Node⇄PHP signing after every edit.** Lockstep bump across all three components (only the plugin changed).
+
+### Fixed (Plugin Check errors → 0)
+
+- `parse_url()` → `wp_parse_url()` in the two OAuth front-end routers (PHP-version-consistent path parsing).
+- Added `translators:` comments to the two consent-screen `sprintf(__())` calls; added the missing text domain + escaping to the `render_settings_page` capability `wp_die()`.
+- The pairing-success admin notice now escapes its four user/site fields at output (late-escaping) instead of at assignment — the values were already escaped, but Plugin Check cannot trace cross-line escaping.
+- The OAuth CIMD `curl_setopt(CURLOPT_RESOLVE)` (the T084 SSRF IP-pin via WordPress's own `http_api_curl` hook) is annotated as an intentional, justified exception — there is no `wp_remote_get` equivalent for IP pinning.
+
+### Changed (Plugin Check warnings — false positives documented, real ones hardened)
+
+- The signature, bearer-token, OAuth-param, client-IP, media-upload, and admin-AJAX handlers carry scoped `phpcs:disable`/`enable` blocks explaining that these **session-less, signature/token-authenticated** endpoints cannot use a WP nonce, and that their inputs must stay **byte-preserved** for the Ed25519 canonical string to reconstruct (sanitizing would break auth).
+- Hardened the genuinely-safe reads (`REQUEST_URI`, `REQUEST_METHOD`, `X-Forwarded-Proto`, the enroll-code header, the revoke `key_id`) with `sanitize_text_field( wp_unslash( … ) )`.
+- Annotated the three `$wpdb->prepare()` lookups, the `DONOTCACHEPAGE` cache constant, the LiteSpeed `do_action` hook, and the two operator-diagnostic `error_log` calls as the documented false positives they are.
+
+### Changed (readme.txt)
+
+- **Corrected the External Services disclosure** — the prior "makes no outbound HTTP calls of its own" predated the 2.2.0 ChatGPT OAuth feature, which makes one optional, admin-initiated outbound HTTPS GET to fetch the connecting app's OAuth client-metadata document. Now disclosed precisely (what is/isn't sent, when, the screening, and OpenAI's terms/privacy links).
+- Added the `Donate link:` header (the existing "Buy me a coffee" Stripe link).
+
+> **Trademark note:** Plugin Check flags "wp" in the name/slug, but guideline 17 only restricts a *leading* trademarked term — `connectmwp` embeds it, so the name stands. Noted for the submission comment.
+
 ## 2.3.10 — 2026-06-07
 
 **Documentation-only release: refreshed every version anchor + the npm package README to current, ahead of the public repo + domain launch.** No code, auth, or behavior change in any component. Triggered by the discovery that several public-facing docs still carried stale `Verified against:` stamps (the repo `README.md` at 2.3.3, `CLAUDE.md`/`OPERATIONS.md` at 2.2.0, and the **npm package README** at 2.0.33 — already live on npmjs.com inside the 2.3.9 tarball). Because npm versions are immutable (a published version's README cannot be overwritten), refreshing the npm page requires a new version number — hence this lockstep bump rather than a re-publish of 2.3.9.

@@ -1,10 +1,11 @@
 === connectMWP ===
 Contributors: stefhz
+Donate link: https://buy.stripe.com/aFa8wQ0rH2PQ4Msama5kk0l
 Tags: mcp, rest-api, ai, publishing, automation
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.3.10
+Stable tag: 2.3.11
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -32,9 +33,11 @@ Site owners who want to use a local AI assistant to draft and manage content on 
 
 == External services ==
 
-This plugin does **not** send your site's data to any external server. It is a *receiver*: a local client application running on your own computer initiates authenticated requests to this site.
+This plugin is primarily a *receiver*: a local client application running on your own computer initiates authenticated requests to this site. For the Claude/Cursor signature and API-token connection methods, the plugin makes no outbound HTTP calls and sends none of your site's data anywhere.
 
-To set up the connection you install the companion open-source client from the public npm registry (`connectmwp-mcp`) and run a one-time pairing command. The client is configured by you, runs on your machine, and connects directly to this site. The plugin makes no outbound HTTP calls of its own.
+One optional, administrator-initiated exception applies only if you connect ChatGPT using the built-in OAuth method: to complete the OAuth handshake, the plugin makes a single outbound HTTPS GET request to fetch the connecting application's published OAuth client-metadata document (the URL ChatGPT supplies during the connection). That request sends none of your site's content or credentials — it only retrieves the application's public metadata, occurs only when you explicitly add a ChatGPT connector, is screened against private/internal network ranges, and does not follow redirects. The service contacted in that case is OpenAI's ChatGPT connector (terms: https://openai.com/policies/terms-of-use/ — privacy: https://openai.com/policies/privacy-policy/).
+
+To set up a connection you install the companion open-source client from the public npm registry (`connectmwp-mcp`) and run a one-time pairing command. The client is configured by you, runs on your machine, and connects directly to this site.
 
 Project home and documentation: https://connectmwp.com
 Source code (all components, GPL): https://github.com/stefanhz/connectMWP
@@ -65,6 +68,10 @@ Generate a new pairing code in Settings → connectMWP and re-pair. A failed re-
 Yes. Those tools police login state, and this plugin never establishes one.
 
 == Changelog ==
+
+= 2.3.11 =
+* WordPress.org submission prep: resolved all Plugin Check errors and documented the remaining false-positives (signature-based endpoints authenticate via Ed25519, not nonces). No change to the auth path or request behavior — verified byte-identical signing.
+* Clarified the External Services disclosure to note the single optional outbound call made only when connecting ChatGPT via OAuth.
 
 = 2.3.10 =
 * Documentation refresh only — no code or behavior change.
@@ -102,6 +109,9 @@ Yes. Those tools police login state, and this plugin never establishes one.
 (Earlier history is maintained in the project CHANGELOG.)
 
 == Upgrade Notice ==
+
+= 2.3.11 =
+Code-quality and disclosure refinements for the WordPress.org listing. No functional change from 2.3.10.
 
 = 2.3.10 =
 Documentation refresh only. No functional change from 2.3.9.
