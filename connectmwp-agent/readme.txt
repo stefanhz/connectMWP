@@ -5,7 +5,7 @@ Tags: mcp, rest-api, ai, publishing, automation
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.3.11
+Stable tag: 2.3.12
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -69,6 +69,9 @@ Yes. Those tools police login state, and this plugin never establishes one.
 
 == Changelog ==
 
+= 2.3.12 =
+* Fixed the final Plugin Check warning (a missing existence check on the request method in the admin-AJAX handler). No change to the auth path or request behavior.
+
 = 2.3.11 =
 * WordPress.org submission prep: resolved all Plugin Check errors and documented the remaining false-positives (signature-based endpoints authenticate via Ed25519, not nonces). No change to the auth path or request behavior — verified byte-identical signing.
 * Clarified the External Services disclosure to note the single optional outbound call made only when connecting ChatGPT via OAuth.
@@ -109,6 +112,9 @@ Yes. Those tools police login state, and this plugin never establishes one.
 (Earlier history is maintained in the project CHANGELOG.)
 
 == Upgrade Notice ==
+
+= 2.3.12 =
+Minor code-quality fix for the WordPress.org listing. No functional change from 2.3.11.
 
 = 2.3.11 =
 Code-quality and disclosure refinements for the WordPress.org listing. No functional change from 2.3.10.

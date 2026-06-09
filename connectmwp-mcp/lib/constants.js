@@ -20,4 +20,4 @@ export const ALLOWED_EXTENSIONS = [
 // (audit ARCH §3 — Hardcoded Fallbacks & Metadata). Held at the last
 // stable 1.x → 2.x bridge tag so a runtime parse failure surfaces clearly
 // as "an old version is running" rather than a wildly wrong number.
-export const FALLBACK_VERSION = '2.3.11';
+export const FALLBACK_VERSION = '2.3.12';

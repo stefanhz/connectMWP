@@ -4,6 +4,18 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2.3.12 — 2026-06-08
+
+**Versioning correction + final Plugin Check warning fix.** The 2.3.11 commit (`d0edecf`) bundled one follow-up fix made *after* its initial build had already been Plugin-Check-tested, without giving that build its own version. 2.3.12 assigns that change a distinct, referenceable version and documents it here; the 2.3.11 entry above is left intact (locked).
+
+### Fixed
+
+- **Plugin Check `InputNotValidated`** — `handle_ajax_request()` constructed `new WP_REST_Request($_SERVER['REQUEST_METHOD'])` without an existence check. Now guarded: `isset(…) ? sanitize_text_field( wp_unslash(…) ) : 'GET'`. It runs only after signature verification, so it does not touch the canonical signing string — `interop_test.sh` re-verified byte-identical Node⇄PHP signing. Plugin Check is now **0 errors / 0 fixable warnings**; only the two `trademarked_term` "wp" notices remain, which guideline 17 (leading-term-only) does not require fixing.
+
+### Note
+
+- No functional change from the committed 2.3.11 tree beyond the guard above; this release exists to keep every distinct build referenceable per project rule.
+
 ## 2.3.11 — 2026-06-08
 
 **WordPress.org submission-readiness pass on the plugin.** Triggered by running the official **Plugin Check** plugin against `connectmwp-agent.php` (11 errors, 87 warnings) plus a guideline/FAQ review. No change to the auth path, request behavior, or the canonical signing string — **`_internal/verify/interop_test.sh` re-verified byte-identical Node⇄PHP signing after every edit.** Lockstep bump across all three components (only the plugin changed).
