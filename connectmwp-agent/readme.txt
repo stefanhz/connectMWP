@@ -1,11 +1,11 @@
-=== connectMWP ===
+=== connectMWP – MCP Connector for WordPress ===
 Contributors: stefhz
 Donate link: https://buy.stripe.com/aFa8wQ0rH2PQ4Msama5kk0l
 Tags: mcp, rest-api, ai, publishing, automation
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.3.12
+Stable tag: 2.3.13
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -69,6 +69,11 @@ Yes. Those tools police login state, and this plugin never establishes one.
 
 == Changelog ==
 
+= 2.3.13 =
+* Display name is now "connectMWP – MCP Connector for WordPress" (slug unchanged) per WordPress.org review feedback.
+* Settings-page CSS/JS now load through the WordPress enqueue API instead of inline tags; inline onclick handlers replaced with delegated listeners. Same UI, same behavior.
+* Removed an unnecessary core-file include. No change to the auth path or request behavior.
+
 = 2.3.12 =
 * Fixed the final Plugin Check warning (a missing existence check on the request method in the admin-AJAX handler). No change to the auth path or request behavior.
 
@@ -112,6 +117,9 @@ Yes. Those tools police login state, and this plugin never establishes one.
 (Earlier history is maintained in the project CHANGELOG.)
 
 == Upgrade Notice ==
+
+= 2.3.13 =
+WordPress.org review fixes (asset enqueueing, display name). No functional change from 2.3.12.
 
 = 2.3.12 =
 Minor code-quality fix for the WordPress.org listing. No functional change from 2.3.11.

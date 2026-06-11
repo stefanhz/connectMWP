@@ -4,6 +4,21 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2.3.13 — 2026-06-11
+
+**WordPress.org pre-review fixes (plugin only; lockstep bump across all three components).** Addresses the technical items in the wp.org review email of 2026-06-11. No change to the auth path, the canonical signing string, or any MCP endpoint.
+
+### Changed
+
+- **Display name** is now **"connectMWP – MCP Connector for WordPress"** (plugin header + readme.txt). Slug, text domain, npm package, and all internals remain `connectmwp` — this satisfies the reviewer's "name should describe the function" point while keeping the brand as the distinctive leading term per wp.org's own recommended pattern.
+- **Settings-page CSS/JS moved to the WP enqueue API.** All 9 admin-page inline `<style>`/`<script>` blocks plus 3 inline `onclick` handlers are gone; the styles/scripts now attach to src-less `connectmwp-admin` handles via `wp_add_inline_style()`/`wp_add_inline_script()` (single-file plugin architecture preserved — no separate asset files). Dynamic values (ajax URL, nonces, pairing countdown/snapshot) travel via one `wp_json_encode`d config object; the JS itself is a static string with no server-side interpolation. Copy buttons and revoke confirms are now generic delegated handlers driven by `data-cmwp-copy` / `data-cmwp-confirm` attributes.
+- **Settings-page POST actions** (revoke key / generate pairing / trusted-proxy) moved from the render callback to a `load-{page}` hook (`handle_settings_actions()`), so they run before asset enqueueing and the JS config can never go stale; success notices are queued and rendered by the page. Same nonces, same capability gates, same UX.
+- The two standalone OAuth documents (consent + error pages) intentionally keep their inline styles — they render outside the WP page lifecycle (no `wp_head`/`wp_footer`) under a strict CSP that allows only inline styles; annotated in-code for the reviewer.
+
+### Fixed
+
+- **Removed the `require_once ABSPATH . 'wp-includes/functions.php'`** fallback in `version()` (wp.org disallows loading core files directly; `get_file_data()` is always available once plugin code runs). The `function_exists` guard now just falls back to `'unknown'`.
+
 ## 2.3.12 — 2026-06-08
 
 **Versioning correction + final Plugin Check warning fix.** The 2.3.11 commit (`d0edecf`) bundled one follow-up fix made *after* its initial build had already been Plugin-Check-tested, without giving that build its own version. 2.3.12 assigns that change a distinct, referenceable version and documents it here; the 2.3.11 entry above is left intact (locked).

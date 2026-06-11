@@ -1,9 +1,9 @@
 <?php
 /**
- * Plugin Name: connectMWP
+ * Plugin Name: connectMWP – MCP Connector for WordPress
  * Plugin URI: https://connectmwp.com
  * Description: Securely let your own local AI client (Claude, Cursor) publish to this WordPress site over a signed, session-less Ed25519 connection — no login, no central server.
- * Version: 2.3.12
+ * Version: 2.3.13
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Stefan Heinz, 2morrow.ai
@@ -27,10 +27,10 @@ class ConnectMWP_Agent {
     private static $version_cache = null;
     public static function version() {
         if (self::$version_cache === null) {
-            if (!function_exists('get_file_data')) {
-                require_once ABSPATH . 'wp-includes/functions.php';
-            }
-            $data = get_file_data(__FILE__, ['Version' => 'Version']);
+            // get_file_data() is always loaded by the time plugin code runs;
+            // the function_exists guard is pure belt-and-braces (no core include —
+            // loading core files directly is disallowed on wp.org).
+            $data = function_exists('get_file_data') ? get_file_data(__FILE__, ['Version' => 'Version']) : [];
             self::$version_cache = !empty($data['Version']) ? $data['Version'] : 'unknown';
         }
         return self::$version_cache;
@@ -197,6 +197,11 @@ class ConnectMWP_Agent {
 
         // Admin settings page hook
         add_action('admin_menu', [$this, 'add_settings_page']);
+
+        // Settings-page CSS/JS via the WP enqueue API (wp.org requirement —
+        // no raw <style>/<script> tags in admin output). The callback gates on
+        // the settings page's own hook suffix, so nothing loads anywhere else.
+        add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_assets']);
 
         // One-time, sentinel-guarded migration of the legacy monolithic
         // `connectmwp_keys` array into atomic per-key option rows (T039).
@@ -1328,6 +1333,10 @@ class ConnectMWP_Agent {
             header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action " . $csp_form_action . ";");
             header('X-Content-Type-Options: nosniff');
         }
+        // NOTE (wp.org review): this is a standalone OAuth consent document served
+        // outside the WP page lifecycle (no wp_head/wp_footer runs), so the WP
+        // enqueue API cannot deliver assets here. The strict CSP above allows
+        // only inline styles by design — no scripts at all on this page.
         ?>
 <!doctype html>
 <html lang="en">
@@ -1456,6 +1465,9 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
             header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'");
             header('X-Content-Type-Options: nosniff');
         }
+        // NOTE (wp.org review): standalone OAuth error document served outside
+        // the WP page lifecycle (no wp_head/wp_footer), so the WP enqueue API
+        // cannot deliver assets here; CSP restricts it to inline styles only.
         ?>
 <!doctype html>
 <html lang="en">
@@ -5836,167 +5848,143 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
     /**
      * Add Settings Page under Settings menu
      */
+    /** @var string|false Hook suffix of the settings page (set on admin_menu). */
+    private $settings_hook = false;
+
+    /** @var array Success notices queued by handle_settings_actions() for render. */
+    private $settings_notices = [];
+
     public function add_settings_page() {
-        add_options_page(
+        $this->settings_hook = add_options_page(
             'connectMWP Settings',
             'connectMWP',
             'manage_options',
             'connectmwp',
             [$this, 'render_settings_page']
         );
+        if ($this->settings_hook) {
+            // Process the page's POST actions on load-{page}: this fires BEFORE
+            // admin_enqueue_scripts, so the JS config snapshot (key counts,
+            // pairing countdown) always reflects the post-action state.
+            add_action('load-' . $this->settings_hook, [$this, 'handle_settings_actions']);
+        }
     }
 
     /**
-     * Pure status classifier for a paired client (T055). SSOT for the
-     * "is this client just-paired / stale?" business rules so the policy lives in
-     * one testable place instead of inline in the render loop. No I/O, no globals.
-     *
-     * @param int|false   $created_ts    Unix ts of pairing, or false if unparsable.
-     * @param int|false   $last_used_ts  Unix ts of last use, or false.
-     * @param string      $last_used_raw Raw last_used string ('' / 'never' => unused).
-     * @param int         $now           Current Unix ts.
-     * @return array{is_just_paired:bool,is_stale:bool}
+     * Process the settings page's own POST actions (revoke key / generate
+     * pairing code / trusted-proxy toggle). Runs on load-{settings page} —
+     * before any output and before asset enqueueing — instead of inside the
+     * render callback, so enqueued data can't go stale. Nonce + capability
+     * gated per action.
      */
-    private function classify_key_status($created_ts, $last_used_ts, $last_used_raw, $now) {
-        $age_created   = $created_ts   ? ($now - $created_ts)   : 0;
-        $age_last_used = $last_used_ts ? ($now - $last_used_ts) : null;
-        $never_used    = empty($last_used_raw);
-
-        $is_just_paired = (bool) ($created_ts && $age_created < self::JUST_PAIRED_SECONDS);
-        $is_stale = ($never_used && $age_created > self::STALE_UNUSED_SECONDS) ||
-                    ($age_last_used !== null && $age_last_used > self::STALE_LAST_USED_SECONDS);
-
-        return [
-            'is_just_paired' => $is_just_paired,
-            'is_stale'       => (bool) $is_stale,
-        ];
-    }
-
-    public function render_settings_page() {
-        if (!current_user_can('manage_options')) {
-            wp_die(esc_html__('You do not have sufficient privileges to access this page.', 'connectmwp'));
+    public function handle_settings_actions() {
+        if (!current_user_can('manage_options') || !isset($_POST['connectmwp_action'])) {
+            return;
         }
+        $action = sanitize_text_field(wp_unslash($_POST['connectmwp_action']));
 
-        // Process revocation of keys
-        if (isset($_POST['connectmwp_action']) && $_POST['connectmwp_action'] === 'revoke_key' && isset($_POST['key_id'])) {
+        if ($action === 'revoke_key' && isset($_POST['key_id'])) {
             check_admin_referer('connectmwp_revoke_key');
             $key_id_to_revoke = sanitize_text_field(wp_unslash($_POST['key_id']));
             // Confirm existence first so the success notice stays accurate, then
             // delete the per-key row + index entry + legacy fallback (T039 DAL).
             if ($this->get_key($key_id_to_revoke) !== false) {
                 $this->delete_key($key_id_to_revoke);
-                echo '<div class="notice notice-success is-dismissible"><p>Client key successfully revoked.</p></div>';
+                $this->settings_notices[] = 'Client key successfully revoked.';
             }
         }
 
-        // Process generation of pairing code
-        if (isset($_POST['connectmwp_action']) && $_POST['connectmwp_action'] === 'generate_pairing') {
+        if ($action === 'generate_pairing') {
             check_admin_referer('connectmwp_generate_pairing');
             $this->generate_enrollment_code();
         }
 
-        // Process the "behind trusted proxy" setting (T041). Single write site
-        // for the connectmwp_trust_proxy option; is_behind_trusted_proxy() is the
+        // "Behind trusted proxy" setting (T041). Single write site for the
+        // connectmwp_trust_proxy option; is_behind_trusted_proxy() is the
         // single read site.
-        if (isset($_POST['connectmwp_action']) && $_POST['connectmwp_action'] === 'set_trust_proxy') {
+        if ($action === 'set_trust_proxy') {
             check_admin_referer('connectmwp_proxy_setting');
             update_option('connectmwp_trust_proxy', !empty($_POST['connectmwp_trust_proxy']));
-            echo '<div class="notice notice-success is-dismissible"><p>Trusted-proxy setting saved.</p></div>';
+            $this->settings_notices[] = 'Trusted-proxy setting saved.';
+        }
+    }
+
+    /**
+     * Enqueue the settings page's CSS/JS through the WP asset API (wp.org
+     * requirement — replaces the former inline <style>/<script> blocks).
+     * Src-less registered handles keep the plugin single-file: the CSS/JS
+     * live as inline additions on the handles, printed by WP itself.
+     */
+    public function enqueue_admin_assets($hook_suffix) {
+        if (!$this->settings_hook || $hook_suffix !== $this->settings_hook) {
+            return;
         }
 
-        // Retrieve active pairing code if it exists and hasn't expired
-        $enrollment_string = '';
+        wp_register_style('connectmwp-admin', false, [], self::version());
+        wp_enqueue_style('connectmwp-admin');
+        wp_add_inline_style('connectmwp-admin', self::settings_page_css());
+
+        wp_register_script('connectmwp-admin', '', [], self::version(), true);
+        wp_enqueue_script('connectmwp-admin');
+        wp_add_inline_script(
+            'connectmwp-admin',
+            'window.cmwpAdminConfig = ' . wp_json_encode($this->settings_page_js_config()) . ';',
+            'before'
+        );
+        wp_add_inline_script('connectmwp-admin', self::settings_page_js());
+    }
+
+    /**
+     * Dynamic values the settings-page JS needs (the JS itself is a static
+     * string — see settings_page_js()). Computed AFTER handle_settings_actions
+     * has run, so the pairing snapshot reflects this request's POST action.
+     */
+    private function settings_page_js_config() {
+        $config = [
+            'ajaxUrl'   => admin_url('admin-ajax.php'),
+            'nonces'    => [
+                'pairing' => wp_create_nonce('connectmwp_pairing_status'),
+                'cgpt'    => wp_create_nonce('connectmwp_cgpt'),
+                'oauth'   => wp_create_nonce('connectmwp_oauth_manage'),
+            ],
+            'maxTokens' => self::MAX_CGPT_TOKENS_PER_SITE,
+            'pairing'   => null,
+        ];
+
+        // Mid-pair only: countdown seconds + the page-load key snapshot the
+        // completion poll compares against (same data the render path shows).
         $stored = get_option('connectmwp_enrollment_code');
-        if (is_array($stored) && !empty($stored['code']) && time() <= intval($stored['expires'])) {
-            $enrollment_string = esc_url(home_url()) . ',' . $stored['code'];
-        }
-
-        // Source keys via the DAL (T039 SSOT) and resolve bound users with a
-        // single batched query instead of one get_userdata() per key (T043 N+1
-        // fix). `fields` is intentionally omitted so each WP_User exposes
-        // ->roles directly (WP batches the role meta load) — keeping the table
-        // output byte-identical while collapsing N user lookups into ONE query.
-        $all_keys = $this->list_keys();
-        $user_ids = array_values(array_unique(array_filter(array_map(function ($k) {
-            return intval($k['bound_user_id']);
-        }, $all_keys))));
-        $user_map = [];
-        if (!empty($user_ids)) {
-            foreach (get_users(['include' => $user_ids]) as $u) {
-                $user_map[intval($u->ID)] = $u;
-            }
-        }
-
-        $all_keys_with_users = [];
-        foreach ($all_keys as $key_id => $key_data) {
-            $user_info = $user_map[intval($key_data['bound_user_id'])] ?? null;
-            $key_data['user_login']   = $user_info ? $user_info->user_login : 'Unknown User';
-            $key_data['user_display'] = $user_info ? ($user_info->display_name ?: $user_info->user_login) : 'Unknown User';
-            $key_data['user_roles']   = $user_info && is_array($user_info->roles) ? array_values($user_info->roles) : [];
-            $key_data['key_id']       = $key_id;
-            $all_keys_with_users[]    = $key_data;
-        }
-
-        // Newest first — so the most recent pairing is immediately visible and
-        // can be flagged in the table.
-        usort($all_keys_with_users, function($a, $b) {
-            return strcmp($b['created'] ?? '', $a['created'] ?? '');
-        });
-
-        // Per-key enrichment: parse `created` and `last_used` (which come from
-        // `current_time('mysql')` and carry NO timezone marker) with wp_timezone()
-        // so the resulting Unix timestamps are correct regardless of how the
-        // WP-configured timezone relates to the PHP-server timezone. Then derive
-        // formatted display strings, a "just paired" flag (< 1 hour old, drives
-        // the JUST PAIRED badge + the What now? panel), and a "stale" flag
-        // (never used + > 7d old, OR last used > 30d ago — drives the grey dot).
-        $now = time();
-        foreach ($all_keys_with_users as &$k) {
-            $k['display_created']    = $k['created']   ?? '';
-            $k['display_last_used']  = !empty($k['last_used']) ? $k['last_used'] : 'never';
-            $k['created_ts']         = false;
-            $k['last_used_ts']       = false;
-            if (function_exists('wp_timezone')) {
-                $tz = wp_timezone();
-                if (!empty($k['created'])) {
-                    $dt = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $k['created'], $tz);
-                    if ($dt instanceof DateTimeImmutable) {
-                        $k['created_ts']      = $dt->getTimestamp();
-                        $k['display_created'] = $dt->format('Y-m-d H:i');
-                    }
-                }
-                if (!empty($k['last_used'])) {
-                    $dt = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $k['last_used'], $tz);
-                    if ($dt instanceof DateTimeImmutable) {
-                        $k['last_used_ts']      = $dt->getTimestamp();
-                        $k['display_last_used'] = $dt->format('Y-m-d H:i');
-                    }
+        if (is_array($stored) && !empty($stored['code']) && intval($stored['expires']) > time()) {
+            $all_keys = $this->list_keys();
+            $latest_key_id  = null;
+            $latest_created = '';
+            foreach ($all_keys as $key_id => $key_data) {
+                $created = $key_data['created'] ?? '';
+                if ($latest_key_id === null || strcmp($created, $latest_created) > 0) {
+                    $latest_key_id  = $key_id;
+                    $latest_created = $created;
                 }
             }
-            $status = $this->classify_key_status($k['created_ts'], $k['last_used_ts'], $k['last_used'], $now);
-            $k['is_just_paired'] = $status['is_just_paired'];
-            $k['is_stale']       = $status['is_stale'];
-        }
-        unset($k);
-
-        $most_recent   = !empty($all_keys_with_users) ? $all_keys_with_users[0] : null;
-        $show_what_now = $most_recent && !empty($most_recent['is_just_paired']);
-
-        // Three render states drive layout choice. mid-pair takes precedence
-        // because the pairing card needs to lead during the 10-min window.
-        if ($enrollment_string) {
-            $page_state = 'mid-pair';
-        } elseif (empty($all_keys_with_users)) {
-            $page_state = 'zero';
-        } else {
-            $page_state = 'paired';
+            $config['pairing'] = [
+                'remaining'     => max(0, intval($stored['expires']) - time()),
+                'initialTotal'  => count($all_keys),
+                'initialLatest' => $latest_key_id,
+            ];
         }
 
-        ?>
-        <style>
+        return $config;
+    }
+
+    /**
+     * Settings-page stylesheet (static — attached to the src-less
+     * `connectmwp-admin` style handle via wp_add_inline_style()). Union of the
+     * former page-level and API-token-card <style> blocks. All classes are
+     * prefixed cmwp- so WP admin global CSS can't reach in.
+     */
+    private static function settings_page_css() {
+        return <<<'CSS'
             /* connectMWP plugin settings page — v2.0.18 redesign.
-               Calm, status-first device-management aesthetic. All classes prefixed
-               with cmwp- so the WP admin global CSS can't reach in. */
+               Calm, status-first device-management aesthetic. */
             .cmwp-wrap { max-width: 900px; margin: 20px auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen-Sans, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif; color: #2c3e50; }
 
             /* Hero */
@@ -6147,59 +6135,670 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
                 .cmwp-conns tr { border: 1px solid #eef2f4; border-radius: 10px; margin-bottom: 10px; padding: 6px 4px; }
                 .cmwp-conns td { border: none; padding: 6px 10px; }
             }
-        </style>
 
-        <script>
-        function showConnectMWPToast(button, message) {
-            let toast = document.getElementById('connectmwp-global-toast');
-            if (!toast) {
-                toast = document.createElement('div');
-                toast.id = 'connectmwp-global-toast';
-                toast.style.position = 'absolute';
-                toast.style.padding = '6px 12px';
-                toast.style.borderRadius = '6px';
-                toast.style.fontSize = '12px';
-                toast.style.fontWeight = '600';
-                toast.style.color = '#fff';
-                toast.style.background = '#2e7d32';
-                toast.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
-                toast.style.pointerEvents = 'none';
-                toast.style.transition = 'opacity 0.2s ease-in-out';
-                toast.style.zIndex = '99999';
-                document.body.appendChild(toast);
-            }
-            
-            toast.textContent = '✓ ' + message;
-            toast.style.opacity = '0';
-            toast.style.display = 'block';
-            
-            const rect = button.getBoundingClientRect();
-            const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-            const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
-            
-            const height = toast.offsetHeight || 28;
-            const width = toast.offsetWidth || 120;
-            toast.style.top = (rect.top + scrollTop - height - 8) + 'px';
-            toast.style.left = (rect.left + scrollLeft + (rect.width / 2) - (width / 2)) + 'px';
-            
-            setTimeout(() => {
-                toast.style.opacity = '1';
-            }, 10);
-            
-            if (window.connectMWPToastTimer) {
-                clearTimeout(window.connectMWPToastTimer);
-            }
-            
-            window.connectMWPToastTimer = setTimeout(() => {
+            /* API-token card */
+            .cmwp-cgpt-gen { display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap; margin-top: 4px; }
+            .cmwp-cgpt-field { display: flex; flex-direction: column; gap: 4px; }
+            .cmwp-cgpt-flabel { font-size: 12px; font-weight: 600; color: #7f8c8d; }
+            .cmwp-cgpt-field select, .cmwp-cgpt-field input[type=text] { min-width: 220px; padding: 7px 10px; border: 1px solid #dbe5ed; border-radius: 6px; font-size: 13px; color: #2c3e50; background: #fff; }
+            .cmwp-cgpt-reveal { margin-top: 16px; background: #fafbfc; border: 1px solid #eef2f4; border-left: 4px solid #16a085; border-radius: 8px; padding: 16px 18px; }
+            .cmwp-cgpt-warn { font-size: 13px; color: #b9770e; background: #fef3e0; border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; line-height: 1.5; }
+            .cmwp-wrap textarea.cmwp-cgpt-url { height: 44px; font-size: 11.5px; }
+            .cmwp-cgpt-urllabel { font-size: 12.5px; font-weight: 600; color: #34495e; margin: 12px 0 4px; }
+            .cmwp-cgpt-urltag { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #16a085; background: #d8f1ea; padding: 2px 7px; border-radius: 999px; }
+            .cmwp-cgpt-urltag.fallback { color: #7f8c8d; background: #ecf0f1; }
+            .cmwp-cgpt-pathtoggle { margin-top: 16px; padding: 12px 14px; background: #fdf6ec; border: 1px solid #f3e2c7; border-radius: 8px; }
+            .cmwp-cgpt-pathtoggle-row { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; font-weight: 600; color: #34495e; cursor: pointer; }
+            .cmwp-cgpt-pathtoggle-row input[type=checkbox] { margin-top: 2px; }
+            .cmwp-cgpt-pathwarn { margin: 8px 0 0; font-size: 12.5px; line-height: 1.5; color: #b9770e; }
+CSS;
+    }
+
+    /**
+     * Settings-page JavaScript (static — attached to the src-less
+     * `connectmwp-admin` script handle, printed in the footer). All dynamic
+     * values (ajax url, nonces, pairing snapshot) arrive via the
+     * window.cmwpAdminConfig object emitted by enqueue_admin_assets(); the
+     * code itself contains no server-side interpolation. Each section guards
+     * on its own DOM so it no-ops when its card isn't rendered.
+     */
+    private static function settings_page_js() {
+        return <<<'JS'
+        (function() {
+            'use strict';
+            var CFG = window.cmwpAdminConfig || {};
+            CFG.nonces = CFG.nonces || {};
+
+            function showConnectMWPToast(button, message) {
+                var toast = document.getElementById('connectmwp-global-toast');
+                if (!toast) {
+                    toast = document.createElement('div');
+                    toast.id = 'connectmwp-global-toast';
+                    toast.style.position = 'absolute';
+                    toast.style.padding = '6px 12px';
+                    toast.style.borderRadius = '6px';
+                    toast.style.fontSize = '12px';
+                    toast.style.fontWeight = '600';
+                    toast.style.color = '#fff';
+                    toast.style.background = '#2e7d32';
+                    toast.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
+                    toast.style.pointerEvents = 'none';
+                    toast.style.transition = 'opacity 0.2s ease-in-out';
+                    toast.style.zIndex = '99999';
+                    document.body.appendChild(toast);
+                }
+
+                toast.textContent = '✓ ' + message;
                 toast.style.opacity = '0';
-                setTimeout(() => {
-                    if (toast.style.opacity === '0') {
-                        toast.style.display = 'none';
+                toast.style.display = 'block';
+
+                var rect = button.getBoundingClientRect();
+                var scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+                var scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+
+                var height = toast.offsetHeight || 28;
+                var width = toast.offsetWidth || 120;
+                toast.style.top = (rect.top + scrollTop - height - 8) + 'px';
+                toast.style.left = (rect.left + scrollLeft + (rect.width / 2) - (width / 2)) + 'px';
+
+                setTimeout(function() { toast.style.opacity = '1'; }, 10);
+
+                if (window.connectMWPToastTimer) {
+                    clearTimeout(window.connectMWPToastTimer);
+                }
+                window.connectMWPToastTimer = setTimeout(function() {
+                    toast.style.opacity = '0';
+                    setTimeout(function() {
+                        if (toast.style.opacity === '0') {
+                            toast.style.display = 'none';
+                        }
+                    }, 200);
+                }, 10000);
+            }
+
+            // Generic copy-to-clipboard: any [data-cmwp-copy="<element id>"]
+            // button copies that element's value/text. Replaces the former
+            // per-button inline onclick handlers and wireCopy() duplicates.
+            // T056: never claim success if the clipboard write rejects.
+            document.addEventListener('click', function(e) {
+                var btn = e.target.closest('[data-cmwp-copy]');
+                if (!btn) return;
+                var src = document.getElementById(btn.getAttribute('data-cmwp-copy'));
+                if (!src) return;
+                var text = (src.value !== undefined && src.value !== '') ? src.value : src.textContent;
+                navigator.clipboard.writeText(text).then(function() {
+                    showConnectMWPToast(btn, btn.getAttribute('data-cmwp-copied') || 'Copied');
+                }).catch(function() {
+                    showConnectMWPToast(btn, 'Copy failed — select & ⌘C');
+                });
+            });
+
+            // Generic confirm gate for destructive submit buttons (device-key
+            // revoke forms). Replaces the former inline onclick="return confirm(…)".
+            document.addEventListener('click', function(e) {
+                var btn = e.target.closest('button[data-cmwp-confirm]');
+                if (!btn) return;
+                if (!window.confirm(btn.getAttribute('data-cmwp-confirm'))) {
+                    e.preventDefault();
+                }
+            });
+
+            // Click-to-copy on key_id chips (client list + merged table).
+            document.querySelectorAll('.cmwp-copy').forEach(function(el) {
+                el.addEventListener('click', function() {
+                    var text = el.dataset.copy || el.textContent;
+                    navigator.clipboard.writeText(text).then(function() {
+                        showConnectMWPToast(el, 'Key ID copied');
+                    }).catch(function() {
+                        showConnectMWPToast(el, 'Copy failed — select & ⌘C');
+                    });
+                });
+            });
+
+            // Top-level client-family tab switching (device / chatgpt / token).
+            (function() {
+                var tabs = Array.prototype.slice.call(document.querySelectorAll('#cmwp-client-tabs .cmwp-ctab'));
+                var panels = Array.prototype.slice.call(document.querySelectorAll('[data-client-panel]'));
+                function activate(tab) {
+                    var c = tab.dataset.client;
+                    tabs.forEach(function(t) {
+                        var on = (t === tab);
+                        t.classList.toggle('active', on);
+                        t.setAttribute('aria-selected', on ? 'true' : 'false');
+                    });
+                    panels.forEach(function(p) {
+                        p.classList.toggle('active', p.dataset.clientPanel === c);
+                    });
+                }
+                tabs.forEach(function(tab, i) {
+                    tab.addEventListener('click', function() { activate(tab); });
+                    // Arrow-key navigation (WAI-ARIA tabs pattern).
+                    tab.addEventListener('keydown', function(e) {
+                        var next = null;
+                        if (e.key === 'ArrowRight') next = tabs[(i + 1) % tabs.length];
+                        else if (e.key === 'ArrowLeft') next = tabs[(i - 1 + tabs.length) % tabs.length];
+                        if (next) { e.preventDefault(); activate(next); next.focus(); }
+                    });
+                });
+            })();
+
+            // Pairing-code countdown (mid-pair state only).
+            (function() {
+                var display = document.getElementById('connectmwp-countdown');
+                if (!display || !CFG.pairing) return;
+                var secondsLeft = parseInt(CFG.pairing.remaining, 10) || 0;
+                function updateTimer() {
+                    if (secondsLeft <= 0) {
+                        display.textContent = 'Expired';
+                        display.style.color = '#c0392b';
+                        display.style.fontWeight = '700';
+                        setTimeout(function() { window.location.reload(); }, 1500);
+                        return;
                     }
-                }, 200);
-            }, 10000);
+                    var m = Math.floor(secondsLeft / 60);
+                    var s = secondsLeft % 60;
+                    display.textContent = m + ':' + (s < 10 ? '0' : '') + s;
+                    secondsLeft--;
+                    setTimeout(updateTimer, 1000);
+                }
+                updateTimer();
+            })();
+
+            // Live pairing-completion poll (v2.0.16+): admin-ajax-backed, nonced,
+            // capability-gated. On a new key landing, flip the card to a success
+            // state and reload so the user sees the full new layout without manual
+            // refresh. Polls every 3s AND on visibilitychange (terminal handoff).
+            (function() {
+                if (!CFG.pairing || !document.querySelector('.cmwp-pairing-card')) return;
+                var ajaxUrl = CFG.ajaxUrl;
+                var nonce = CFG.nonces.pairing;
+                var initialTotal = parseInt(CFG.pairing.initialTotal, 10) || 0;
+                var initialLatest = CFG.pairing.initialLatest || null;
+                var stopped = false;
+                var timer = null;
+                var failCount = 0; // consecutive poll failures (T062)
+
+                // After repeated poll failures (expired nonce, 5xx, network),
+                // stop the loop and TELL the admin instead of failing silent.
+                function noteFailureAndMaybeStop() {
+                    failCount++;
+                    if (failCount < 3) return;
+                    stop();
+                    var card = document.querySelector('.cmwp-pairing-card');
+                    if (!card || document.getElementById('cmwp-poll-stalled')) return;
+                    var note = document.createElement('p');
+                    note.id = 'cmwp-poll-stalled';
+                    note.style.cssText = 'margin: 12px 0 0; font-size: 12.5px; color: #b9770e;';
+                    note.textContent = '⚠ Auto-refresh paused (could not reach the server). Reload this page after pairing to see the new client.';
+                    card.appendChild(note);
+                }
+
+                // Named so the SAME reference can be detached in stop().
+                var onVisibility = function() {
+                    if (document.visibilityState === 'visible' && !stopped) poll();
+                };
+
+                // Single teardown chokepoint (SSOT): flag, interval, listener.
+                function stop() {
+                    stopped = true;
+                    if (timer) clearInterval(timer);
+                    document.removeEventListener('visibilitychange', onVisibility);
+                }
+
+                // DOM-only success state build — no innerHTML, so the server-supplied
+                // label is structurally XSS-safe.
+                function flipCardToSuccess(label) {
+                    var card = document.querySelector('.cmwp-pairing-card');
+                    if (!card) return;
+                    card.style.transition = 'border-color 0.4s ease, box-shadow 0.4s ease';
+                    card.style.borderLeftColor = '#16a085';
+                    card.style.boxShadow = '0 10px 30px rgba(22, 160, 133, 0.20)';
+                    while (card.firstChild) card.removeChild(card.firstChild);
+
+                    var wrap = document.createElement('div');
+                    wrap.style.cssText = 'text-align: center; padding: 30px;';
+
+                    var emoji = document.createElement('div');
+                    emoji.style.cssText = 'font-size: 48px; line-height: 1;';
+                    emoji.textContent = '🎉';
+
+                    var title = document.createElement('h3');
+                    title.style.cssText = 'color: #16a085; margin: 14px 0 6px 0; font-size: 22px;';
+                    title.textContent = 'Pairing successful!';
+
+                    var msg = document.createElement('p');
+                    msg.style.cssText = 'color: #34495e; font-size: 14px; margin: 0;';
+                    msg.textContent = label
+                        ? 'Connected: ' + label + ' — refreshing in a moment…'
+                        : 'Refreshing in a moment…';
+
+                    wrap.append(emoji, title, msg);
+                    card.append(wrap);
+                }
+
+                async function poll() {
+                    if (stopped) return;
+                    try {
+                        var params = new URLSearchParams({ action: 'connectmwp_pairing_status', _wpnonce: nonce });
+                        var res = await fetch(ajaxUrl + '?' + params.toString(), { credentials: 'same-origin', cache: 'no-store' });
+                        if (!res.ok) { noteFailureAndMaybeStop(); return; }
+                        var data = await res.json();
+                        failCount = 0; // a clean round resets the failure streak (T062)
+                        var claimed = (data.total_keys > initialTotal) || (data.latest_key_id && data.latest_key_id !== initialLatest);
+                        if (claimed) {
+                            stop();
+                            flipCardToSuccess(data.latest_label);
+                            setTimeout(function() { window.location.reload(); }, 1500);
+                            return;
+                        }
+                        if (!data.code_active) {
+                            stop();
+                        }
+                    } catch (e) { noteFailureAndMaybeStop(); }
+                }
+
+                poll();
+                timer = setInterval(poll, 3000);
+                document.addEventListener('visibilitychange', onVisibility);
+            })();
+
+            // OAuth-connection revoke, delegated on the merged table. (API-token
+            // revoke + generate live in the API-token section below, which also
+            // targets this table. Device keys revoke via POST form -> page reload.)
+            (function() {
+                var ajaxUrl = CFG.ajaxUrl;
+                var nonce = CFG.nonces.oauth;
+                var tableBody = document.querySelector('#cmwp-conns-table tbody');
+                var wrap = document.getElementById('cmwp-conns-wrap');
+                var emptyMsg = document.getElementById('cmwp-conns-empty');
+                if (!tableBody) return;
+                tableBody.addEventListener('click', async function(e) {
+                    var btn = e.target.closest('.cmwp-oauth-revoke');
+                    if (!btn) return;
+                    var family = btn.getAttribute('data-family');
+                    var app = btn.getAttribute('data-app') || 'this app';
+                    if (!window.confirm('Disconnect "' + app + '"? It will immediately lose access to this site. This cannot be undone.')) return;
+                    btn.disabled = true;
+                    btn.textContent = 'Revoking…';
+                    try {
+                        var body = new URLSearchParams({ action: 'connectmwp_oauth_revoke', _wpnonce: nonce, family: family });
+                        var res = await fetch(ajaxUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() });
+                        var data = await res.json();
+                        if (!res.ok || !data || !data.success) {
+                            window.alert((data && data.data && data.data.message) ? data.data.message : 'Could not revoke connection.');
+                            btn.disabled = false; btn.textContent = 'Revoke'; return;
+                        }
+                        var row = tableBody.querySelector('tr[data-family-row="' + (window.CSS && CSS.escape ? CSS.escape(family) : family) + '"]');
+                        if (row) row.remove();
+                        if (tableBody.querySelectorAll('tr').length === 0) {
+                            if (wrap) wrap.style.display = 'none';
+                            if (emptyMsg) emptyMsg.style.display = '';
+                        }
+                    } catch (err) {
+                        window.alert('Could not revoke connection.');
+                        btn.disabled = false; btn.textContent = 'Revoke';
+                    }
+                });
+            })();
+
+            // API-token card: generate, path-token toggle, revoke (delegated on
+            // the merged connections table).
+            (function() {
+                var ajaxUrl = CFG.ajaxUrl;
+                var nonce = CFG.nonces.cgpt;
+                var maxTokens = parseInt(CFG.maxTokens, 10) || 0;
+
+                var genBtn   = document.getElementById('cmwp-cgpt-generate');
+                var userSel  = document.getElementById('cmwp-cgpt-user');
+                var labelInp = document.getElementById('cmwp-cgpt-label');
+                var reveal   = document.getElementById('cmwp-cgpt-reveal');
+                var tokenTa  = document.getElementById('cmwp-cgpt-token');
+                var urlTa    = document.getElementById('cmwp-cgpt-url');
+                var urlPathTa= document.getElementById('cmwp-cgpt-url-path');
+                var urlPathBlock = document.getElementById('cmwp-cgpt-url-path-block');
+                var pathToggle = document.getElementById('cmwp-cgpt-path-toggle');
+                // Token rows render in the shared "Your connections" table below.
+                var tableWrap= document.getElementById('cmwp-conns-wrap');
+                var tableBody= document.querySelector('#cmwp-conns-table tbody');
+                var emptyMsg = document.getElementById('cmwp-conns-empty');
+
+                if (genBtn) {
+                    genBtn.addEventListener('click', async function() {
+                        genBtn.disabled = true;
+                        var original = genBtn.textContent;
+                        genBtn.textContent = 'Generating…';
+                        try {
+                            var body = new URLSearchParams({
+                                action: 'connectmwp_cgpt_generate',
+                                _wpnonce: nonce,
+                                bound_user_id: userSel ? userSel.value : '',
+                                label: labelInp ? labelInp.value : ''
+                            });
+                            var res = await fetch(ajaxUrl, {
+                                method: 'POST',
+                                credentials: 'same-origin',
+                                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                body: body.toString()
+                            });
+                            var data = await res.json();
+                            if (!res.ok || !data || !data.success) {
+                                var msg = (data && data.data && data.data.message) ? data.data.message : 'Could not generate token, please try again.';
+                                window.alert(msg);
+                                genBtn.disabled = false;
+                                genBtn.textContent = original;
+                                return;
+                            }
+                            var d = data.data;
+                            tokenTa.value   = d.token;
+                            urlTa.value     = d.connector_url;
+                            // The path-token URL is only present when the fallback is
+                            // enabled; otherwise leave the (hidden) field blank.
+                            if (urlPathTa) urlPathTa.value = d.connector_url_path || '';
+                            reveal.style.display = 'block';
+                            reveal.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                            // Insert the new token row at the top of the table (DOM-built,
+                            // no innerHTML, so server-supplied strings are XSS-safe).
+                            addRow({
+                                token_id: d.token_id,
+                                label: d.label || 'ChatGPT',
+                                user_display: d.user_display,
+                                user_login: d.user_login,
+                                created: d.created || '—',
+                                last_used: 'never',
+                                last_ip: '—'
+                            });
+                            genBtn.textContent = original;
+                            if (labelInp) labelInp.value = '';
+                            refreshCapState();
+                        } catch (e) {
+                            window.alert('Could not generate token, please try again.');
+                            genBtn.disabled = false;
+                            genBtn.textContent = original;
+                        }
+                    });
+                }
+
+                // URL-embedded fallback opt-in toggle. Persists the boolean via the
+                // manage_options + nonce-gated ajax action, then reveals/hides the
+                // path-token URL block. On failure, revert the checkbox to its prior
+                // state so the UI never claims a setting that didn't persist.
+                if (pathToggle) {
+                    pathToggle.addEventListener('change', async function() {
+                        var desired = pathToggle.checked;
+                        pathToggle.disabled = true;
+                        try {
+                            var body = new URLSearchParams({
+                                action: 'connectmwp_cgpt_set_path_token',
+                                _wpnonce: nonce,
+                                enabled: desired ? '1' : '0'
+                            });
+                            var res = await fetch(ajaxUrl, {
+                                method: 'POST',
+                                credentials: 'same-origin',
+                                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                body: body.toString()
+                            });
+                            var data = await res.json();
+                            if (!res.ok || !data || !data.success) {
+                                var msg = (data && data.data && data.data.message) ? data.data.message : 'Could not update this setting.';
+                                window.alert(msg);
+                                pathToggle.checked = !desired;
+                            } else {
+                                var on = !!(data.data && data.data.enabled);
+                                pathToggle.checked = on;
+                                if (urlPathBlock) urlPathBlock.style.display = on ? '' : 'none';
+                            }
+                        } catch (e) {
+                            window.alert('Could not update this setting.');
+                            pathToggle.checked = !desired;
+                        } finally {
+                            pathToggle.disabled = false;
+                        }
+                    });
+                }
+
+                function cell(text, mutedSuffix) {
+                    var td = document.createElement('td');
+                    td.appendChild(document.createTextNode(text == null ? '' : String(text)));
+                    if (mutedSuffix) {
+                        var span = document.createElement('span');
+                        span.style.color = '#abb2b9';
+                        span.appendChild(document.createTextNode(' (' + mutedSuffix + ')'));
+                        td.appendChild(span);
+                    }
+                    return td;
+                }
+
+                // Build a row in the MERGED-table format (Type pill + who + meta +
+                // status + revoke), matching the server-rendered token rows.
+                function addRow(r) {
+                    if (!tableBody) return;
+                    var label = r.label || 'API token';
+                    var tr = document.createElement('tr');
+                    tr.setAttribute('data-token-row', r.token_id);
+
+                    var tyTd = document.createElement('td');
+                    var ty = document.createElement('span');
+                    ty.className = 'cmwp-ty cmwp-ty-tok';
+                    ty.textContent = '🔑 API token';
+                    tyTd.appendChild(ty);
+                    tr.appendChild(tyTd);
+
+                    var whoTd = document.createElement('td');
+                    whoTd.className = 'cmwp-conn-who';
+                    whoTd.appendChild(document.createTextNode(label));
+                    tr.appendChild(whoTd);
+
+                    tr.appendChild(cell(r.user_display, r.user_login || null));
+                    tr.appendChild(cell(r.created));
+                    tr.appendChild(cell(r.last_used));
+
+                    var stTd = document.createElement('td');
+                    var st = document.createElement('span');
+                    st.className = 'cmwp-stat';
+                    var dot = document.createElement('span');
+                    dot.className = 'cmwp-stat-dot';
+                    st.appendChild(dot);
+                    st.appendChild(document.createTextNode('Active'));
+                    stTd.appendChild(st);
+                    tr.appendChild(stTd);
+
+                    var actionTd = document.createElement('td');
+                    var btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'cmwp-btn-revoke cmwp-cgpt-revoke';
+                    btn.setAttribute('data-token-id', r.token_id);
+                    btn.setAttribute('data-label', label);
+                    btn.textContent = 'Revoke';
+                    actionTd.appendChild(btn);
+                    tr.appendChild(actionTd);
+
+                    tableBody.insertBefore(tr, tableBody.firstChild);
+                    if (tableWrap) tableWrap.style.display = '';
+                    if (emptyMsg) emptyMsg.style.display = 'none';
+                }
+
+                function refreshCapState() {
+                    var count = tableBody ? tableBody.querySelectorAll('tr[data-token-row]').length : 0;
+                    if (genBtn) genBtn.disabled = count >= maxTokens;
+                }
+
+                // Delegated revoke handler (covers both server-rendered and JS-added rows).
+                if (tableBody) {
+                    tableBody.addEventListener('click', async function(e) {
+                        var btn = e.target.closest('.cmwp-cgpt-revoke');
+                        if (!btn) return;
+                        var tokenId = btn.getAttribute('data-token-id');
+                        var label = btn.getAttribute('data-label') || 'this token';
+                        if (!window.confirm('Revoke "' + label + '"? That client will immediately lose access. This cannot be undone.')) return;
+                        btn.disabled = true;
+                        btn.textContent = 'Revoking…';
+                        try {
+                            var body = new URLSearchParams({
+                                action: 'connectmwp_cgpt_revoke',
+                                _wpnonce: nonce,
+                                token_id: tokenId
+                            });
+                            var res = await fetch(ajaxUrl, {
+                                method: 'POST',
+                                credentials: 'same-origin',
+                                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                body: body.toString()
+                            });
+                            var data = await res.json();
+                            if (!res.ok || !data || !data.success) {
+                                var msg = (data && data.data && data.data.message) ? data.data.message : 'Could not revoke token.';
+                                window.alert(msg);
+                                btn.disabled = false;
+                                btn.textContent = 'Revoke';
+                                return;
+                            }
+                            var row = tableBody.querySelector('tr[data-token-row="' + (window.CSS && CSS.escape ? CSS.escape(tokenId) : tokenId) + '"]');
+                            if (row) row.remove();
+                            if (tableBody.querySelectorAll('tr').length === 0) {
+                                if (tableWrap) tableWrap.style.display = 'none';
+                                if (emptyMsg) emptyMsg.style.display = '';
+                            }
+                            refreshCapState();
+                        } catch (err) {
+                            window.alert('Could not revoke token.');
+                            btn.disabled = false;
+                            btn.textContent = 'Revoke';
+                        }
+                    });
+                }
+            })();
+        })();
+JS;
+    }
+
+    /**
+     * Pure status classifier for a paired client (T055). SSOT for the
+     * "is this client just-paired / stale?" business rules so the policy lives in
+     * one testable place instead of inline in the render loop. No I/O, no globals.
+     *
+     * @param int|false   $created_ts    Unix ts of pairing, or false if unparsable.
+     * @param int|false   $last_used_ts  Unix ts of last use, or false.
+     * @param string      $last_used_raw Raw last_used string ('' / 'never' => unused).
+     * @param int         $now           Current Unix ts.
+     * @return array{is_just_paired:bool,is_stale:bool}
+     */
+    private function classify_key_status($created_ts, $last_used_ts, $last_used_raw, $now) {
+        $age_created   = $created_ts   ? ($now - $created_ts)   : 0;
+        $age_last_used = $last_used_ts ? ($now - $last_used_ts) : null;
+        $never_used    = empty($last_used_raw);
+
+        $is_just_paired = (bool) ($created_ts && $age_created < self::JUST_PAIRED_SECONDS);
+        $is_stale = ($never_used && $age_created > self::STALE_UNUSED_SECONDS) ||
+                    ($age_last_used !== null && $age_last_used > self::STALE_LAST_USED_SECONDS);
+
+        return [
+            'is_just_paired' => $is_just_paired,
+            'is_stale'       => (bool) $is_stale,
+        ];
+    }
+
+    public function render_settings_page() {
+        if (!current_user_can('manage_options')) {
+            wp_die(esc_html__('You do not have sufficient privileges to access this page.', 'connectmwp'));
         }
-        </script>
+
+        // POST actions (revoke / generate pairing / proxy setting) were already
+        // processed by handle_settings_actions() on load-{page} — before asset
+        // enqueueing — so this render only outputs their queued notices.
+        foreach ($this->settings_notices as $notice) {
+            echo '<div class="notice notice-success is-dismissible"><p>' . esc_html($notice) . '</p></div>';
+        }
+
+        // Retrieve active pairing code if it exists and hasn't expired
+        $enrollment_string = '';
+        $stored = get_option('connectmwp_enrollment_code');
+        if (is_array($stored) && !empty($stored['code']) && time() <= intval($stored['expires'])) {
+            $enrollment_string = esc_url(home_url()) . ',' . $stored['code'];
+        }
+
+        // Source keys via the DAL (T039 SSOT) and resolve bound users with a
+        // single batched query instead of one get_userdata() per key (T043 N+1
+        // fix). `fields` is intentionally omitted so each WP_User exposes
+        // ->roles directly (WP batches the role meta load) — keeping the table
+        // output byte-identical while collapsing N user lookups into ONE query.
+        $all_keys = $this->list_keys();
+        $user_ids = array_values(array_unique(array_filter(array_map(function ($k) {
+            return intval($k['bound_user_id']);
+        }, $all_keys))));
+        $user_map = [];
+        if (!empty($user_ids)) {
+            foreach (get_users(['include' => $user_ids]) as $u) {
+                $user_map[intval($u->ID)] = $u;
+            }
+        }
+
+        $all_keys_with_users = [];
+        foreach ($all_keys as $key_id => $key_data) {
+            $user_info = $user_map[intval($key_data['bound_user_id'])] ?? null;
+            $key_data['user_login']   = $user_info ? $user_info->user_login : 'Unknown User';
+            $key_data['user_display'] = $user_info ? ($user_info->display_name ?: $user_info->user_login) : 'Unknown User';
+            $key_data['user_roles']   = $user_info && is_array($user_info->roles) ? array_values($user_info->roles) : [];
+            $key_data['key_id']       = $key_id;
+            $all_keys_with_users[]    = $key_data;
+        }
+
+        // Newest first — so the most recent pairing is immediately visible and
+        // can be flagged in the table.
+        usort($all_keys_with_users, function($a, $b) {
+            return strcmp($b['created'] ?? '', $a['created'] ?? '');
+        });
+
+        // Per-key enrichment: parse `created` and `last_used` (which come from
+        // `current_time('mysql')` and carry NO timezone marker) with wp_timezone()
+        // so the resulting Unix timestamps are correct regardless of how the
+        // WP-configured timezone relates to the PHP-server timezone. Then derive
+        // formatted display strings, a "just paired" flag (< 1 hour old, drives
+        // the JUST PAIRED badge + the What now? panel), and a "stale" flag
+        // (never used + > 7d old, OR last used > 30d ago — drives the grey dot).
+        $now = time();
+        foreach ($all_keys_with_users as &$k) {
+            $k['display_created']    = $k['created']   ?? '';
+            $k['display_last_used']  = !empty($k['last_used']) ? $k['last_used'] : 'never';
+            $k['created_ts']         = false;
+            $k['last_used_ts']       = false;
+            if (function_exists('wp_timezone')) {
+                $tz = wp_timezone();
+                if (!empty($k['created'])) {
+                    $dt = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $k['created'], $tz);
+                    if ($dt instanceof DateTimeImmutable) {
+                        $k['created_ts']      = $dt->getTimestamp();
+                        $k['display_created'] = $dt->format('Y-m-d H:i');
+                    }
+                }
+                if (!empty($k['last_used'])) {
+                    $dt = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $k['last_used'], $tz);
+                    if ($dt instanceof DateTimeImmutable) {
+                        $k['last_used_ts']      = $dt->getTimestamp();
+                        $k['display_last_used'] = $dt->format('Y-m-d H:i');
+                    }
+                }
+            }
+            $status = $this->classify_key_status($k['created_ts'], $k['last_used_ts'], $k['last_used'], $now);
+            $k['is_just_paired'] = $status['is_just_paired'];
+            $k['is_stale']       = $status['is_stale'];
+        }
+        unset($k);
+
+        $most_recent   = !empty($all_keys_with_users) ? $all_keys_with_users[0] : null;
+        $show_what_now = $most_recent && !empty($most_recent['is_just_paired']);
+
+        // Three render states drive layout choice. mid-pair takes precedence
+        // because the pairing card needs to lead during the 10-min window.
+        if ($enrollment_string) {
+            $page_state = 'mid-pair';
+        } elseif (empty($all_keys_with_users)) {
+            $page_state = 'zero';
+        } else {
+            $page_state = 'paired';
+        }
+
+        ?>
         <div class="wrap cmwp-wrap">
 
             <header class="cmwp-hero">
@@ -6232,10 +6831,9 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
             <div class="cmwp-panel active" data-client-panel="device" role="tabpanel">
 
             <?php if ($page_state === 'mid-pair'):
+                // Countdown seconds + completion-poll snapshot travel to the JS
+                // via the enqueued config (settings_page_js_config()), not inline.
                 $npx_cmd = 'npx -y connectmwp-mcp add-site --enroll "' . $enrollment_string . '"';
-                $stored  = get_option('connectmwp_enrollment_code');
-                $remaining = is_array($stored) && isset($stored['expires']) ? intval($stored['expires']) - time() : 600;
-                $remaining = max(0, $remaining);
                 ?>
                 <section class="cmwp-pairing-card">
                     <div class="cmwp-pc-head">
@@ -6254,130 +6852,9 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
                     </div>
                     <div class="cmwp-pc-cmd">
                         <textarea readonly class="cmwp-pc-textarea" id="cmwp-enroll-cmd"><?php echo esc_textarea($npx_cmd); ?></textarea>
-                        <button type="button" class="cmwp-btn-copy" onclick="navigator.clipboard.writeText(document.getElementById('cmwp-enroll-cmd').value).then(() => showConnectMWPToast(this, 'Command copied!')).catch(() => showConnectMWPToast(this, 'Copy failed — select &amp; ⌘C'))">Copy</button>
+                        <button type="button" class="cmwp-btn-copy" data-cmwp-copy="cmwp-enroll-cmd" data-cmwp-copied="Command copied!">Copy</button>
                     </div>
 
-                    <script>
-                    (function() {
-                        let secondsLeft = <?php echo intval($remaining); ?>;
-                        const display = document.getElementById('connectmwp-countdown');
-                        if (!display) return;
-                        function updateTimer() {
-                            if (secondsLeft <= 0) {
-                                display.textContent = "Expired";
-                                display.style.color = "#c0392b";
-                                display.style.fontWeight = "700";
-                                setTimeout(() => window.location.reload(), 1500);
-                                return;
-                            }
-                            const m = Math.floor(secondsLeft / 60);
-                            const s = secondsLeft % 60;
-                            display.textContent = `${m}:${s < 10 ? '0' : ''}${s}`;
-                            secondsLeft--;
-                            setTimeout(updateTimer, 1000);
-                        }
-                        updateTimer();
-                    })();
-                    </script>
-
-                    <script>
-                    // Live pairing-completion poll (v2.0.16+): admin-ajax-backed, nonced,
-                    // capability-gated. On a new key landing, flip the card to a success
-                    // state and reload so the user sees the full new layout without manual
-                    // refresh. Polls every 3s AND on visibilitychange (terminal handoff).
-                    (function() {
-                        const ajaxUrl = '<?php echo esc_js(admin_url('admin-ajax.php')); ?>';
-                        const nonce = '<?php echo esc_js(wp_create_nonce('connectmwp_pairing_status')); ?>';
-                        const initialTotal = <?php echo intval(count($all_keys_with_users)); ?>;
-                        const initialLatest = <?php echo $most_recent ? "'" . esc_js($most_recent['key_id']) . "'" : 'null'; ?>;
-                        let stopped = false;
-                        let timer = null;
-                        let failCount = 0; // consecutive poll failures (T062)
-
-                        // After repeated poll failures (expired nonce, 5xx, network),
-                        // stop the loop and TELL the admin instead of failing silent.
-                        function noteFailureAndMaybeStop() {
-                            failCount++;
-                            if (failCount < 3) return;
-                            stop();
-                            const card = document.querySelector('.cmwp-pairing-card');
-                            if (!card || document.getElementById('cmwp-poll-stalled')) return;
-                            const note = document.createElement('p');
-                            note.id = 'cmwp-poll-stalled';
-                            note.style.cssText = 'margin: 12px 0 0; font-size: 12.5px; color: #b9770e;';
-                            note.textContent = '⚠ Auto-refresh paused (could not reach the server). Reload this page after pairing to see the new client.';
-                            card.appendChild(note);
-                        }
-
-                        // Named so the SAME reference can be detached in stop().
-                        const onVisibility = function() {
-                            if (document.visibilityState === 'visible' && !stopped) poll();
-                        };
-
-                        // Single teardown chokepoint (SSOT): flag, interval, listener.
-                        function stop() {
-                            stopped = true;
-                            if (timer) clearInterval(timer);
-                            document.removeEventListener('visibilitychange', onVisibility);
-                        }
-
-                        // DOM-only success state build — no innerHTML, so the server-supplied
-                        // label is structurally XSS-safe.
-                        function flipCardToSuccess(label) {
-                            const card = document.querySelector('.cmwp-pairing-card');
-                            if (!card) return;
-                            card.style.transition = 'border-color 0.4s ease, box-shadow 0.4s ease';
-                            card.style.borderLeftColor = '#16a085';
-                            card.style.boxShadow = '0 10px 30px rgba(22, 160, 133, 0.20)';
-                            while (card.firstChild) card.removeChild(card.firstChild);
-
-                            const wrap = document.createElement('div');
-                            wrap.style.cssText = 'text-align: center; padding: 30px;';
-
-                            const emoji = document.createElement('div');
-                            emoji.style.cssText = 'font-size: 48px; line-height: 1;';
-                            emoji.textContent = '🎉';
-
-                            const title = document.createElement('h3');
-                            title.style.cssText = 'color: #16a085; margin: 14px 0 6px 0; font-size: 22px;';
-                            title.textContent = 'Pairing successful!';
-
-                            const msg = document.createElement('p');
-                            msg.style.cssText = 'color: #34495e; font-size: 14px; margin: 0;';
-                            msg.textContent = label
-                                ? 'Connected: ' + label + ' — refreshing in a moment…'
-                                : 'Refreshing in a moment…';
-
-                            wrap.append(emoji, title, msg);
-                            card.append(wrap);
-                        }
-
-                        async function poll() {
-                            if (stopped) return;
-                            try {
-                                const params = new URLSearchParams({ action: 'connectmwp_pairing_status', _wpnonce: nonce });
-                                const res = await fetch(ajaxUrl + '?' + params.toString(), { credentials: 'same-origin', cache: 'no-store' });
-                                if (!res.ok) { noteFailureAndMaybeStop(); return; }
-                                const data = await res.json();
-                                failCount = 0; // a clean round resets the failure streak (T062)
-                                const claimed = (data.total_keys > initialTotal) || (data.latest_key_id && data.latest_key_id !== initialLatest);
-                                if (claimed) {
-                                    stop();
-                                    flipCardToSuccess(data.latest_label);
-                                    setTimeout(function() { window.location.reload(); }, 1500);
-                                    return;
-                                }
-                                if (!data.code_active) {
-                                    stop();
-                                }
-                            } catch (e) { noteFailureAndMaybeStop(); }
-                        }
-
-                        poll();
-                        timer = setInterval(poll, 3000);
-                        document.addEventListener('visibilitychange', onVisibility);
-                    })();
-                    </script>
                 </section>
             <?php endif; ?>
 
@@ -6442,7 +6919,7 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
                                         <?php wp_nonce_field('connectmwp_revoke_key'); ?>
                                         <input type="hidden" name="connectmwp_action" value="revoke_key" />
                                         <input type="hidden" name="key_id" value="<?php echo esc_attr($k['key_id']); ?>" />
-                                        <button type="submit" class="cmwp-btn-revoke" onclick="return confirm('Revoke access for &quot;<?php echo esc_js($k['label']); ?>&quot;? This cannot be undone.');">Revoke access</button>
+                                        <button type="submit" class="cmwp-btn-revoke" data-cmwp-confirm="<?php echo esc_attr(sprintf('Revoke access for "%s"? This cannot be undone.', $k['label'])); ?>">Revoke access</button>
                                     </form>
                                 </div>
                                 <div class="cmwp-client-meta">
@@ -6483,49 +6960,6 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
                 <?php $this->render_cgpt_card(); ?>
             </div>
 
-            <script>
-            // Click-to-copy on key_id chips (device-tab client list).
-            (function() {
-                document.querySelectorAll('.cmwp-copy').forEach(function(el) {
-                    el.addEventListener('click', function() {
-                        var text = el.dataset.copy || el.textContent;
-                        // T056: never claim success if the clipboard write rejects.
-                        navigator.clipboard.writeText(text).then(function() {
-                            showConnectMWPToast(el, 'Key ID copied');
-                        }).catch(function() {
-                            showConnectMWPToast(el, 'Copy failed — select & ⌘C');
-                        });
-                    });
-                });
-            })();
-
-            // Top-level client-family tab switching (device / chatgpt / token).
-            (function() {
-                var tabs = Array.prototype.slice.call(document.querySelectorAll('#cmwp-client-tabs .cmwp-ctab'));
-                var panels = Array.prototype.slice.call(document.querySelectorAll('[data-client-panel]'));
-                function activate(tab) {
-                    var c = tab.dataset.client;
-                    tabs.forEach(function(t) {
-                        var on = (t === tab);
-                        t.classList.toggle('active', on);
-                        t.setAttribute('aria-selected', on ? 'true' : 'false');
-                    });
-                    panels.forEach(function(p) {
-                        p.classList.toggle('active', p.dataset.clientPanel === c);
-                    });
-                }
-                tabs.forEach(function(tab, i) {
-                    tab.addEventListener('click', function() { activate(tab); });
-                    // Arrow-key navigation (WAI-ARIA tabs pattern).
-                    tab.addEventListener('keydown', function(e) {
-                        var next = null;
-                        if (e.key === 'ArrowRight') next = tabs[(i + 1) % tabs.length];
-                        else if (e.key === 'ArrowLeft') next = tabs[(i - 1 + tabs.length) % tabs.length];
-                        if (next) { e.preventDefault(); activate(next); next.focus(); }
-                    });
-                });
-            })();
-            </script>
 
             <?php
                 // Merged "Your connections" — every connection type in ONE table
@@ -6562,7 +6996,7 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
                                             <?php wp_nonce_field('connectmwp_revoke_key'); ?>
                                             <input type="hidden" name="connectmwp_action" value="revoke_key" />
                                             <input type="hidden" name="key_id" value="<?php echo esc_attr($k['key_id']); ?>" />
-                                            <button type="submit" class="cmwp-btn-revoke" onclick="return confirm('Revoke access for &quot;<?php echo esc_js($k['label']); ?>&quot;? This cannot be undone.');">Revoke</button>
+                                            <button type="submit" class="cmwp-btn-revoke" data-cmwp-confirm="<?php echo esc_attr(sprintf('Revoke access for "%s"? This cannot be undone.', $k['label'])); ?>">Revoke</button>
                                         </form>
                                     </td>
                                 </tr>
@@ -6596,46 +7030,6 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
                 <p id="cmwp-conns-empty" class="cmwp-tz-note" style="<?php echo $total_conns === 0 ? '' : 'display:none;'; ?>">No AI clients are connected yet. Use the tabs above to connect one.</p>
             </section>
 
-            <script>
-            // OAuth-connection revoke, delegated on the merged table. (API-token
-            // revoke + generate live in the API-token card's own script, which also
-            // targets this table. Device keys revoke via POST form -> page reload.)
-            (function() {
-                var ajaxUrl = '<?php echo esc_js(admin_url('admin-ajax.php')); ?>';
-                var nonce = '<?php echo esc_js(wp_create_nonce('connectmwp_oauth_manage')); ?>';
-                var tableBody = document.querySelector('#cmwp-conns-table tbody');
-                var wrap = document.getElementById('cmwp-conns-wrap');
-                var emptyMsg = document.getElementById('cmwp-conns-empty');
-                if (!tableBody) return;
-                tableBody.addEventListener('click', async function(e) {
-                    var btn = e.target.closest('.cmwp-oauth-revoke');
-                    if (!btn) return;
-                    var family = btn.getAttribute('data-family');
-                    var app = btn.getAttribute('data-app') || 'this app';
-                    if (!window.confirm('Disconnect "' + app + '"? It will immediately lose access to this site. This cannot be undone.')) return;
-                    btn.disabled = true;
-                    btn.textContent = 'Revoking…';
-                    try {
-                        var body = new URLSearchParams({ action: 'connectmwp_oauth_revoke', _wpnonce: nonce, family: family });
-                        var res = await fetch(ajaxUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() });
-                        var data = await res.json();
-                        if (!res.ok || !data || !data.success) {
-                            window.alert((data && data.data && data.data.message) ? data.data.message : 'Could not revoke connection.');
-                            btn.disabled = false; btn.textContent = 'Revoke'; return;
-                        }
-                        var row = tableBody.querySelector('tr[data-family-row="' + (window.CSS && CSS.escape ? CSS.escape(family) : family) + '"]');
-                        if (row) row.remove();
-                        if (tableBody.querySelectorAll('tr').length === 0) {
-                            if (wrap) wrap.style.display = 'none';
-                            if (emptyMsg) emptyMsg.style.display = '';
-                        }
-                    } catch (err) {
-                        window.alert('Could not revoke connection.');
-                        btn.disabled = false; btn.textContent = 'Revoke';
-                    }
-                });
-            })();
-            </script>
         </div>
         <?php
     }
@@ -6811,7 +7205,7 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
                 <div class="cmwp-cgpt-warn">⚠️ <strong>Copy this token now — you won't be able to see it again.</strong> If you lose it, revoke it and generate a new one.</div>
                 <div class="cmwp-pc-cmd">
                     <textarea readonly class="cmwp-pc-textarea" id="cmwp-cgpt-token"></textarea>
-                    <button type="button" class="cmwp-btn-copy" id="cmwp-cgpt-copy-token">Copy</button>
+                    <button type="button" class="cmwp-btn-copy" data-cmwp-copy="cmwp-cgpt-token">Copy</button>
                 </div>
 
                 <div class="cmwp-pc-instructions">
@@ -6829,7 +7223,7 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
                 <p class="cmwp-cgpt-urllabel">Connector URL <span class="cmwp-cgpt-urltag">recommended</span></p>
                 <div class="cmwp-pc-cmd">
                     <textarea readonly class="cmwp-pc-textarea cmwp-cgpt-url" id="cmwp-cgpt-url"></textarea>
-                    <button type="button" class="cmwp-btn-copy" id="cmwp-cgpt-copy-url">Copy</button>
+                    <button type="button" class="cmwp-btn-copy" data-cmwp-copy="cmwp-cgpt-url">Copy</button>
                 </div>
                 <!-- Path-token (URL-embedded) fallback URL — only revealed when the
                      admin has opted in via the toggle below. Hidden by default. -->
@@ -6837,7 +7231,7 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
                     <p class="cmwp-cgpt-urllabel">If your host strips Authorization headers, use this URL instead <span class="cmwp-cgpt-urltag fallback">fallback</span></p>
                     <div class="cmwp-pc-cmd">
                         <textarea readonly class="cmwp-pc-textarea cmwp-cgpt-url" id="cmwp-cgpt-url-path"></textarea>
-                        <button type="button" class="cmwp-btn-copy" id="cmwp-cgpt-copy-url-path">Copy</button>
+                        <button type="button" class="cmwp-btn-copy" data-cmwp-copy="cmwp-cgpt-url-path">Copy</button>
                     </div>
                 </div>
             </div>
@@ -6854,263 +7248,6 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
             <p class="cmwp-tz-note" style="margin-top:14px;">Your active API tokens are listed in <strong>Your connections</strong> below, where you can revoke any of them.</p>
         </section>
 
-        <style>
-            .cmwp-cgpt-gen { display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap; margin-top: 4px; }
-            .cmwp-cgpt-field { display: flex; flex-direction: column; gap: 4px; }
-            .cmwp-cgpt-flabel { font-size: 12px; font-weight: 600; color: #7f8c8d; }
-            .cmwp-cgpt-field select, .cmwp-cgpt-field input[type=text] { min-width: 220px; padding: 7px 10px; border: 1px solid #dbe5ed; border-radius: 6px; font-size: 13px; color: #2c3e50; background: #fff; }
-            .cmwp-cgpt-reveal { margin-top: 16px; background: #fafbfc; border: 1px solid #eef2f4; border-left: 4px solid #16a085; border-radius: 8px; padding: 16px 18px; }
-            .cmwp-cgpt-warn { font-size: 13px; color: #b9770e; background: #fef3e0; border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; line-height: 1.5; }
-            .cmwp-wrap textarea.cmwp-cgpt-url { height: 44px; font-size: 11.5px; }
-            .cmwp-cgpt-urllabel { font-size: 12.5px; font-weight: 600; color: #34495e; margin: 12px 0 4px; }
-            .cmwp-cgpt-urltag { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #16a085; background: #d8f1ea; padding: 2px 7px; border-radius: 999px; }
-            .cmwp-cgpt-urltag.fallback { color: #7f8c8d; background: #ecf0f1; }
-            .cmwp-cgpt-pathtoggle { margin-top: 16px; padding: 12px 14px; background: #fdf6ec; border: 1px solid #f3e2c7; border-radius: 8px; }
-            .cmwp-cgpt-pathtoggle-row { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; font-weight: 600; color: #34495e; cursor: pointer; }
-            .cmwp-cgpt-pathtoggle-row input[type=checkbox] { margin-top: 2px; }
-            .cmwp-cgpt-pathwarn { margin: 8px 0 0; font-size: 12.5px; line-height: 1.5; color: #b9770e; }
-        </style>
-
-        <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            const ajaxUrl = '<?php echo esc_js(admin_url('admin-ajax.php')); ?>';
-            const nonce = '<?php echo esc_js(wp_create_nonce('connectmwp_cgpt')); ?>';
-            const maxTokens = <?php echo intval(self::MAX_CGPT_TOKENS_PER_SITE); ?>;
-
-            const genBtn   = document.getElementById('cmwp-cgpt-generate');
-            const userSel  = document.getElementById('cmwp-cgpt-user');
-            const labelInp = document.getElementById('cmwp-cgpt-label');
-            const reveal   = document.getElementById('cmwp-cgpt-reveal');
-            const tokenTa  = document.getElementById('cmwp-cgpt-token');
-            const urlTa    = document.getElementById('cmwp-cgpt-url');
-            const urlPathTa= document.getElementById('cmwp-cgpt-url-path');
-            const urlPathBlock = document.getElementById('cmwp-cgpt-url-path-block');
-            const pathToggle = document.getElementById('cmwp-cgpt-path-toggle');
-            // Token rows render in the shared "Your connections" table below.
-            const tableWrap= document.getElementById('cmwp-conns-wrap');
-            const tableBody= document.querySelector('#cmwp-conns-table tbody');
-            const emptyMsg = document.getElementById('cmwp-conns-empty');
-
-            function wireCopy(btnId, srcEl) {
-                const btn = document.getElementById(btnId);
-                if (!btn) return;
-                btn.addEventListener('click', function() {
-                    navigator.clipboard.writeText(srcEl.value)
-                        .then(function() { showConnectMWPToast(btn, 'Copied'); })
-                        .catch(function() { showConnectMWPToast(btn, 'Copy failed — select & ⌘C'); });
-                });
-            }
-            wireCopy('cmwp-cgpt-copy-token', tokenTa);
-            wireCopy('cmwp-cgpt-copy-url', urlTa);
-            wireCopy('cmwp-cgpt-copy-url-path', urlPathTa);
-
-            if (genBtn) {
-                genBtn.addEventListener('click', async function() {
-                    genBtn.disabled = true;
-                    const original = genBtn.textContent;
-                    genBtn.textContent = 'Generating…';
-                    try {
-                        const body = new URLSearchParams({
-                            action: 'connectmwp_cgpt_generate',
-                            _wpnonce: nonce,
-                            bound_user_id: userSel ? userSel.value : '',
-                            label: labelInp ? labelInp.value : ''
-                        });
-                        const res = await fetch(ajaxUrl, {
-                            method: 'POST',
-                            credentials: 'same-origin',
-                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                            body: body.toString()
-                        });
-                        const data = await res.json();
-                        if (!res.ok || !data || !data.success) {
-                            const msg = (data && data.data && data.data.message) ? data.data.message : 'Could not generate token, please try again.';
-                            window.alert(msg);
-                            genBtn.disabled = false;
-                            genBtn.textContent = original;
-                            return;
-                        }
-                        const d = data.data;
-                        tokenTa.value   = d.token;
-                        urlTa.value     = d.connector_url;
-                        // The path-token URL is only present when the fallback is
-                        // enabled; otherwise leave the (hidden) field blank.
-                        if (urlPathTa) urlPathTa.value = d.connector_url_path || '';
-                        reveal.style.display = 'block';
-                        reveal.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                        // Insert the new token row at the top of the table (DOM-built,
-                        // no innerHTML, so server-supplied strings are XSS-safe).
-                        addRow({
-                            token_id: d.token_id,
-                            label: d.label || 'ChatGPT',
-                            user_display: d.user_display,
-                            user_login: d.user_login,
-                            created: d.created || '—',
-                            last_used: 'never',
-                            last_ip: '—'
-                        });
-                        genBtn.textContent = original;
-                        labelInp && (labelInp.value = '');
-                        refreshCapState();
-                    } catch (e) {
-                        window.alert('Could not generate token, please try again.');
-                        genBtn.disabled = false;
-                        genBtn.textContent = original;
-                    }
-                });
-            }
-
-            // URL-embedded fallback opt-in toggle. Persists the boolean via the
-            // manage_options + nonce-gated ajax action, then reveals/hides the
-            // path-token URL block. On failure, revert the checkbox to its prior
-            // state so the UI never claims a setting that didn't persist.
-            if (pathToggle) {
-                pathToggle.addEventListener('change', async function() {
-                    const desired = pathToggle.checked;
-                    pathToggle.disabled = true;
-                    try {
-                        const body = new URLSearchParams({
-                            action: 'connectmwp_cgpt_set_path_token',
-                            _wpnonce: nonce,
-                            enabled: desired ? '1' : '0'
-                        });
-                        const res = await fetch(ajaxUrl, {
-                            method: 'POST',
-                            credentials: 'same-origin',
-                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                            body: body.toString()
-                        });
-                        const data = await res.json();
-                        if (!res.ok || !data || !data.success) {
-                            const msg = (data && data.data && data.data.message) ? data.data.message : 'Could not update this setting.';
-                            window.alert(msg);
-                            pathToggle.checked = !desired;
-                        } else {
-                            const on = !!(data.data && data.data.enabled);
-                            pathToggle.checked = on;
-                            if (urlPathBlock) urlPathBlock.style.display = on ? '' : 'none';
-                        }
-                    } catch (e) {
-                        window.alert('Could not update this setting.');
-                        pathToggle.checked = !desired;
-                    } finally {
-                        pathToggle.disabled = false;
-                    }
-                });
-            }
-
-            function cell(text, mutedSuffix) {
-                const td = document.createElement('td');
-                td.appendChild(document.createTextNode(text == null ? '' : String(text)));
-                if (mutedSuffix) {
-                    const span = document.createElement('span');
-                    span.style.color = '#abb2b9';
-                    span.appendChild(document.createTextNode(' (' + mutedSuffix + ')'));
-                    td.appendChild(span);
-                }
-                return td;
-            }
-
-            // Build a row in the MERGED-table format (Type pill + who + meta +
-            // status + revoke), matching the server-rendered token rows.
-            function addRow(r) {
-                if (!tableBody) return;
-                const label = r.label || 'API token';
-                const tr = document.createElement('tr');
-                tr.setAttribute('data-token-row', r.token_id);
-
-                const tyTd = document.createElement('td');
-                const ty = document.createElement('span');
-                ty.className = 'cmwp-ty cmwp-ty-tok';
-                ty.textContent = '🔑 API token';
-                tyTd.appendChild(ty);
-                tr.appendChild(tyTd);
-
-                const whoTd = document.createElement('td');
-                whoTd.className = 'cmwp-conn-who';
-                whoTd.appendChild(document.createTextNode(label));
-                tr.appendChild(whoTd);
-
-                tr.appendChild(cell(r.user_display, r.user_login || null));
-                tr.appendChild(cell(r.created));
-                tr.appendChild(cell(r.last_used));
-
-                const stTd = document.createElement('td');
-                const st = document.createElement('span');
-                st.className = 'cmwp-stat';
-                const dot = document.createElement('span');
-                dot.className = 'cmwp-stat-dot';
-                st.appendChild(dot);
-                st.appendChild(document.createTextNode('Active'));
-                stTd.appendChild(st);
-                tr.appendChild(stTd);
-
-                const actionTd = document.createElement('td');
-                const btn = document.createElement('button');
-                btn.type = 'button';
-                btn.className = 'cmwp-btn-revoke cmwp-cgpt-revoke';
-                btn.setAttribute('data-token-id', r.token_id);
-                btn.setAttribute('data-label', label);
-                btn.textContent = 'Revoke';
-                actionTd.appendChild(btn);
-                tr.appendChild(actionTd);
-
-                tableBody.insertBefore(tr, tableBody.firstChild);
-                if (tableWrap) tableWrap.style.display = '';
-                if (emptyMsg) emptyMsg.style.display = 'none';
-            }
-
-            function refreshCapState() {
-                const count = tableBody ? tableBody.querySelectorAll('tr[data-token-row]').length : 0;
-                if (genBtn) genBtn.disabled = count >= maxTokens;
-            }
-
-            // Delegated revoke handler (covers both server-rendered and JS-added rows).
-            if (tableBody) {
-                tableBody.addEventListener('click', async function(e) {
-                    const btn = e.target.closest('.cmwp-cgpt-revoke');
-                    if (!btn) return;
-                    const tokenId = btn.getAttribute('data-token-id');
-                    const label = btn.getAttribute('data-label') || 'this token';
-                    if (!window.confirm('Revoke "' + label + '"? That client will immediately lose access. This cannot be undone.')) return;
-                    btn.disabled = true;
-                    btn.textContent = 'Revoking…';
-                    try {
-                        const body = new URLSearchParams({
-                            action: 'connectmwp_cgpt_revoke',
-                            _wpnonce: nonce,
-                            token_id: tokenId
-                        });
-                        const res = await fetch(ajaxUrl, {
-                            method: 'POST',
-                            credentials: 'same-origin',
-                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                            body: body.toString()
-                        });
-                        const data = await res.json();
-                        if (!res.ok || !data || !data.success) {
-                            const msg = (data && data.data && data.data.message) ? data.data.message : 'Could not revoke token.';
-                            window.alert(msg);
-                            btn.disabled = false;
-                            btn.textContent = 'Revoke';
-                            return;
-                        }
-                        const row = tableBody.querySelector('tr[data-token-row="' + (window.CSS && CSS.escape ? CSS.escape(tokenId) : tokenId) + '"]');
-                        if (row) row.remove();
-                        if (tableBody.querySelectorAll('tr').length === 0) {
-                            if (tableWrap) tableWrap.style.display = 'none';
-                            if (emptyMsg) emptyMsg.style.display = '';
-                        }
-                        refreshCapState();
-                    } catch (err) {
-                        window.alert('Could not revoke token.');
-                        btn.disabled = false;
-                        btn.textContent = 'Revoke';
-                    }
-                });
-            }
-        });
-        </script>
         <?php
     }
 
@@ -7148,22 +7285,9 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
             <p class="cmwp-cgpt-urllabel" style="margin-top:14px;">Connector URL</p>
             <div class="cmwp-pc-cmd">
                 <textarea readonly class="cmwp-pc-textarea cmwp-cgpt-url" id="cmwp-oauth-mcp-url"><?php echo esc_textarea($mcp_url); ?></textarea>
-                <button type="button" class="cmwp-btn-copy" id="cmwp-oauth-copy-url">Copy</button>
+                <button type="button" class="cmwp-btn-copy" data-cmwp-copy="cmwp-oauth-mcp-url">Copy</button>
             </div>
 
-            <script>
-            (function() {
-                const btn = document.getElementById('cmwp-oauth-copy-url');
-                const ta  = document.getElementById('cmwp-oauth-mcp-url');
-                if (btn && ta) {
-                    btn.addEventListener('click', function() {
-                        navigator.clipboard.writeText(ta.value)
-                            .then(function() { showConnectMWPToast(btn, 'Copied'); })
-                            .catch(function() { showConnectMWPToast(btn, 'Copy failed — select & ⌘C'); });
-                    });
-                }
-            })();
-            </script>
         </section>
         <?php
     }
