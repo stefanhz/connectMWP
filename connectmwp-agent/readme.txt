@@ -5,7 +5,7 @@ Tags: mcp, rest-api, ai, publishing, automation
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.3.13
+Stable tag: 2.3.14
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -68,6 +68,12 @@ Generate a new pairing code in Settings → connectMWP and re-pair. A failed re-
 Yes. Those tools police login state, and this plugin never establishes one.
 
 == Changelog ==
+
+= 2.3.14 =
+* WordPress.org review round 2: every user-supplied value ($_GET/$_POST/$_REQUEST/$_FILES/$_SERVER) is now unslashed and sanitized at the point of read, with the function appropriate to its type — URL-shaped values use esc_url_raw() so percent-encoding survives, post bodies use wp_kses_post(), identifiers use absint(). All PHPCS sanitization suppressions removed.
+* Credential headers (key id, timestamp, signature, body hash) are now strictly format-validated and rejected when malformed, instead of being passed through.
+* The last two inline <style> blocks (the standalone OAuth consent and error pages) now load through the WordPress enqueue API via src-less handles. The plugin contains no raw <style> or <script> tags.
+* Fixed a latent bug where the non-REST GET path hashed WordPress-slashed query values, disagreeing with the REST path. No change to the canonical signing string — byte-identical signing re-verified.
 
 = 2.3.13 =
 * Display name is now "connectMWP – MCP Connector for WordPress" (slug unchanged) per WordPress.org review feedback.

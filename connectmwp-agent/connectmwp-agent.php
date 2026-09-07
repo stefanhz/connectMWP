@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP – MCP Connector for WordPress
  * Plugin URI: https://connectmwp.com
  * Description: Securely let your own local AI client (Claude, Cursor) publish to this WordPress site over a signed, session-less Ed25519 connection — no login, no central server.
- * Version: 2.3.13
+ * Version: 2.3.14
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Stefan Heinz, 2morrow.ai
@@ -781,29 +781,37 @@ class ConnectMWP_Agent {
      * Returns a fixed-shape array of strings. No secrets are logged.
      */
     private function oauth_collect_authorize_params($request = null) {
-        $get = function ($key) {
-            // Prefer POST (the consent submission echoes every param as a hidden
-            // field) over GET, then unslash. Every value is re-validated downstream.
-            // phpcs:disable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- The OAuth authorize POST is nonce-verified in oauth_authorize_handler() before any state change; these params (state, redirect_uri, code_challenge) MUST be preserved verbatim for PKCE / exact redirect-URI matching and are strictly validated downstream.
+        // Sanitize on read, per field. The three URL-shaped params go through
+        // esc_url_raw() (which preserves percent-encoding, so an exact
+        // redirect_uri / CIMD match still works); the rest are OAuth tokens drawn
+        // from restricted ASCII alphabets, for which sanitize_text_field() is a
+        // no-op on every legitimate value. Anything it would alter was never a
+        // valid OAuth parameter, and the downstream exact-match checks then fail
+        // closed. The authorize POST is separately nonce-verified in
+        // oauth_authorize_handler() before any state change.
+        $get = function ($key, $as_url = false) {
             if (isset($_POST[$key]) && is_scalar($_POST[$key])) {
-                return (string) wp_unslash($_POST[$key]);
+                return $as_url
+                    ? esc_url_raw(wp_unslash($_POST[$key]))
+                    : sanitize_text_field(wp_unslash($_POST[$key]));
             }
             if (isset($_GET[$key]) && is_scalar($_GET[$key])) {
-                return (string) wp_unslash($_GET[$key]);
+                return $as_url
+                    ? esc_url_raw(wp_unslash($_GET[$key]))
+                    : sanitize_text_field(wp_unslash($_GET[$key]));
             }
-            // phpcs:enable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
             return '';
         };
 
         return [
             'response_type'         => trim($get('response_type')),
-            'client_id'             => trim($get('client_id')),
-            'redirect_uri'          => trim($get('redirect_uri')),
+            'client_id'             => trim($get('client_id', true)),
+            'redirect_uri'          => trim($get('redirect_uri', true)),
             'scope'                 => trim($get('scope')),
-            'state'                 => substr($get('state'), 0, 2048), // opaque; preserved verbatim but hard-capped at 2048 chars to bound echo size
+            'state'                 => substr($get('state'), 0, 2048), // opaque client value; hard-capped at 2048 chars to bound echo size
             'code_challenge'        => trim($get('code_challenge')),
             'code_challenge_method' => trim($get('code_challenge_method')),
-            'resource'              => trim($get('resource')),
+            'resource'              => trim($get('resource', true)),
         ];
     }
 
@@ -1333,10 +1341,11 @@ class ConnectMWP_Agent {
             header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action " . $csp_form_action . ";");
             header('X-Content-Type-Options: nosniff');
         }
-        // NOTE (wp.org review): this is a standalone OAuth consent document served
-        // outside the WP page lifecycle (no wp_head/wp_footer runs), so the WP
-        // enqueue API cannot deliver assets here. The strict CSP above allows
-        // only inline styles by design — no scripts at all on this page.
+        // NOTE (wp.org review): standalone OAuth consent document served outside
+        // the WP page lifecycle (no wp_head/wp_footer runs), so the stylesheet is
+        // registered on a src-less handle and printed explicitly via
+        // print_oauth_page_styles() below — the WP asset API, not a raw <style>
+        // tag. The strict CSP above permits styles only; no scripts on this page.
         ?>
 <!doctype html>
 <html lang="en">
@@ -1347,33 +1356,7 @@ class ConnectMWP_Agent {
 <title><?php
 /* translators: %s: the connecting application's display name */
 echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['client_name'])); ?></title>
-<style>
-  :root { color-scheme: light; }
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f0f2f4; color: #1d2327; margin: 0; padding: 2rem 1rem; }
-  .cmwp-oauth-card { max-width: 30rem; margin: 0 auto; background: #fff; border: 1px solid #dbe5ed; border-radius: 12px; box-shadow: 0 6px 28px rgba(20,40,60,.08); padding: 28px 30px; }
-  .cmwp-oauth-card h1 { font-size: 20px; margin: 0 0 4px; }
-  .cmwp-oauth-sub { color: #5a6b78; font-size: 13.5px; margin: 0 0 20px; }
-  .cmwp-oauth-app { display: flex; align-items: center; gap: 10px; background: #f7fafc; border: 1px solid #eef2f4; border-radius: 8px; padding: 12px 14px; margin-bottom: 18px; }
-  .cmwp-oauth-app strong { font-size: 15px; }
-  .cmwp-oauth-rows { margin: 0 0 18px; padding: 0; list-style: none; }
-  .cmwp-oauth-rows li { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid #f1f4f6; font-size: 13.5px; }
-  .cmwp-oauth-rows li:last-child { border-bottom: 0; }
-  .cmwp-oauth-rows .lbl { color: #7f8c8d; }
-  .cmwp-oauth-rows .val { font-weight: 600; text-align: right; word-break: break-word; }
-  .cmwp-oauth-scope { background: #eef9f4; border: 1px solid #cfeee1; border-radius: 8px; padding: 12px 14px; font-size: 13px; color: #1c5c45; margin-bottom: 18px; line-height: 1.5; }
-  .cmwp-oauth-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 20px; }
-  .cmwp-oauth-field span { font-size: 12px; font-weight: 600; color: #7f8c8d; text-transform: uppercase; letter-spacing: .4px; }
-  .cmwp-oauth-field select { padding: 9px 11px; border: 1px solid #dbe5ed; border-radius: 7px; font-size: 14px; background: #fff; color: #2c3e50; }
-  .cmwp-oauth-actions { display: flex; gap: 10px; }
-  .cmwp-oauth-actions button { flex: 1; padding: 11px 14px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: 1px solid transparent; }
-  .cmwp-btn-approve { background: #16a085; color: #fff; }
-  .cmwp-btn-approve:hover { background: #138a72; }
-  .cmwp-btn-deny { background: #fff; color: #444; border-color: #d4dee6; }
-  .cmwp-btn-deny:hover { background: #f6f8fa; }
-  .cmwp-oauth-foot { margin-top: 18px; font-size: 11.5px; color: #93a1ab; line-height: 1.5; text-align: center; }
-  .cmwp-oauth-host { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-</style>
+<?php self::print_oauth_page_styles('connectmwp-oauth-consent', self::oauth_consent_css()); ?>
 </head>
 <body>
   <div class="cmwp-oauth-card">
@@ -1465,9 +1448,10 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
             header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'");
             header('X-Content-Type-Options: nosniff');
         }
-        // NOTE (wp.org review): standalone OAuth error document served outside
-        // the WP page lifecycle (no wp_head/wp_footer), so the WP enqueue API
-        // cannot deliver assets here; CSP restricts it to inline styles only.
+        // NOTE (wp.org review): standalone OAuth error document served outside the
+        // WP page lifecycle (no wp_head/wp_footer), so its stylesheet is registered
+        // on a src-less handle and printed via print_oauth_page_styles() — the WP
+        // asset API, not a raw <style> tag. CSP permits styles only.
         ?>
 <!doctype html>
 <html lang="en">
@@ -1476,12 +1460,7 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <title><?php echo esc_html($title); ?> — connectMWP</title>
-<style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f0f2f4; color: #1d2327; margin: 0; padding: 3rem 1rem; }
-  .cmwp-oauth-err { max-width: 28rem; margin: 0 auto; background: #fff; border: 1px solid #f3d6d6; border-left: 4px solid #d63638; border-radius: 10px; padding: 24px 28px; }
-  .cmwp-oauth-err h1 { font-size: 18px; margin: 0 0 8px; color: #a11; }
-  .cmwp-oauth-err p { font-size: 14px; line-height: 1.6; color: #444; margin: 0; }
-</style>
+<?php self::print_oauth_page_styles('connectmwp-oauth-error', self::oauth_error_css()); ?>
 </head>
 <body>
   <div class="cmwp-oauth-err">
@@ -2118,29 +2097,35 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
             $headers = getallheaders();
             foreach ($headers as $name => $value) {
                 if (strcasecmp($name, 'X-ConnectMWP-Key') === 0) {
-                    $key_id = $value;
+                    $key_id = sanitize_text_field($value);
                 } elseif (strcasecmp($name, 'X-ConnectMWP-Timestamp') === 0) {
-                    $timestamp = $value;
+                    $timestamp = sanitize_text_field($value);
                 } elseif (strcasecmp($name, 'X-ConnectMWP-Signature') === 0) {
-                    $signature_b64 = $value;
+                    $signature_b64 = sanitize_text_field($value);
                 } elseif (strcasecmp($name, 'X-ConnectMWP-Nonce') === 0) {
-                    $nonce = $value;
+                    $nonce = sanitize_text_field($value);
                 }
             }
         }
 
-        // phpcs:disable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotValidated -- Session-less machine endpoint: every header/body/query value below is authenticated by a detached Ed25519 signature over the canonical string (step 6) and strictly format-checked (timestamp skew, RFC-4122 nonce regex, key lookup). Values MUST be byte-preserved or the canonical string cannot reconstruct; a WP nonce is structurally impossible (no browser session) and is replaced by signature + cross-request replay cache.
-        if (empty($key_id) && isset($_SERVER['HTTP_X_CONNECTMWP_KEY'])) {
-            $key_id = $_SERVER['HTTP_X_CONNECTMWP_KEY'];
+        // Fallback source for the same four values on SAPIs without
+        // getallheaders(). read_server_value() unslashes and sanitizes; all four
+        // are ASCII token / base64 / hex material, so that call is byte-for-byte
+        // identity on every legitimate value and cannot corrupt the canonical
+        // string. Each is then strictly format-VALIDATED below (charset regex,
+        // digit check, RFC-4122 nonce shape, key lookup) — validation rejects
+        // rather than mutates, which is what keeps the signature reconstructable.
+        if (empty($key_id)) {
+            $key_id = self::read_server_value('HTTP_X_CONNECTMWP_KEY');
         }
-        if (empty($timestamp) && isset($_SERVER['HTTP_X_CONNECTMWP_TIMESTAMP'])) {
-            $timestamp = $_SERVER['HTTP_X_CONNECTMWP_TIMESTAMP'];
+        if (empty($timestamp)) {
+            $timestamp = self::read_server_value('HTTP_X_CONNECTMWP_TIMESTAMP');
         }
-        if (empty($signature_b64) && isset($_SERVER['HTTP_X_CONNECTMWP_SIGNATURE'])) {
-            $signature_b64 = $_SERVER['HTTP_X_CONNECTMWP_SIGNATURE'];
+        if (empty($signature_b64)) {
+            $signature_b64 = self::read_server_value('HTTP_X_CONNECTMWP_SIGNATURE');
         }
-        if (empty($nonce) && isset($_SERVER['HTTP_X_CONNECTMWP_NONCE'])) {
-            $nonce = $_SERVER['HTTP_X_CONNECTMWP_NONCE'];
+        if (empty($nonce)) {
+            $nonce = self::read_server_value('HTTP_X_CONNECTMWP_NONCE');
         }
 
         if (empty($key_id) || empty($timestamp) || empty($signature_b64)) {
@@ -2168,6 +2153,25 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
             return false;
         }
 
+        // Strict format validation of the remaining credential material. These
+        // REJECT malformed input rather than rewriting it, so a value that
+        // survives is byte-identical to what the client signed.
+        if (!preg_match('/^[A-Za-z0-9_\-]{1,128}$/', $key_id)) {
+            $this->verification_error_code = 'connectmwp_unknown_key';
+            $this->signature_verified = false;
+            return false;
+        }
+        if (!ctype_digit((string) $timestamp)) {
+            $this->verification_error_code = 'connectmwp_timestamp_skew';
+            $this->signature_verified = false;
+            return false;
+        }
+        if (!preg_match('#^[A-Za-z0-9+/]+={0,2}$#', $signature_b64)) {
+            $this->verification_error_code = 'connectmwp_malformed_credentials';
+            $this->signature_verified = false;
+            return false;
+        }
+
         // 3. Verify timestamp skew (within ±300s)
         if (abs(time() - intval($timestamp)) > self::TIMESTAMP_SKEW_SECONDS) {
             $this->verification_error_code = 'connectmwp_timestamp_skew';
@@ -2186,31 +2190,42 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
         $pub_key_b64 = $key_config['public_key'];
         $bound_user_id = intval($key_config['bound_user_id']);
 
-        // 5. Rebuild canonical string
-        $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
-        
+        // 5. Rebuild canonical string.
+        // Every superglobal read below is unslashed and sanitized on read. The
+        // URL-shaped values use esc_url_raw(), which preserves percent-encoding,
+        // so an encoded path still reconstructs byte-for-byte; the rest are
+        // method tokens and action slugs on restricted alphabets.
+        $method = strtoupper(self::read_server_value('REQUEST_METHOD', 'GET'));
+
         // Path logic (survive subdirectories and REST routing parameters)
         $request_path = '';
-        if (isset($_REQUEST['action']) && $_REQUEST['action'] === 'connectmwp_api' && isset($_REQUEST['connectmwp_action'])) {
-            $action = sanitize_key($_REQUEST['connectmwp_action']);
-            $request_path = '/connectmwp/v1/' . $action;
+        $req_action     = isset($_REQUEST['action']) ? sanitize_key(wp_unslash($_REQUEST['action'])) : '';
+        $req_cmwp_action = isset($_REQUEST['connectmwp_action']) ? sanitize_key(wp_unslash($_REQUEST['connectmwp_action'])) : '';
+        if ($req_action === 'connectmwp_api' && $req_cmwp_action !== '') {
+            $request_path = '/connectmwp/v1/' . $req_cmwp_action;
         } elseif ($request instanceof WP_REST_Request) {
             $request_path = $request->get_route();
         } else {
-            $request_uri = $_SERVER['REQUEST_URI'] ?? '';
+            $request_uri  = isset($_SERVER['REQUEST_URI']) ? esc_url_raw(wp_unslash($_SERVER['REQUEST_URI'])) : '';
             $request_path = explode('?', $request_uri)[0];
             if (isset($_GET['rest_route'])) {
-                $request_path = explode('?', $_GET['rest_route'])[0];
+                $rest_route   = esc_url_raw(wp_unslash($_GET['rest_route']));
+                $request_path = explode('?', $rest_route)[0];
             }
         }
 
-        // Sort query parameters alphabetically and hash
+        // Sort query parameters alphabetically and hash.
+        // The raw-$_GET branch is the non-REST fallback (the REST branch takes
+        // WP's own already-unslashed query params). Values are sanitized with
+        // sanitize_text_field(), a no-op on the client's actual query params
+        // (limit / offset / fields / search); a value it would alter simply
+        // fails the signature comparison below — fail-closed, never fail-open.
         $query_params = [];
         if ($method === 'GET') {
             if ($request instanceof WP_REST_Request) {
                 $query_params = $request->get_query_params();
             } else {
-                $query_params = $_GET;
+                $query_params = map_deep(wp_unslash($_GET), 'sanitize_text_field');
             }
         }
         unset($query_params['rest_route']);
@@ -2220,14 +2235,16 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
 
         // Body hash (skip hashing multipart/form-data body to avoid boundary mismatches, read from header instead)
         $body_hash = '';
-        $content_type = $_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '';
+        $content_type = self::read_server_value('CONTENT_TYPE');
+        if ($content_type === '') {
+            $content_type = self::read_server_value('HTTP_CONTENT_TYPE');
+        }
         if (stripos($content_type, 'multipart/form-data') !== false) {
-            $body_hash = $_SERVER['HTTP_X_CONNECTMWP_BODY_HASH'] ?? $_SERVER['X_CONNECTMWP_BODY_HASH'] ?? '';
+            $body_hash = self::read_body_hash_header();
         } else {
             $raw_body = file_get_contents('php://input');
             $body_hash = hash('sha256', $raw_body ?? '');
         }
-        // phpcs:enable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotValidated
 
         // Canonical field order MUST match the MCP client's reconstruction in
         // callWordPress / callWordPressAjax (connectmwp-mcp/index.js). The
@@ -2370,22 +2387,23 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
             $headers = getallheaders();
             foreach ($headers as $name => $value) {
                 if (strcasecmp($name, 'Authorization') === 0) {
-                    $authorization = $value;
+                    $authorization = sanitize_text_field($value);
                 } elseif (strcasecmp($name, 'X-ConnectMWP-Token') === 0) {
-                    $custom_token = $value;
+                    $custom_token = sanitize_text_field($value);
                 }
             }
         }
 
         // Non-REST fallback for either header (mirrors verify_request_signature).
-        // phpcs:disable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Bearer / custom token, compared against a stored sha256 hash in verify_token_request() and therefore byte-preserved. The endpoint is authenticated by the token itself, not a nonce.
-        if ($authorization === '' && isset($_SERVER['HTTP_AUTHORIZATION'])) {
-            $authorization = $_SERVER['HTTP_AUTHORIZATION'];
+        // read_server_value() unslashes + sanitizes; a bearer token is
+        // `cmwp_<prefix>_<hex>`, so the sanitize call is an identity on every
+        // real token and the value stays comparable against its stored hash.
+        if ($authorization === '') {
+            $authorization = self::read_server_value('HTTP_AUTHORIZATION');
         }
-        if ($custom_token === '' && isset($_SERVER['HTTP_X_CONNECTMWP_TOKEN'])) {
-            $custom_token = $_SERVER['HTTP_X_CONNECTMWP_TOKEN'];
+        if ($custom_token === '') {
+            $custom_token = self::read_server_value('HTTP_X_CONNECTMWP_TOKEN');
         }
-        // phpcs:enable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash
 
         $token = '';
         if ($authorization !== '') {
@@ -4134,25 +4152,30 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
      * upgrade behavior is unchanged and forged headers can never be trusted.
      */
     private function get_client_ip() {
-        // phpcs:disable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Every candidate is validated by filter_var(FILTER_VALIDATE_IP); forwarded headers are honored ONLY behind an explicitly opted-in trusted proxy (default OFF). This is internal request metadata, not user form input — no nonce applies.
-        $remote = (!empty($_SERVER['REMOTE_ADDR']) && filter_var($_SERVER['REMOTE_ADDR'], FILTER_VALIDATE_IP))
-            ? $_SERVER['REMOTE_ADDR'] : '';
+        // Every candidate is unslashed + sanitized on read (read_server_value)
+        // and then VALIDATED with filter_var(FILTER_VALIDATE_IP) before use, so
+        // only a well-formed IP literal can ever be returned. Forwarded headers
+        // are honored ONLY behind an explicitly opted-in trusted proxy (OFF by
+        // default), because they are attacker-controlled otherwise.
+        $remote_raw = self::read_server_value('REMOTE_ADDR');
+        $remote = filter_var($remote_raw, FILTER_VALIDATE_IP) ? $remote_raw : '';
 
         if ($this->is_behind_trusted_proxy()) {
             // Single trusted proxy: take the LAST hop it appended (the one it
             // can vouch for), not the spoofable leftmost client-supplied value.
-            if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
-                $parts = array_map('trim', explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']));
+            $forwarded_for = self::read_server_value('HTTP_X_FORWARDED_FOR');
+            if ($forwarded_for !== '') {
+                $parts = array_map('trim', explode(',', $forwarded_for));
                 $cand  = end($parts);
                 if (filter_var($cand, FILTER_VALIDATE_IP)) {
                     return $cand;
                 }
             }
-            if (!empty($_SERVER['HTTP_X_REAL_IP']) && filter_var(trim($_SERVER['HTTP_X_REAL_IP']), FILTER_VALIDATE_IP)) {
-                return trim($_SERVER['HTTP_X_REAL_IP']);
+            $real_ip = trim(self::read_server_value('HTTP_X_REAL_IP'));
+            if ($real_ip !== '' && filter_var($real_ip, FILTER_VALIDATE_IP)) {
+                return $real_ip;
             }
         }
-        // phpcs:enable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash
 
         // Default path. The no-REMOTE_ADDR fallback collapses onto a single
         // deterministic 'unknown' bucket — acceptable: REMOTE_ADDR is present on
@@ -5107,27 +5130,31 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
         require_once(ABSPATH . 'wp-admin/includes/file.php');
         require_once(ABSPATH . 'wp-admin/includes/media.php');
 
-        // phpcs:disable WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.InputNotValidated, WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- This REST handler runs only after central_rest_auth → verify_request_signature() (Ed25519); the uploaded bytes are further bound by a sha256 body-hash compared below, and $_FILES is consumed by WordPress's own media pipeline. No nonce: session-less signed endpoint.
-        if (empty($_FILES['file'])) {
+        // This REST handler runs only after central_rest_auth →
+        // verify_request_signature() (Ed25519), and the uploaded bytes are
+        // additionally bound by the sha256 body hash compared below. The upload
+        // metadata is still read defensively: the size is cast with absint() and
+        // the temp path is validated with is_uploaded_file() before it is hashed.
+        $upload_size = isset($_FILES['file']['size']) ? absint(wp_unslash($_FILES['file']['size'])) : 0;
+        $upload_tmp  = isset($_FILES['file']['tmp_name']) ? sanitize_text_field(wp_unslash($_FILES['file']['tmp_name'])) : '';
+
+        if ($upload_tmp === '' || !is_uploaded_file($upload_tmp)) {
             return new WP_REST_Response(['success' => false, 'error' => 'No file uploaded'], 400);
         }
 
-        if (!empty($_FILES['file']['size']) && $_FILES['file']['size'] > self::MEDIA_MAX_BYTES) {
+        if ($upload_size > self::MEDIA_MAX_BYTES) {
             return new WP_REST_Response(['success' => false, 'error' => 'File size exceeds maximum limit of ' . self::MEDIA_MAX_MB . 'MB.'], 400);
         }
 
         // Validate multipart file signature body hash
-        $file_hash = hash_file('sha256', $_FILES['file']['tmp_name']);
-        $expected_hash = $_SERVER['HTTP_X_CONNECTMWP_BODY_HASH'] ?? $_SERVER['X_CONNECTMWP_BODY_HASH'] ?? '';
-        // phpcs:enable WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.InputNotValidated, WordPress.Security.ValidatedSanitizedInput.MissingUnslash
-        if (empty($expected_hash)) {
-            if (function_exists('getallheaders')) {
-                $headers = getallheaders();
-                foreach ($headers as $name => $value) {
-                    if (strcasecmp($name, 'X-ConnectMWP-Body-Hash') === 0) {
-                        $expected_hash = $value;
-                        break;
-                    }
+        $file_hash = hash_file('sha256', $upload_tmp);
+        $expected_hash = self::read_body_hash_header();
+        if ($expected_hash === '' && function_exists('getallheaders')) {
+            $headers = getallheaders();
+            foreach ($headers as $name => $value) {
+                if (strcasecmp($name, 'X-ConnectMWP-Body-Hash') === 0) {
+                    $expected_hash = self::normalize_body_hash(sanitize_text_field($value));
+                    break;
                 }
             }
         }
@@ -5326,8 +5353,12 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
      * Admin-AJAX Handler (Fallback endpoint)
      */
     public function handle_ajax_request() {
-        // phpcs:disable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- The signature is verified at verify_request_signature(null) below before any action runs; per-action params are re-validated inside dispatch_action()/the *_handler callbacks. Session-less signed endpoint, so no WP nonce.
-        $action = isset($_REQUEST['connectmwp_action']) ? sanitize_key($_REQUEST['connectmwp_action']) : '';
+        // Authorization for this endpoint is the Ed25519 signature verified at
+        // verify_request_signature(null) below, before any action runs — a WP
+        // nonce is structurally impossible here (no browser session exists).
+        // Every inbound param is unslashed and sanitized per key by
+        // sanitize_ajax_param() before it is handed to the shared dispatcher.
+        $action = isset($_REQUEST['connectmwp_action']) ? sanitize_key(wp_unslash($_REQUEST['connectmwp_action'])) : '';
         if (empty($action)) {
             wp_send_json_error(['error' => 'Missing action'], 400);
         }
@@ -5341,20 +5372,22 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
             ], 401);
         }
 
-        $request = new WP_REST_Request(isset($_SERVER['REQUEST_METHOD']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_METHOD'])) : 'GET');
-        foreach ($_REQUEST as $k => $v) {
-            if ($k !== 'action' && $k !== 'connectmwp_action') {
-                $request->set_param($k, $v);
+        $request = new WP_REST_Request(self::read_server_value('REQUEST_METHOD', 'GET'));
+        $ajax_params = self::collect_ajax_params();
+        foreach ($ajax_params as $k => $v) {
+            $key = sanitize_key($k);
+            if ($key === '' || $key === 'action' || $key === 'connectmwp_action') {
+                continue;
             }
+            $request->set_param($key, $v);
         }
 
         // Param injection that the dispatcher assumes is already on the request:
         // map the AJAX `post_id` field onto the canonical `id` param the
         // *_handler / check_* callbacks read (preserves the prior switch behavior).
         if (in_array($action, ['get_post', 'update_post', 'delete_post'], true)) {
-            $request->set_param('id', isset($_REQUEST['post_id']) ? intval($_REQUEST['post_id']) : 0);
+            $request->set_param('id', isset($ajax_params['post_id']) ? intval($ajax_params['post_id']) : 0);
         }
-        // phpcs:enable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash
 
         $res = $this->dispatch_action($action, $request);
 
@@ -5904,9 +5937,140 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
         // single read site.
         if ($action === 'set_trust_proxy') {
             check_admin_referer('connectmwp_proxy_setting');
-            update_option('connectmwp_trust_proxy', !empty($_POST['connectmwp_trust_proxy']));
+            $trust_proxy = isset($_POST['connectmwp_trust_proxy'])
+                ? sanitize_text_field(wp_unslash($_POST['connectmwp_trust_proxy']))
+                : '';
+            update_option('connectmwp_trust_proxy', $trust_proxy !== '');
             $this->settings_notices[] = 'Trusted-proxy setting saved.';
         }
+    }
+
+    /**
+     * SSOT reader for a single $_SERVER value: unslash, then sanitize.
+     *
+     * Every value connectMWP reads from $_SERVER is request metadata drawn from
+     * a restricted ASCII alphabet (HTTP method, base64 signature, hex digest,
+     * bearer token, IP literal, content-type), so sanitize_text_field() is a
+     * byte-for-byte identity on all of them — it can only strip a value that was
+     * never valid to begin with, in which case the caller's format validation or
+     * the signature comparison rejects the request. URL-shaped values
+     * (REQUEST_URI, rest_route) deliberately do NOT come through here; they use
+     * esc_url_raw(), which preserves percent-encoding.
+     */
+    private static function read_server_value($key, $default = '') {
+        if (!isset($_SERVER[$key]) || !is_scalar($_SERVER[$key])) {
+            return $default;
+        }
+        $value = sanitize_text_field(wp_unslash($_SERVER[$key]));
+        return $value === '' ? $default : $value;
+    }
+
+    /**
+     * Validate a sha256 hex digest, returning '' for anything malformed. Used
+     * for the X-ConnectMWP-Body-Hash header, which must be a 64-char hex string.
+     */
+    private static function normalize_body_hash($hash) {
+        return preg_match('/^[a-f0-9]{64}$/i', (string) $hash) ? strtolower((string) $hash) : '';
+    }
+
+    /**
+     * Read + validate the multipart body-hash header from $_SERVER (both the
+     * HTTP_-prefixed and bare spellings some SAPIs use).
+     */
+    private static function read_body_hash_header() {
+        $hash = self::read_server_value('HTTP_X_CONNECTMWP_BODY_HASH');
+        if ($hash === '') {
+            $hash = self::read_server_value('X_CONNECTMWP_BODY_HASH');
+        }
+        return self::normalize_body_hash($hash);
+    }
+
+    /**
+     * Collect + sanitize the admin-AJAX fallback params.
+     *
+     * Two passes, because the AJAX path carries the same payloads as the REST
+     * routes and a blanket sanitize_text_field() would strip legitimate post
+     * markup. Pass 1 sanitizes everything as text; pass 2 re-reads the two
+     * markup-bearing fields through wp_kses_post() — exactly the filter
+     * create_post_handler()/update_post_handler() already apply to post_content.
+     *
+     * Authorization for this endpoint is the Ed25519 request signature verified
+     * in handle_ajax_request() before this runs; no browser session and
+     * therefore no WP nonce exists on this path.
+     */
+    private static function collect_ajax_params() {
+        $params = map_deep(wp_unslash($_REQUEST), 'sanitize_text_field');
+
+        foreach (['content', 'excerpt'] as $rich_key) {
+            if (isset($_REQUEST[$rich_key]) && is_scalar($_REQUEST[$rich_key])) {
+                $params[$rich_key] = wp_kses_post(wp_unslash($_REQUEST[$rich_key]));
+            }
+        }
+
+        return $params;
+    }
+
+    /**
+     * Print a standalone OAuth page's stylesheet through the WP asset API
+     * (wp.org requirement: no hand-written <style> tags anywhere in the
+     * plugin). The OAuth consent + error documents are served outside the
+     * normal WP page lifecycle (no wp_head/wp_footer runs), so the assets are
+     * registered on a src-less handle and printed explicitly at this point in
+     * the document head. Same src-less-handle pattern as the settings page,
+     * which keeps the plugin single-file.
+     */
+    private static function print_oauth_page_styles($handle, $css) {
+        wp_register_style($handle, false, [], self::version());
+        wp_enqueue_style($handle);
+        wp_add_inline_style($handle, $css);
+        wp_print_styles($handle);
+    }
+
+    /**
+     * Stylesheet for the OAuth consent screen (attached to the src-less
+     * `connectmwp-oauth-consent` handle via wp_add_inline_style()).
+     */
+    private static function oauth_consent_css() {
+        return <<<'OAUTHCSS'
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f0f2f4; color: #1d2327; margin: 0; padding: 2rem 1rem; }
+  .cmwp-oauth-card { max-width: 30rem; margin: 0 auto; background: #fff; border: 1px solid #dbe5ed; border-radius: 12px; box-shadow: 0 6px 28px rgba(20,40,60,.08); padding: 28px 30px; }
+  .cmwp-oauth-card h1 { font-size: 20px; margin: 0 0 4px; }
+  .cmwp-oauth-sub { color: #5a6b78; font-size: 13.5px; margin: 0 0 20px; }
+  .cmwp-oauth-app { display: flex; align-items: center; gap: 10px; background: #f7fafc; border: 1px solid #eef2f4; border-radius: 8px; padding: 12px 14px; margin-bottom: 18px; }
+  .cmwp-oauth-app strong { font-size: 15px; }
+  .cmwp-oauth-rows { margin: 0 0 18px; padding: 0; list-style: none; }
+  .cmwp-oauth-rows li { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid #f1f4f6; font-size: 13.5px; }
+  .cmwp-oauth-rows li:last-child { border-bottom: 0; }
+  .cmwp-oauth-rows .lbl { color: #7f8c8d; }
+  .cmwp-oauth-rows .val { font-weight: 600; text-align: right; word-break: break-word; }
+  .cmwp-oauth-scope { background: #eef9f4; border: 1px solid #cfeee1; border-radius: 8px; padding: 12px 14px; font-size: 13px; color: #1c5c45; margin-bottom: 18px; line-height: 1.5; }
+  .cmwp-oauth-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 20px; }
+  .cmwp-oauth-field span { font-size: 12px; font-weight: 600; color: #7f8c8d; text-transform: uppercase; letter-spacing: .4px; }
+  .cmwp-oauth-field select { padding: 9px 11px; border: 1px solid #dbe5ed; border-radius: 7px; font-size: 14px; background: #fff; color: #2c3e50; }
+  .cmwp-oauth-actions { display: flex; gap: 10px; }
+  .cmwp-oauth-actions button { flex: 1; padding: 11px 14px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: 1px solid transparent; }
+  .cmwp-btn-approve { background: #16a085; color: #fff; }
+  .cmwp-btn-approve:hover { background: #138a72; }
+  .cmwp-btn-deny { background: #fff; color: #444; border-color: #d4dee6; }
+  .cmwp-btn-deny:hover { background: #f6f8fa; }
+  .cmwp-oauth-foot { margin-top: 18px; font-size: 11.5px; color: #93a1ab; line-height: 1.5; text-align: center; }
+  .cmwp-oauth-host { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+OAUTHCSS;
+    }
+
+    /**
+     * Stylesheet for the OAuth error document (attached to the src-less
+     * `connectmwp-oauth-error` handle via wp_add_inline_style()).
+     */
+    private static function oauth_error_css() {
+        return <<<'OAUTHCSS'
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f0f2f4; color: #1d2327; margin: 0; padding: 3rem 1rem; }
+  .cmwp-oauth-err { max-width: 28rem; margin: 0 auto; background: #fff; border: 1px solid #f3d6d6; border-left: 4px solid #d63638; border-radius: 10px; padding: 24px 28px; }
+  .cmwp-oauth-err h1 { font-size: 18px; margin: 0 0 8px; color: #a11; }
+  .cmwp-oauth-err p { font-size: 14px; line-height: 1.6; color: #444; margin: 0; }
+OAUTHCSS;
     }
 
     /**

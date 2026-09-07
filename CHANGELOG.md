@@ -4,6 +4,31 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2.3.14 — 2026-09-07
+
+**WordPress.org review round 2 (plugin only; lockstep bump across all three components).** Addresses both issues in the wp.org review email of 2026-09-07 (Review ID `R connectmwp/stefhz/7Sep26/T1 7Sep26/4.2`). **That review was run against the zip submitted 2026-06-09 — i.e. 2.3.12 — so it predates the 2.3.13 enqueue refactor;** 9 of its 11 cited inline-asset incidences were already fixed there. This release closes the remaining 2 and rebuilds the sanitization story from scratch. No change to the canonical signing string — `_internal/verify/interop_test.sh` re-verified byte-identical Node⇄PHP signing.
+
+### Changed
+
+- **All PHPCS suppressions for input sanitization are GONE.** The plugin previously carried 5 `phpcs:disable` blocks covering `ValidatedSanitizedInput.*` / `NonceVerification.*` with detailed justifications. Those annotations were present in the reviewed 2.3.12 and the reviewer flagged the annotated lines anyway — **suppression is not accepted as a remedy, and it is what made Plugin Check report "0 errors" on a tree a human reviewer then rejected.** Every one is replaced with real sanitizing code. The count of `ValidatedSanitizedInput`/`NonceVerification` suppressions in the plugin is now **0**.
+- **Every superglobal read is now `wp_unslash()`ed and sanitized inline**, at the point of read, with the function appropriate to the value's type — never a blanket pass:
+  - New SSOT helper `read_server_value()` for `$_SERVER` request metadata (HTTP method, base64 signature, hex digest, bearer token, IP literal, content-type): unslash + `sanitize_text_field()`, which is a byte-for-byte identity on every legitimate value of those alphabets.
+  - URL-shaped values (`REQUEST_URI`, `rest_route`, OAuth `client_id` / `redirect_uri` / `resource`) use `esc_url_raw()` instead, because it **preserves percent-encoding** — `sanitize_text_field()` strips `%xx` sequences and would have broken encoded paths and exact CIMD/redirect-URI matching.
+  - New `collect_ajax_params()` for the admin-AJAX fallback: a text pass over all params, then `wp_kses_post()` re-read of `content` and `excerpt` — the same filter `create_post_handler()`/`update_post_handler()` already apply to `post_content`. A blanket `sanitize_text_field()` there would have silently destroyed legitimate post markup.
+  - `$_FILES` upload metadata: `absint()` on size, `sanitize_text_field()` + a new **`is_uploaded_file()` check** on the temp path before it is hashed.
+- **Credential material is now strictly format-VALIDATED, not rewritten** — `key_id` (`^[A-Za-z0-9_-]{1,128}$`), `timestamp` (`ctype_digit`), `signature` (base64 charset). Validation that *rejects* rather than mutates is what keeps the canonical string reconstructable; a malformed header now fails closed with a specific error code before any key lookup or crypto work.
+- **New `normalize_body_hash()` / `read_body_hash_header()`** — the multipart `X-ConnectMWP-Body-Hash` header must be 64 hex chars; anything else resolves to `''` and fails the `hash_equals()` comparison.
+- **The last 2 inline `<style>` blocks are gone.** The standalone OAuth consent and error documents render outside the WP page lifecycle (no `wp_head`/`wp_footer`), so their stylesheets are now registered on src-less `connectmwp-oauth-consent` / `connectmwp-oauth-error` handles and emitted with `wp_add_inline_style()` + `wp_print_styles($handle)` — the WP asset API, not a hand-written tag. Same single-file pattern as the settings page. **The plugin now contains zero raw `<style>`/`<script>` tags.** (`wp_print_styles()` called with an explicit handle does not fire the `wp_print_styles` action, so no third-party CSS leaks into these pages.)
+
+### Fixed
+
+- **Latent canonical-string bug on the non-REST GET path.** `$_GET` was read raw into the query hash while WordPress had already added magic slashes to it, and the REST branch (`WP_REST_Request::get_query_params()`) gets WP's already-unslashed values — so the two branches disagreed for any query value containing a quote or backslash. Now `map_deep(wp_unslash($_GET), 'sanitize_text_field')`, which matches the REST branch and what the client signs.
+
+### Note
+
+- **No functional change to the auth model.** Session-less Ed25519 signature verification, the `rest_pre_dispatch` gate, the two documented exceptions (`/enroll`, `/mcp`), capability checks and the no-cache headers are all untouched. Full suite re-run: `interop_test.sh`, `sanitization_test.sh`, `tool_error_sanitization_test.sh`, `config_error_classes_test.sh`, `p2`–`p12`, `t082` — no regressions against the 2.3.13 baseline (the four pre-existing static-count failures in `p5`/`p6_idor`/`p7`/`p12` are unchanged and predate this release).
+- `_internal/verify/p6_enroll_shim.php` gained stubs for `wp_unslash`/`sanitize_key`/`esc_url_raw`/`map_deep`, which the pure-logic harness needs now that `get_client_ip()` legitimately calls core functions. Test harness only — not shipped.
+
 ## 2.3.13 — 2026-06-11
 
 **WordPress.org pre-review fixes (plugin only; lockstep bump across all three components).** Addresses the technical items in the wp.org review email of 2026-06-11. No change to the auth path, the canonical signing string, or any MCP endpoint.
