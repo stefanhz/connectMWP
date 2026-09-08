@@ -1,6 +1,6 @@
 {
   "name": "connectmwp-server",
-  "version": "2.3.15",
+  "version": "2.3.16",
   "private": true,
   "scripts": {
     "dev": "next dev",

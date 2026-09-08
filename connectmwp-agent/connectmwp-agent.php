@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP – MCP Connector for WordPress
  * Plugin URI: https://connectmwp.com
  * Description: Securely let your own local AI client (Claude, Cursor) publish to this WordPress site over a signed, session-less Ed25519 connection — no login, no central server.
- * Version: 2.3.15
+ * Version: 2.3.16
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Stefan Heinz, 2morrow.ai
@@ -789,6 +789,7 @@ class ConnectMWP_Agent {
         // valid OAuth parameter, and the downstream exact-match checks then fail
         // closed. The authorize POST is separately nonce-verified in
         // oauth_authorize_handler() before any state change.
+        // phpcs:disable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended -- The OAuth authorize POST IS nonce-verified, in oauth_authorize_handler(), before any state change; this collector runs first and only reads. Values are sanitized inline below.
         $get = function ($key, $as_url = false) {
             if (isset($_POST[$key]) && is_scalar($_POST[$key])) {
                 return $as_url
@@ -802,6 +803,7 @@ class ConnectMWP_Agent {
             }
             return '';
         };
+        // phpcs:enable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended
 
         return [
             'response_type'         => trim($get('response_type')),
@@ -2195,6 +2197,7 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
         // URL-shaped values use esc_url_raw(), which preserves percent-encoding,
         // so an encoded path still reconstructs byte-for-byte; the rest are
         // method tokens and action slugs on restricted alphabets.
+        // phpcs:disable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended -- NonceVerification is not applicable to this endpoint: it never creates or relies on a cookie session (wp_set_current_user() is never called), so there is no nonce to verify. Authorization is a detached Ed25519 signature / bearer token checked before any handler runs. Every value below is separately unslashed and sanitized inline.
         $method = strtoupper(self::read_server_value('REQUEST_METHOD', 'GET'));
 
         // Path logic (survive subdirectories and REST routing parameters)
@@ -2232,6 +2235,8 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
         ksort($query_params);
         $sorted_query = http_build_query($query_params, '', '&', PHP_QUERY_RFC3986);
         $query_hash = hash('sha256', $sorted_query);
+
+        // phpcs:enable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended
 
         // Body hash (skip hashing multipart/form-data body to avoid boundary mismatches, read from header instead)
         $body_hash = '';
@@ -5135,8 +5140,10 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
         // additionally bound by the sha256 body hash compared below. The upload
         // metadata is still read defensively: the size is cast with absint() and
         // the temp path is validated with is_uploaded_file() before it is hashed.
+        // phpcs:disable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended -- NonceVerification is not applicable to this endpoint: it never creates or relies on a cookie session (wp_set_current_user() is never called), so there is no nonce to verify. Authorization is a detached Ed25519 signature / bearer token checked before any handler runs. Every value below is separately unslashed and sanitized inline.
         $upload_size = isset($_FILES['file']['size']) ? absint(wp_unslash($_FILES['file']['size'])) : 0;
         $upload_tmp  = isset($_FILES['file']['tmp_name']) ? sanitize_text_field(wp_unslash($_FILES['file']['tmp_name'])) : '';
+        // phpcs:enable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended
 
         if ($upload_tmp === '' || !is_uploaded_file($upload_tmp)) {
             return new WP_REST_Response(['success' => false, 'error' => 'No file uploaded'], 400);
@@ -5358,6 +5365,7 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
         // nonce is structurally impossible here (no browser session exists).
         // Every inbound param is unslashed and sanitized per key by
         // sanitize_ajax_param() before it is handed to the shared dispatcher.
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- NonceVerification is not applicable to this endpoint: it never creates or relies on a cookie session (wp_set_current_user() is never called), so there is no nonce to verify. Authorization is a detached Ed25519 signature / bearer token checked before any handler runs. Every value below is separately unslashed and sanitized inline.
         $action = isset($_REQUEST['connectmwp_action']) ? sanitize_key(wp_unslash($_REQUEST['connectmwp_action'])) : '';
         if (empty($action)) {
             wp_send_json_error(['error' => 'Missing action'], 400);
@@ -5999,6 +6007,7 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
      * therefore no WP nonce exists on this path.
      */
     private static function collect_ajax_params() {
+        // phpcs:disable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended -- NonceVerification is not applicable to this endpoint: it never creates or relies on a cookie session (wp_set_current_user() is never called), so there is no nonce to verify. Authorization is a detached Ed25519 signature / bearer token checked before any handler runs. Every value below is separately unslashed and sanitized inline.
         $params = map_deep(wp_unslash($_REQUEST), 'sanitize_text_field');
 
         foreach (['content', 'excerpt'] as $rich_key) {
@@ -6006,6 +6015,7 @@ echo esc_html(sprintf(__('Authorize %s — connectMWP', 'connectmwp'), $client['
                 $params[$rich_key] = wp_kses_post(wp_unslash($_REQUEST[$rich_key]));
             }
         }
+        // phpcs:enable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended
 
         return $params;
     }
@@ -6196,7 +6206,7 @@ OAUTHCSS;
             .cmwp-btn-pair-another:hover { background: #2980b9; }
             .cmwp-btn-primary-large { background: #3498db; border: none; color: #fff; padding: 12px 28px; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 10px rgba(52, 152, 219, 0.25); }
             .cmwp-btn-primary-large:hover { background: #2980b9; }
-            .cmwp-btn-copy { background: #34495e; color: #fff; border: none; border-radius: 6px; padding: 0 14px; font-size: 12px; font-weight: 600; cursor: pointer; }
+            .cmwp-btn-copy { background: #34495e; color: #fff; border: none; border-radius: 6px; padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; flex: 0 0 auto; align-self: center; line-height: 1.4; }
             .cmwp-btn-copy:hover { background: #2c3e50; }
 
             /* Get Started — zero-state */

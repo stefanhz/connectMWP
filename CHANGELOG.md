@@ -4,6 +4,20 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2.3.16 — 2026-09-07
+
+**Plugin Check findings from the live 2.3.15 run (plugin only; lockstep bump across all three components).** First actual Plugin Check run since the sanitization rewrite. Result before this release: **1 error, 28 warnings.** No auth, canonical-string, or endpoint change.
+
+### Fixed
+
+- **ERROR `outdated_tested_upto_header`** — `Tested up to: 7.0` while WordPress 7.1 is current. Plugin Check resolves the current version from the wp.org API, so this is authoritative. *"This means your plugin will not show up in searches."* Now `Tested up to: 7.1`.
+- **25 `NonceVerification` warnings** — these appeared because 2.3.14 stripped *all* PHPCS suppressions, including the nonce ones. That was over-correction. The distinction that matters: **for sanitization a real fix existed, so it was written (and Plugin Check now reports zero `ValidatedSanitizedInput` findings); for nonces no fix is possible** — these endpoints never create or rely on a cookie session (`wp_set_current_user()` is never called), so there is no nonce to verify. Authorization is a detached Ed25519 signature or bearer token checked before any handler runs. Narrow `NonceVerification`-only annotations are restored with that justification, which is the state 2.3.12 shipped in and which the reviewer did **not** object to. **No sanitization suppression is reintroduced — that count stays at 0.**
+- **Settings page: the new "Copy line" button wrapped onto two lines** and sat awkwardly in the card header. Added `white-space: nowrap`, `flex: 0 0 auto`, `align-self: center` and real vertical padding.
+
+### Note — the 3 remaining `trademarked_term` warnings are being left alone, deliberately
+
+Plugin Check warns that the display name *"connectMWP – MCP Connector for WordPress"* contains "wordpress" (×2) and the slug `connectmwp` contains "wp" (×1). **Guideline 17's actual text restricts only the "sole or initial term of a plugin slug"**, and its own worked example endorses exactly the *"Dancing Sloths for Superbox"* pattern this name follows. Our slug's initial term is `connect`, not `wp`. The descriptive display name was itself added in 2.3.13 in response to the reviewer's own "name should describe the function" request. These are warnings, not errors. Position unchanged: do not pre-concede a rename; display name only, and only if a human reviewer explicitly rules.
+
 ## 2.3.15 — 2026-09-07
 
 **Settings-page UX fix found during the live click-test of 2.3.14 (plugin only; lockstep bump across all three components).** No auth, canonical-string, or endpoint change.

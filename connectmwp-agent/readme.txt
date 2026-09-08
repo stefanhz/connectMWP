@@ -3,9 +3,9 @@ Contributors: stefhz
 Donate link: https://buy.stripe.com/aFa8wQ0rH2PQ4Msama5kk0l
 Tags: mcp, rest-api, ai, publishing, automation
 Requires at least: 6.0
-Tested up to: 7.0
+Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 2.3.15
+Stable tag: 2.3.16
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -68,6 +68,11 @@ Generate a new pairing code in Settings → connectMWP and re-pair. A failed re-
 Yes. Those tools police login state, and this plugin never establishes one.
 
 == Changelog ==
+
+= 2.3.16 =
+* Updated the "Tested up to" header to WordPress 7.1.
+* Restored narrow nonce-only PHPCS annotations for the signature/token endpoints, which never create a login session and therefore cannot use a nonce. No input-sanitization suppressions were reintroduced.
+* Fixed the new Copy button wrapping onto two lines on the settings page.
 
 = 2.3.15 =
 * Added a Copy button to the "Add the MCP server to your app" snippet on the settings page — it was the only code block without one, and it is the one you actually need to paste into Claude, Cursor or Cline.
