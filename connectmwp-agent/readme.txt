@@ -5,7 +5,7 @@ Tags: mcp, rest-api, ai, publishing, automation
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.3.14
+Stable tag: 2.3.15
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -68,6 +68,9 @@ Generate a new pairing code in Settings → connectMWP and re-pair. A failed re-
 Yes. Those tools police login state, and this plugin never establishes one.
 
 == Changelog ==
+
+= 2.3.15 =
+* Added a Copy button to the "Add the MCP server to your app" snippet on the settings page — it was the only code block without one, and it is the one you actually need to paste into Claude, Cursor or Cline.
 
 = 2.3.14 =
 * WordPress.org review round 2: every user-supplied value ($_GET/$_POST/$_REQUEST/$_FILES/$_SERVER) is now unslashed and sanitized at the point of read, with the function appropriate to its type — URL-shaped values use esc_url_raw() so percent-encoding survives, post bodies use wp_kses_post(), identifiers use absint(). All PHPCS sanitization suppressions removed.

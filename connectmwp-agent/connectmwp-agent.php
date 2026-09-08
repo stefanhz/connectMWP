@@ -3,7 +3,7 @@
  * Plugin Name: connectMWP – MCP Connector for WordPress
  * Plugin URI: https://connectmwp.com
  * Description: Securely let your own local AI client (Claude, Cursor) publish to this WordPress site over a signed, session-less Ed25519 connection — no login, no central server.
- * Version: 2.3.14
+ * Version: 2.3.15
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Stefan Heinz, 2morrow.ai
@@ -7103,10 +7103,11 @@ JS;
                         <h2 class="cmwp-card-title">Add the MCP server to your app</h2>
                         <p class="cmwp-card-sub">After pairing, drop this registration into your AI app&rsquo;s settings. Every Claude / Cursor / Cline app on this Mac shares the pairing above &mdash; no extra setup per app.</p>
                     </div>
+                    <button type="button" class="cmwp-btn-copy" data-cmwp-copy="cmwp-stdio-line" data-cmwp-copied="Config line copied!">Copy line</button>
                 </div>
 <pre class="cmwp-config-json"><span class="cmwp-dim">{
   "mcpServers": {</span>
-<span class="cmwp-hi">    "connectmwp": { "command": "npx", "args": ["-y", "connectmwp-mcp"] }</span>
+<span class="cmwp-hi" id="cmwp-stdio-line">    "connectmwp": { "command": "npx", "args": ["-y", "connectmwp-mcp"] }</span>
 <span class="cmwp-dim">  }
 }</span></pre>
                 <p class="cmwp-stdio-where"><b>Where to put it</b> &mdash; <b>Claude:</b> <code>claude_desktop_config.json</code> · <b>Cursor:</b> Settings → MCP · <b>Cline / Continue:</b> add an MCP server named <code>connectmwp</code>. Merge only the highlighted line into any existing <code>"mcpServers"</code> object, then fully quit &amp; relaunch the app (⌘Q on macOS).</p>

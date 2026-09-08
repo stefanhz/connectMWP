@@ -4,6 +4,18 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2.3.15 — 2026-09-07
+
+**Settings-page UX fix found during the live click-test of 2.3.14 (plugin only; lockstep bump across all three components).** No auth, canonical-string, or endpoint change.
+
+### Fixed
+
+- **The "Add the MCP server to your app" snippet had no copy affordance.** It was the only code block on the settings page without a **Copy** button — and it is the one block a user genuinely has to paste (the stdio registration for Claude Desktop / Cursor / Cline). The card's own text says *"Merge only the highlighted line…"*, and the line is visually highlighted, which reads as interactive; clicking it did nothing. A **Copy line** button now sits in the card header and copies exactly the highlighted `"connectmwp": { … }` entry. Reuses the existing delegated `data-cmwp-copy` handler — **no new JavaScript**, no new inline assets.
+
+### Note
+
+- Found by walking Settings → connectMWP in a live WordPress on 2.3.14 — the first time that page had been exercised in a browser since the v2.3.13 enqueue refactor (the long-open T095). Everything else on that walk passed: the three client tabs swap correctly, the key-ID chip copies, "+ Pair another" renders the pairing card with a live countdown, and **the rebuilt OAuth error page renders fully styled**, confirming the 2.3.14 `wp_print_styles()` change works outside the WP page lifecycle.
+
 ## 2.3.14 — 2026-09-07
 
 **WordPress.org review round 2 (plugin only; lockstep bump across all three components).** Addresses both issues in the wp.org review email of 2026-09-07 (Review ID `R connectmwp/stefhz/7Sep26/T1 7Sep26/4.2`). **That review was run against the zip submitted 2026-06-09 — i.e. 2.3.12 — so it predates the 2.3.13 enqueue refactor;** 9 of its 11 cited inline-asset incidences were already fixed there. This release closes the remaining 2 and rebuilds the sanitization story from scratch. No change to the canonical signing string — `_internal/verify/interop_test.sh` re-verified byte-identical Node⇄PHP signing.
