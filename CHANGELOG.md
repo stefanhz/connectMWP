@@ -4,6 +4,25 @@ All notable changes to connectMWP are recorded here. Each of the three
 components (`connectmwp-agent`, `connectmwp-mcp`, `connectmwp-server`) carries
 its own version; entries note which component changed.
 
+## 2.3.17 — 2026-09-07
+
+**Forced display-name change (plugin only; lockstep bump across all three components).** The wp.org *Add your plugin* upload form **hard-blocks** the submission. No code, auth, or endpoint change.
+
+### Changed
+
+- **Display name: `connectMWP – MCP Connector for WordPress` → `connectMWP – MCP Connector for AI Publishing`** (plugin header + `readme.txt` title line; those are the only two live locations — historical changelog entries mentioning the old name are left untouched, as always).
+
+  The upload form's exact wording: *"contains the restricted term `wordpress`, which cannot be used at all in your plugin permalink **nor the display name**. To proceed with this submission you must change your `Plugin Name:` line in both your main plugin file and readme."* This is a blocking gate, not a reviewer opinion and not a negotiable warning — the zip cannot be uploaded at all until it changes.
+
+  **Correction to the 2.3.16 entry's reasoning, recorded rather than quietly dropped:** that entry argued guideline 17 restricts only the *"sole or initial term of a plugin slug"* and therefore left the name alone. That reading was too narrow — it is correct about the *slug* and wrong about the *display name*, which is separately and absolutely restricted. The 2.3.16 entry stands as written (entries are immutable); this is the corrected position.
+
+  The new name preserves what actually mattered: `connectMWP` still leads as the distinctive brand term, and the suffix still describes the function, which is what the June 2026 review asked for when it prompted the descriptive name in the first place. No workaround spellings were used — the form explicitly forbids those.
+
+### Unchanged
+
+- **Slug stays `connectmwp`** (wp.org has it assigned). Its separate `trademarked_term` "wp" notice is a soft warning, and the rationale already filed with the June 9 submission still stands and is still displayed on the submission page. That argument was **not** re-litigated.
+- Text domain, npm package `connectmwp-mcp`, all internals, and every endpoint: untouched.
+
 ## 2.3.16 — 2026-09-07
 
 **Plugin Check findings from the live 2.3.15 run (plugin only; lockstep bump across all three components).** First actual Plugin Check run since the sanitization rewrite. Result before this release: **1 error, 28 warnings.** No auth, canonical-string, or endpoint change.

@@ -1,11 +1,11 @@
-=== connectMWP – MCP Connector for WordPress ===
+=== connectMWP – MCP Connector for AI Publishing ===
 Contributors: stefhz
 Donate link: https://buy.stripe.com/aFa8wQ0rH2PQ4Msama5kk0l
 Tags: mcp, rest-api, ai, publishing, automation
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 2.3.16
+Stable tag: 2.3.17
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -68,6 +68,9 @@ Generate a new pairing code in Settings → connectMWP and re-pair. A failed re-
 Yes. Those tools police login state, and this plugin never establishes one.
 
 == Changelog ==
+
+= 2.3.17 =
+* Display name changed to "connectMWP - MCP Connector for AI Publishing". The WordPress.org submission form does not permit the previous name. Slug, text domain and all internals are unchanged.
 
 = 2.3.16 =
 * Updated the "Tested up to" header to WordPress 7.1.
